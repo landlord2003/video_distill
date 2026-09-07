@@ -39,6 +39,7 @@ OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 SUMMARY_MODEL = "qwen3:14b"
 VISION_MODEL = "qwen3-vl:8b"
 TRANSCRIBE_MODEL = "tiny"                            # faster-whisper 模型尺寸
+N_KEYFRAMES = 10                                     # 抽帧数（教程类视频步骤还原靠帧密度）
 
 for _d in (INBOX, FRAMES, VAULT):
     os.makedirs(_d, exist_ok=True)
@@ -131,7 +132,7 @@ def extract_keyframes(video_path, out_dir, n=4):
 
 
 # ---------------- 视觉理解 ----------------
-def describe_frames(frame_paths, max_frames=4):
+def describe_frames(frame_paths, max_frames=N_KEYFRAMES):
     """逐张视觉理解（每张单独一次请求，规避 qwen3-vl 多图 HTTP 400 限制）。
 
     返回与 frame_paths 等长的描述列表（单张失败则该项为空字符串）。
@@ -139,9 +140,10 @@ def describe_frames(frame_paths, max_frames=4):
     if not frame_paths:
         return []
     sel = frame_paths[:max_frames]
-    prompt = ("你是一名视频内容分析助手。请用一句话（中文）描述这张关键帧画面中"
-              "可见的关键信息（人物、场景、文字、物体、动作）。"
-              "只输出一句描述，不要任何前缀或多余解释。")
+    prompt = ("你是一名视频内容分析助手，正在为『还原视频中的制作/操作过程』收集素材。"
+              "请用一句不超过 45 字的中文描述这张关键帧画面中可见的关键信息："
+              "场景、人物与动作、可见的配料/原料/工具/器皿，以及画面上的任何文字或数字"
+              "（如温度、克数、步骤名、品牌标识）。只输出一句描述，不要前缀或解释。")
     descs = []
     for fp in sel:
         if not fp or not os.path.exists(fp):
@@ -168,12 +170,19 @@ def summarize(transcript, frame_descs, source_meta):
         "产出结构化笔记。请只输出一个 JSON 对象，字段如下（不要输出任何多余文字、不要 Markdown 代码块标记）：\n"
         "{\n"
         '  "标题": "一句话标题（15字内）",\n'
-        '  "摘要": "100字内的一句话摘要",\n'
+        '  "摘要": "120字内的一句话摘要",\n'
+        '  "制作流程": [{"步骤":"1","操作":"本步做什么","用料":"本步用到的原料/工具","参数":"温度/时间/比例等(无则空串)","要点":""}, ...],\n'
         '  "要点": ["要点1","要点2",...],\n'
         '  "章节": [{"时间":"","主题":""}, ...],\n'
         '  "标签": ["标签1","标签2",...],\n'
         '  "关键结论": "可执行的结论或金句（如有）"\n'
         "}\n\n"
+        "【制作流程】填写规则（极重要）：\n"
+        "1. 若视频是制作方法/教程/工艺/实验类，请务必填写『制作流程』——按视频出现顺序，"
+        "逐步还原每一步的具体操作、所用原料与工具、关键参数（温度/时间/配比/火候）、以及成败要点。\n"
+        "2. 每一步必须基于【关键帧画面描述】与【语音转写】中的真实信息，**严禁编造**；"
+        "信息不足的步骤请如实标注（画面/语音未明确展示），不要脑补步骤名或参数。\n"
+        "3. 若为普通内容（非制作方法类），给空数组 []。\n\n"
         f"【关键帧画面描述】\n{descs_text}\n\n"
         f"【语音转写】\n{transcript_text}\n"
     )
@@ -191,6 +200,29 @@ def summarize(transcript, frame_descs, source_meta):
 
 
 # ---------------- 拼装 Markdown ----------------
+def _embed_image(fp):
+    """压缩后内嵌（ffmpeg 缩到 640px 宽、q7），控制笔记体积；失败退化原图。
+
+    生成 <原名>_embed.jpg 缓存在帧目录，原图保留在库内 frames/（高清备份）。
+    """
+    if not (fp and os.path.exists(fp)):
+        return ""
+    try:
+        small = os.path.splitext(fp)[0] + "_embed.jpg"
+        if not os.path.exists(small) or os.path.getsize(small) == 0:
+            ff = get_ffmpeg()
+            subprocess.run([ff, "-y", "-i", fp, "-vf", "scale=640:-1", "-q:v", "7", small],
+                           capture_output=True, timeout=30)
+        if os.path.exists(small) and os.path.getsize(small) > 0:
+            return f"data:image/jpeg;base64,{b64(small)}"
+        return f"data:image/jpeg;base64,{b64(fp)}"
+    except Exception:
+        try:
+            return f"data:image/jpeg;base64,{b64(fp)}"
+        except Exception:
+            return ""
+
+
 def build_markdown(meta, transcript, frame_descs, summary, frames):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = []
@@ -211,6 +243,29 @@ def build_markdown(meta, transcript, frame_descs, summary, frames):
     if summary.get("关键结论"):
         lines.append("")
         lines.append(f"> **关键结论：** {summary['关键结论']}")
+    # 制作流程（核心：还原操作步骤）
+    flow = summary.get("制作流程") or []
+    if flow:
+        lines.append("")
+        lines.append("## 制作流程")
+        lines.append("")
+        for step in flow:
+            if isinstance(step, dict):
+                idx = str(step.get("步骤", "")).strip()
+                op = step.get("操作", "") or ""
+                ing = step.get("用料", "") or ""
+                param = step.get("参数", "") or ""
+                note = step.get("要点", "") or ""
+                head = f"**{idx}. {op}**" if op else f"**{idx}.**"
+                lines.append(head)
+                if ing:
+                    lines.append(f"  - 用料/工具：{ing}")
+                if param:
+                    lines.append(f"  - 关键参数：{param}")
+                if note:
+                    lines.append(f"  - 要点：{note}")
+            else:
+                lines.append(f"- {step}")
     pts = summary.get("要点") or []
     if pts:
         lines.append("")
@@ -232,8 +287,8 @@ def build_markdown(meta, transcript, frame_descs, summary, frames):
         lines.append("## 关键帧")
         lines.append("")
         for i, fp in enumerate(frames):
-            rel = os.path.basename(fp)
-            lines.append(f"![关键帧{i+1}](frames/{rel})")
+            uri = _embed_image(fp)
+            lines.append(f"![关键帧{i+1}]({uri})")
             if i < len(frame_descs):
                 lines.append(f"> {frame_descs[i]}")
             lines.append("")
@@ -243,15 +298,6 @@ def build_markdown(meta, transcript, frame_descs, summary, frames):
         lines.append(transcript)
     lines.append("")
     return "\n".join(lines)
-
-
-# ---------------- 写入 Obsidian 库 ----------------
-def write_vault(md, slug):
-    os.makedirs(VAULT, exist_ok=True)
-    fname = f"{slug}.md"
-    path = os.path.join(VAULT, fname)
-    # 复制关键帧到库内 frames/
-    return path
 
 
 def process_video(video_path, url="", source="", write_vault=True, model_size=TRANSCRIBE_MODEL):
@@ -269,7 +315,7 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
     # 1) 转写
     transcript, terr = transcribe(video_path, model_size)
     # 2) 关键帧
-    frames = extract_keyframes(video_path, frames_dir, n=4)
+    frames = extract_keyframes(video_path, frames_dir, n=N_KEYFRAMES)
     # 3) 视觉理解
     frame_descs = describe_frames(frames)
     # 4) 结构化总结
