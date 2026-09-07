@@ -1,0 +1,28 @@
+# 虚拟环境（~几百 MB，随项目重建，见 README）
+venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 运行时日志 / 测试产物
+*.log
+_whisper_dl.log
+_server.log
+server.log
+crawl_test_resp.json
+_selftest.py
+
+# 抓取/整理历史数据（按需决定是否入库，默认忽略）
+crawls.db
+crawls/
+videos_inbox/
+videos_frames/
+distilled/
+
+# 本地项目配置（不入库）
+.workbuddy/
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db

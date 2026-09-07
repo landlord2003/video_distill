@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="z1KR4qcv3kJLJRwwLaBvoK">
+<head data-page-node-id="YP2ayK3L3Y5CMBS0boHCA7">
+<meta charset="utf-8" data-page-node-id="uUnsjob7BVtErBCt4ZrYWB">
+<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="FqXsQySfiI9lfP6aGIWBAA">
+<title>crawl4ai 本地采集器</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--line:#2a2f3a;
+        --txt:#e6e9ef;--mut:#8b93a3;--acc:#4f9dff;--acc2:#2bd4a4;--red:#ff5f6e;}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--txt);height:100vh;overflow:hidden}
+  #app{display:flex;height:100vh}
+  /* sidebar */
+  #side{width:320px;background:var(--panel);border-right:1px solid var(--line);
+        display:flex;flex-direction:column}
+  #side h2{margin:0;padding:14px 16px;font-size:15px;border-bottom:1px solid var(--line);
+           display:flex;align-items:center;gap:8px}
+  #side h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--acc2)}
+  #search{padding:10px 12px;border-bottom:1px solid var(--line)}
+  #search input{width:100%;padding:7px 10px;background:var(--panel2);border:1px solid var(--line);
+                border-radius:6px;color:var(--txt);outline:none}
+  #search input:focus{border-color:var(--acc)}
+  #hist{flex:1;overflow:auto}
+  .item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .item:hover{background:var(--panel2)}
+  .item .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .u{color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .m{color:var(--mut);font-size:11px;margin-top:3px;display:flex;justify-content:space-between}
+  .item .st{font-size:11px}
+  .st.done{color:var(--acc2)} .st.error{color:var(--red)} .st.running{color:var(--acc)}
+  .empty{color:var(--mut);padding:20px;text-align:center}
+  /* main */
+  #main{flex:1;display:flex;flex-direction:column}
+  #bar{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--panel);
+       display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  #url{flex:1;min-width:260px;padding:10px 12px;background:var(--panel2);border:1px solid var(--line);
+       border-radius:8px;color:var(--txt);outline:none;font-size:14px}
+  #url:focus{border-color:var(--acc)}
+  #go{padding:10px 20px;background:var(--acc);color:#fff;border:none;border-radius:8px;
+      cursor:pointer;font-weight:600}
+  #go:disabled{opacity:.5;cursor:default}
+  .toggle{display:flex;align-items:center;gap:6px;color:var(--mut);user-select:none}
+  #status{padding:8px 18px;color:var(--mut);font-size:12px;min-height:18px}
+  #result{flex:1;overflow:auto;padding:0 18px 18px}
+  #rtitle{font-size:16px;font-weight:700;margin:10px 0 4px}
+  #rmeta{color:var(--mut);font-size:12px;margin-bottom:10px}
+  /* Markdown 渲染区 */
+  #md{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px 22px;
+      line-height:1.7;font-size:14px}
+  #md.md-raw{white-space:pre-wrap;font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+            font-size:13px}
+  .md-body>:first-child{margin-top:0}
+  .md-body h1,.md-body h2,.md-body h3,.md-body h4{line-height:1.3;margin:1.1em 0 .5em;font-weight:700}
+  .md-body h1{font-size:1.6em;border-bottom:1px solid var(--line);padding-bottom:.3em}
+  .md-body h2{font-size:1.35em;border-bottom:1px solid var(--line);padding-bottom:.25em}
+  .md-body h3{font-size:1.15em}
+  .md-body p{margin:.7em 0}
+  .md-body a{color:var(--acc);text-decoration:none}
+  .md-body a:hover{text-decoration:underline}
+  .md-body img{max-width:100%;height:auto;border-radius:6px;border:1px solid var(--line);
+              margin:.3em 0;display:block}
+  .md-body ul,.md-body ol{padding-left:1.6em;margin:.6em 0}
+  .md-body li{margin:.25em 0}
+  .md-body blockquote{margin:.7em 0;padding:.4em 1em;border-left:3px solid var(--acc);
+                     color:var(--mut);background:var(--panel2)}
+  .md-body code{background:var(--panel2);padding:.15em .4em;border-radius:4px;font-size:.9em;
+               font-family:"SFMono-Regular",Consolas,monospace}
+  .md-body pre{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:12px;
+              overflow:auto}
+  .md-body pre code{background:none;padding:0}
+  .md-body table{border-collapse:collapse;margin:.7em 0;width:100%}
+  .md-body th,.md-body td{border:1px solid var(--line);padding:6px 10px;text-align:left}
+  .md-body hr{border:none;border-top:1px solid var(--line);margin:1.2em 0}
+  .md-body .nav-junk{opacity:.55;font-size:.85em}
+  pre.json{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;
+           overflow:auto;font-size:12px;color:var(--acc2)}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;
+       padding:5px 12px;cursor:pointer;font-size:12px}
+  .btn:hover{border-color:var(--acc)}
+  .btn.del{color:var(--red);border-color:transparent}
+  .btn.del:hover{border-color:var(--red)}
+  .delwrap{margin-top:6px;text-align:right}
+  .row{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
+  .spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--mut);
+           border-top-color:var(--acc);border-radius:50%;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* tabs */
+  #tabs{padding:10px 18px 0;display:flex;gap:8px}
+  .tab{background:var(--panel2);border:1px solid var(--line);color:var(--mut);
+       border-radius:8px 8px 0 0;padding:8px 16px;cursor:pointer;font-size:13px}
+  .tab.active{background:var(--panel);color:var(--txt);border-bottom-color:var(--panel)}
+  #video-panel{display:none;flex-direction:column;overflow:auto;padding:12px 18px 18px;flex:1}
+  #vurls{width:100%;height:90px;background:var(--panel2);border:1px solid var(--line);
+         border-radius:8px;color:var(--txt);padding:10px;outline:none;resize:vertical;font-size:13px}
+  #vurls:focus{border-color:var(--acc)}
+  .vcard{padding:12px;border:1px solid var(--line);border-radius:8px;margin:12px 0}
+  .vcard .mut{color:var(--mut);font-size:12px}
+</style>
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+</head>
+<body data-page-node-id="qnAzSStCzM4xXTc9uDbmOh">
+<div id="app" data-page-node-id="WxIPX7D7HoNwLgOpGdHmjn">
+  <aside id="side" data-page-node-id="HgBmyx2JQFYqN0ojwDZp6f">
+    <h2 data-page-node-id="135FHbU5rBQjqljfUsH0V3"><span class="dot" data-page-node-id="vPHHCIo0C73frckZzqrZAQ"></span>抓取历史</h2>
+    <div id="search" data-page-node-id="azDHc0uAU3rR8x2UNsH0zw"><input id="q" placeholder="搜索 URL / 标题…" oninput="loadHist()" data-page-node-id="Zc6VMHuxnS6CAHWDmH5x7T"></div>
+    <div id="hist" data-page-node-id="B0vQs9BvPRUWp8Uo9CjrvW"><div class="empty" data-page-node-id="a8gcfxytmFWB4bmkkeRnnc">暂无记录</div></div>
+  </aside>
+  <main id="main" data-page-node-id="2FB2ktMMcWlZqna8exq1ba">
+    <div id="tabs">
+      <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
+      <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
+    </div>
+    <div id="bar" data-page-node-id="lV8l0M1RGiG3lRrPSEmIuu">
+      <input id="url" placeholder="输入要抓取的网址，如 https://www.ehang.com/" onkeydown="if(event.key==='Enter')crawl()" data-page-node-id="77RQBFUEdXyztRbJwKBweu">
+      <label class="toggle" data-page-node-id="qxIvVKnJnqYSgG0biq2kGp"><input type="checkbox" id="llm" data-page-node-id="GkJIAizrF6eOPK0hC8iE1M"> 结构化抽取(本地Ollama)</label>
+      <button id="go" onclick="crawl()" data-page-node-id="nh9U12JWfEjWTjBdcSThBY">抓取</button>
+    </div>
+    <div id="status" data-page-node-id="4iLNjnbnOADynZCrTmyUXJ">就绪</div>
+    <div id="result" data-page-node-id="Y0r7sf0OWzdc6PXmfDGdJY">
+      <div class="empty" style="color:var(--mut);padding:40px;text-align:center" data-page-node-id="7u5Mc5tfuX9Za6yYojvfYe">
+        输入网址点击「抓取」，结果 Markdown 会显示在这里并自动存入历史。
+      </div>
+    </div>
+    <!-- 视频号/抖音 整理面板 -->
+    <div id="video-panel">
+      <div class="row" style="margin-top:6px">
+        <textarea id="vurls" placeholder="粘贴抖音 / 视频号直链，每行一个（支持批量清单，一次处理 N 条）&#10;例：https://v.douyin.com/xxxx&#10;https://.../xxx.m3u8"></textarea>
+      </div>
+      <div class="row">
+        <input type="file" id="vfiles" multiple accept="video/*">
+        <label class="toggle"><input type="checkbox" id="vvault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
+        <button id="vgo" class="btn" onclick="runVideo()">运行整理</button>
+        <span id="vstatus" style="color:var(--mut);font-size:12px"></span>
+      </div>
+      <div id="vresult"></div>
+    </div>
+  </main>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+async function loadHist(){
+  const q = $('#q').value.trim();
+  const r = await fetch('/api/history?q='+encodeURIComponent(q));
+  const rows = await r.json();
+  const box = $('#hist');
+  if(!rows.length){ box.innerHTML='<div class="empty">暂无记录</div>'; return; }
+  box.innerHTML = rows.map(x=>`
+    <div class="item" onclick="view('${x.id}')">
+      <div class="t">${esc(x.title||x.url)}</div>
+      <div class="u">${esc(x.url)}</div>
+      <div class="m"><span class="st ${x.status}">${stxt(x.status)}</span>
+        <span>${x.created_at||''} · ${x.md_len||0}字</span></div>
+      <div class="delwrap"><button class="btn del" onclick="event.stopPropagation();del('${x.id}')">删除</button></div>
+    </div>`).join('');
+}
+function stxt(s){return s==='done'?'✓ 完成':s==='error'?'✗ 失败':s==='running'?'… 进行中':'·'}
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+async function crawl(){
+  const url = $('#url').value.trim();
+  if(!url){ setStatus('请先输入网址'); return; }
+  const go = $('#go'); go.disabled=true; go.textContent='抓取中';
+  setStatus('<span class="spinner"></span> 正在抓取 '+url+' …（首次启动浏览器约数秒）');
+  try{
+    const r = await fetch('/api/crawl',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url, use_llm:$('#llm').checked})});
+    const d = await r.json();
+    if(!r.ok){ setStatus('✗ 失败：'+(d.error||'未知错误')); renderErr(d); }
+    else { render(d); setStatus('✓ 完成：'+d.md_len+' 字 Markdown 已存入历史'); }
+  }catch(e){ setStatus('✗ 请求异常：'+e.message); }
+  finally{ go.disabled=false; go.textContent='抓取'; loadHist(); }
+}
+function setStatus(h){ $('#status').innerHTML = h; }
+
+let _currentMd = '';
+let _rawView = false;
+function render(d){
+  _currentMd = d.markdown || '';
+  _rawView = false;
+  let h = `<div id="rtitle">${esc(d.title||d.url)}</div>
+    <div id="rmeta">${esc(d.url)} · ${d.created_at||''} · ${(d.md_len||0)} 字
+      <span style="margin-left:12px">${d.use_llm?'<span class="st done">含结构化抽取</span>':'<span class="mut">仅 Markdown</span>'}</span>
+      <span style="margin-left:12px"><a class="btn" href="/api/crawls/${d.id}/download">下载 .md</a></span>
+      <span style="margin-left:8px"><button class="btn" onclick="toggleRaw(this)">查看源码</button></span>
+      <span style="margin-left:8px"><button class="btn del" onclick="del('${d.id}')">删除</button></span></div>`;
+  h += `<div id="md" class="md-body"></div>`;
+  if(d.extracted){
+    h += `<div class="row" style="margin-top:14px"><b>结构化抽取结果</b></div>`;
+    h += `<pre class="json">${esc(typeof d.extracted==='string'?d.extracted:JSON.stringify(d.extracted,null,2))}</pre>`;
+  }
+  if(d.error){ h += `<div class="row" style="margin-top:10px;color:var(--red)">错误：${esc(d.error)}</div>`; }
+  $('#result').innerHTML = h;
+  paintMd();
+}
+function paintMd(){
+  const box = $('#md'); if(!box) return;
+  if(_rawView){
+    box.className = 'md-raw';
+    box.textContent = _currentMd || '(空)';
+  } else {
+    box.className = 'md-body';
+    const html = DOMPurify.sanitize(marked.parse(_currentMd || ''));
+    box.innerHTML = html || '<span style="color:var(--mut)">(空)</span>';
+  }
+}
+function toggleRaw(btn){
+  _rawView = !_rawView;
+  paintMd();
+  if(btn) btn.textContent = _rawView ? '渲染视图' : '查看源码';
+}
+function renderErr(d){
+  $('#result').innerHTML = `<div id="rtitle" style="color:var(--red)">抓取失败</div>
+    <div id="rmeta">${esc(d.url||'')}</div>
+    <pre class="json" style="color:var(--red)">${esc(d.error||'未知')}</pre>`;
+}
+async function view(id){
+  setStatus('加载历史 '+id+' …');
+  const r = await fetch('/api/crawls/'+id);
+  const d = await r.json();
+  if(!r.ok){ setStatus('✗ 未找到'); return; }
+  render(d);
+  $('#url').value = d.url||'';
+  setStatus('✓ 已加载历史记录 '+id);
+}
+async function del(id){
+  if(!confirm('确定删除这条抓取记录？关联文件（.md / .json）也会一并删除，不可恢复。')) return;
+  setStatus('正在删除 '+id+' …');
+  try{
+    const r = await fetch('/api/crawls/'+id, {method:'DELETE'});
+    if(r.ok){
+      setStatus('✓ 已删除记录 '+id);
+      loadHist();
+      $('#result').innerHTML = '<div class="empty" style="color:var(--mut);padding:40px;text-align:center">记录已删除</div>';
+    } else {
+      const e = await r.json().catch(()=>({}));
+      setStatus('✗ 删除失败：'+(e.error||r.status));
+    }
+  }catch(e){ setStatus('✗ 删除异常：'+e.message); }
+}
+function switchTab(t, btn){
+  document.querySelectorAll('#tabs .tab').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const web = (t==='web');
+  $('#bar').style.display = web?'flex':'none';
+  $('#status').style.display = web?'block':'none';
+  $('#result').style.display = web?'block':'none';
+  $('#video-panel').style.display = web?'none':'flex';
+}
+async function runVideo(){
+  const urls = $('#vurls').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const files = $('#vfiles').files;
+  const wv = $('#vvault').checked;
+  const go = $('#vgo'); go.disabled=true; go.textContent='处理中…';
+  $('#vstatus').innerHTML = '<span class="spinner"></span> 正在处理（抖音链接需联网下载，整理全本地）…';
+  let results = [];
+  try{
+    if(urls.length){
+      const r = await fetch('/api/video',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({urls, write_vault:wv})});
+      const d = await r.json();
+      results = d.results || [];
+    }
+    if(files.length){
+      for(const f of files){
+        const fd = new FormData();
+        fd.append('file', f, f.name);
+        const r = await fetch('/api/video/upload',{method:'POST',body:fd});
+        const d = await r.json();
+        results = results.concat(d.results || []);
+      }
+    }
+    if(!results.length){ $('#vstatus').textContent='未提交任何链接或文件'; }
+    else { $('#vstatus').textContent='✓ 完成 '+results.length+' 条'; }
+    renderVideo(results);
+  }catch(e){ $('#vstatus').textContent='✗ '+e.message; }
+  finally{ go.disabled=false; go.textContent='运行整理'; }
+}
+function renderVideo(list){
+  const box = $('#vresult');
+  if(!list.length){ box.innerHTML=''; return; }
+  box.innerHTML = list.map(x=>{
+    const md = x.markdown || '';
+    const ok = x.ok;
+    const vp = (x.vault_path||'').replace(/\\/g,'/');
+    return `<div class="vcard">
+      <div style="font-weight:700">${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}</div>
+      <div class="mut">${esc(x.source_url||'')} ${x.vault_path?('· 已入库: '+esc(vp)):'· 未入库'}</div>
+      ${x.error?`<div style="color:var(--red);font-size:12px">${esc(x.error)}</div>`:''}
+      <div class="md-body" style="margin-top:8px">${DOMPurify.sanitize(marked.parse(md))}</div>
+    </div>`;
+  }).join('');
+}
+loadHist();
+</script>
+</body>
+</html>
