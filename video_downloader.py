@@ -125,6 +125,7 @@ def download_douyin(url: str, out_dir: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     tmpl = str(out_dir / "%(id)s.%(ext)s")
     cookie_file = get_cookies_arg()
+    tried = []  # 完整记录尝试过的每一种方式，便于反馈
 
     def build(base_extra):
         return get_yt_dlp_cmd() + [
@@ -137,6 +138,7 @@ def download_douyin(url: str, out_dir: str) -> str:
     last_err = None
     # 1) 优先用 cookies.txt（不需要 Chrome 在跑，最稳）
     if cookie_file:
+        tried.append("cookies.txt(项目内)")
         try:
             subprocess.run(build(cookie_file), check=True, timeout=300, env=dict(os.environ))
             return _pick(out_dir, last_err)
@@ -147,8 +149,11 @@ def download_douyin(url: str, out_dir: str) -> str:
                         "请确认 cookies.txt 来自已登录抖音的浏览器且未过期")
         except FileNotFoundError as e:
             last_err = "找不到 yt-dlp：请用 venv 的 python 运行 `pip install yt-dlp`"
+    else:
+        tried.append("cookies.txt(未找到)")
     # 2) 退化：浏览器实时 cookie
     for br in ("chrome", "edge", "chromium", "brave"):
+        tried.append(f"浏览器({br})实时cookie")
         try:
             subprocess.run(build(["--cookies-from-browser", br]), check=True,
                           timeout=300, env=dict(os.environ))
@@ -156,14 +161,20 @@ def download_douyin(url: str, out_dir: str) -> str:
         except subprocess.TimeoutExpired:
             last_err = "下载超时（抖音响应慢/被拦截），请重试或检查网络/代理"
         except subprocess.CalledProcessError as e:
-            last_err = f"浏览器({br}) cookie 提取失败（退出码 {e.returncode}），可能未登录抖音或 Chrome 正占用 cookie 库"
+            last_err = (f"浏览器({br}) cookie 提取失败（退出码 {e.returncode}）："
+                        "该浏览器未登录抖音，或浏览器正运行占用 cookie 库——"
+                        "请关掉浏览器后重试，或改用 cookies.txt")
         except FileNotFoundError as e:
             last_err = "找不到 yt-dlp：请用 venv 的 python 运行 `pip install yt-dlp`"
             break
     raise FileNotFoundError(
-        f"抖音下载失败：{last_err}。\n"
-        f"最稳解决：用浏览器插件(如 Get cookies.txt LOCALLY)导出已登录抖音的 "
-        f"cookies.txt，放到项目目录或设置 VIDEO_COOKIES 环境变量后重试。"
+        f"抖音下载失败：已依次尝试 [{' / '.join(tried)}] 均失败。\n"
+        f"最后错误：{last_err}\n\n"
+        f"抖音现强制登录态，两条路选一：\n"
+        f"  (A) 最稳：用浏览器插件(如 Get cookies.txt LOCALLY)导出已登录抖音的 "
+        f"cookies.txt，放到本项目目录或设置 VIDEO_COOKIES 环境变量后重试（Chrome 关着也能用）。\n"
+        f"  (B) 绕过下载：抖音 App 里视频→分享→「保存本地」→手机相册→传到电脑→"
+        f"在工具里『选择本地视频』上传（走本地通道，完全不依赖抖音下载/cookie）。"
     )
 
 

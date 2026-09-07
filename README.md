@@ -83,6 +83,9 @@ venv/bin/python app.py   # Linux/Mac
 > 1. **`cookies.txt` 文件（最稳，推荐）**——见下方「导出 cookie」；
 > 2. 浏览器实时 cookie：`--cookies-from-browser chrome / edge / chromium / brave`
 >    （需该浏览器已登录抖音；且**Chrome 不能在下载时运行**，否则 cookie 库被占用而失败）。
+>
+> 💡 **关键**：若你抖音主要用**手机 App**、网页端从没登录过，浏览器实时 cookie **必然失败**。
+> 两条出路二选一：① 先在抖音网页用 Chrome 登录一次，再按下面导出 cookies.txt；② **直接走「App 保存本地 → 本地上传」**（零 cookie 依赖，最省事，推荐先验证）。
 
 ### 导出 cookie（一次性，最稳方案）
 
