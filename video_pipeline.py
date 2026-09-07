@@ -132,20 +132,30 @@ def extract_keyframes(video_path, out_dir, n=4):
 
 # ---------------- 视觉理解 ----------------
 def describe_frames(frame_paths, max_frames=4):
+    """逐张视觉理解（每张单独一次请求，规避 qwen3-vl 多图 HTTP 400 限制）。
+
+    返回与 frame_paths 等长的描述列表（单张失败则该项为空字符串）。
+    """
     if not frame_paths:
         return []
     sel = frame_paths[:max_frames]
-    prompt = ("你是一名视频内容分析助手。下面是一段视频中抽取的几张关键帧画面。"
-              "请逐张用一句话（中文）描述每张画面中可见的关键信息（人物、场景、文字、物体、动作）。"
-              "请严格按如下格式输出，不要多余解释：\n"
-              "帧1：<描述>\n帧2：<描述>\n...")
-    out = _ollama_generate(VISION_MODEL, prompt, images=sel, timeout=240)
-    # 解析 帧N：... 行
+    prompt = ("你是一名视频内容分析助手。请用一句话（中文）描述这张关键帧画面中"
+              "可见的关键信息（人物、场景、文字、物体、动作）。"
+              "只输出一句描述，不要任何前缀或多余解释。")
     descs = []
-    for line in out.splitlines():
-        m = re.match(r"^\s*帧\s*\d+\s*[:：]\s*(.*)$", line)
-        if m:
-            descs.append(m.group(1).strip())
+    for fp in sel:
+        if not fp or not os.path.exists(fp):
+            descs.append("")
+            continue
+        out = _ollama_generate(VISION_MODEL, prompt, images=[fp], timeout=240)
+        # 取第一行非空、且非错误串的内容作为该帧描述
+        line = ""
+        for ln in out.splitlines():
+            ln = ln.strip()
+            if ln and not ln.startswith("[Ollama"):
+                line = ln
+                break
+        descs.append(line)
     return descs
 
 
