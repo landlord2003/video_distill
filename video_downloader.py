@@ -18,22 +18,64 @@ import os
 import re
 import sys
 import time
+import shutil
 import subprocess
 from pathlib import Path
 
+BASE = os.path.dirname(os.path.abspath(__file__))
+
+
+
+def _resolve(module, exe_names):
+    """多重兜底定位一个命令行工具，返回可执行的 argv 前缀或 None。
+
+    - 优先：当前解释器能 `import <module>` -> [sys.executable, "-m", module]
+    - 其次：在 venv 的 Scripts 目录下找 <exe>（跨平台自动补 .exe）
+    - 再次：PATH 里 which <exe>
+    """
+    # 1) 模块方式（最稳：用跑着这个进程的同一个 python）
+    try:
+        __import__(module)
+        return [sys.executable, "-m", module]
+    except Exception:
+        pass
+    # 2) venv Scripts 目录下的可执行文件（Linux 无后缀、Windows 有 .exe）
+    exe_dir = os.path.dirname(sys.executable)
+    for name in exe_names:
+        for cand in (os.path.join(exe_dir, name),
+                    os.path.join(exe_dir, name + ".exe")):
+            if os.path.isfile(cand):
+                return [cand]
+    # 3) PATH 查找
+    for name in exe_names:
+        found = shutil.which(name) or shutil.which(name + ".exe")
+        if found:
+            return [found]
+    return None
+
 
 def get_yt_dlp_cmd():
-    """用当前解释器跑 yt-dlp 模块，无需 yt-dlp.exe 在 PATH。"""
-    return [sys.executable, "-m", "yt_dlp"]
+    """返回 yt-dlp 的可执行 argv 前缀；找不到则抛出带诊断信息的异常。"""
+    cmd = _resolve("yt_dlp", ["yt-dlp", "yt_dlp"])
+    if cmd:
+        return cmd
+    raise RuntimeError(
+        "找不到 yt-dlp：请在该 Python 环境执行 `pip install yt-dlp` 后重启服务。"
+        f"\n(sys.executable={sys.executable})"
+    )
 
 
 def get_ffmpeg_exe():
-    """从 imageio-ffmpeg 拿 ffmpeg 可执行路径（无需系统安装）。"""
+    """返回 ffmpeg 可执行路径；优先 imageio-ffmpeg 自带的，其次 PATH，最后裸名。"""
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe().replace("\\", "/")
     except Exception:
-        return "ffmpeg"
+        pass
+    found = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if found:
+        return found.replace("\\", "/")
+    return "ffmpeg"
 
 
 def normalize_douyin_url(url: str) -> str:
@@ -50,55 +92,90 @@ def normalize_douyin_url(url: str) -> str:
     return u
 
 
+def get_cookies_arg():
+    """返回 cookies 参数列表（最稳：cookie 文件优先，不依赖浏览器实时状态）。
+
+    优先级：
+      1. 环境变量 VIDEO_COOKIES 指向的 cookies.txt（Netscape 格式）
+      2. 项目根目录下 cookies.txt
+    找到则返回 ["--cookies", 路径]，否则返回 []（交给浏览器实时提取兜底）。
+    """
+    cands = []
+    env = os.environ.get("VIDEO_COOKIES")
+    if env:
+        cands.append(env)
+    cands.append(os.path.join(BASE, "cookies.txt"))
+    for c in cands:
+        if c and os.path.isfile(c):
+            return ["--cookies", c]
+    return []
+
+
 def download_douyin(url: str, out_dir: str) -> str:
     """抖音/抖音视频号分享链接 -> 本地 mp4。返回文件路径，失败抛异常。
     抖音 App/网页 -> 视频'分享' -> '复制链接' 得到 v.douyin.com/xxxx 传入；
     或把搜索页/分享页链接（含 modal_id）直接传入，本函数会自动改写。
-    注：默认带水印；抖音现需浏览器 cookie（反爬），本函数会在失败后自动用
-        --cookies-from-browser 依次尝试 chrome/edge/chromium（需你在已登录
-        抖音的浏览器环境下运行）。
+    抖音反爬需登录态 cookie，按优先级尝试：
+      1. cookies.txt 文件（VIDEO_COOKIES 环境变量 或 项目内 cookies.txt）——最稳
+      2. 浏览器实时 cookie（chrome/edge/chromium/brave，需该浏览器已登录抖音）
+    若都失败，抛出带明确指引的异常。
     """
     url = normalize_douyin_url(url)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     tmpl = str(out_dir / "%(id)s.%(ext)s")
-    base = get_yt_dlp_cmd() + [
-        "-f", "bestvideo+bestaudio/best",
-        "--no-playlist", "--merge-output-format", "mp4",
-        "--no-warnings",
-        "-o", tmpl,
-    ]
-    # 依次尝试：无 cookie -> 浏览器 cookie（抖音反爬常需）
-    browsers = ["", "chrome", "edge", "chromium", "brave"]
+    cookie_file = get_cookies_arg()
+
+    def build(base_extra):
+        return get_yt_dlp_cmd() + [
+            "-f", "bestvideo+bestaudio/best",
+            "--no-playlist", "--merge-output-format", "mp4",
+            "--no-warnings",
+            "-o", tmpl,
+        ] + base_extra + [url]
+
     last_err = None
-    produced = []
-    for br in browsers:
-        cmd = list(base)
-        if br:
-            cmd += ["--cookies-from-browser", br]
+    # 1) 优先用 cookies.txt（不需要 Chrome 在跑，最稳）
+    if cookie_file:
         try:
-            subprocess.run(cmd + [url], check=True, timeout=300, env=dict(os.environ))
+            subprocess.run(build(cookie_file), check=True, timeout=300, env=dict(os.environ))
+            return _pick(out_dir, last_err)
         except subprocess.TimeoutExpired:
             last_err = "下载超时（抖音响应慢/被拦截），请重试或检查网络/代理"
-            continue
+        except subprocess.CalledProcessError as e:
+            last_err = (f"用 cookies.txt 下载失败（退出码 {e.returncode}）："
+                        "请确认 cookies.txt 来自已登录抖音的浏览器且未过期")
+        except FileNotFoundError as e:
+            last_err = "找不到 yt-dlp：请用 venv 的 python 运行 `pip install yt-dlp`"
+    # 2) 退化：浏览器实时 cookie
+    for br in ("chrome", "edge", "chromium", "brave"):
+        try:
+            subprocess.run(build(["--cookies-from-browser", br]), check=True,
+                          timeout=300, env=dict(os.environ))
+            return _pick(out_dir, last_err)
+        except subprocess.TimeoutExpired:
+            last_err = "下载超时（抖音响应慢/被拦截），请重试或检查网络/代理"
+        except subprocess.CalledProcessError as e:
+            last_err = f"浏览器({br}) cookie 提取失败（退出码 {e.returncode}），可能未登录抖音或 Chrome 正占用 cookie 库"
         except FileNotFoundError as e:
             last_err = "找不到 yt-dlp：请用 venv 的 python 运行 `pip install yt-dlp`"
             break
-        except subprocess.CalledProcessError as e:
-            last_err = f"yt-dlp 退出码 {e.returncode}（可能需登录抖音的浏览器 cookie）"
-            continue
-        # 检查产出
-        files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if files:
-            return str(files[0])
-        alt = sorted(out_dir.glob("*.mkv"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if alt:
-            return str(alt[0])
-        last_err = "yt-dlp 未产出视频文件，可能链接失效 / 需登录 cookie / 被风控"
     raise FileNotFoundError(
         f"抖音下载失败：{last_err}。\n"
-        f"解决：在已登录抖音的 Chrome/Edge 浏览器会话下运行本服务，"
-        f"或导出 cookies.txt 后改用直链下载。"
+        f"最稳解决：用浏览器插件(如 Get cookies.txt LOCALLY)导出已登录抖音的 "
+        f"cookies.txt，放到项目目录或设置 VIDEO_COOKIES 环境变量后重试。"
+    )
+
+
+def _pick(out_dir, last_err):
+    files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if files:
+        return str(files[0])
+    alt = sorted(out_dir.glob("*.mkv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if alt:
+        return str(alt[0])
+    raise FileNotFoundError(
+        "yt-dlp 未产出视频文件，可能链接失效 / 需登录 cookie / 被风控"
     )
 
 

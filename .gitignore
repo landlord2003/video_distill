@@ -23,6 +23,10 @@ distilled/
 # 本地项目配置（不入库）
 .workbuddy/
 
+# 抖音/视频号 cookie 文件（含登录态，严禁入库！）
+cookies.txt
+*.cookies.txt
+
 # 系统/编辑器
 .DS_Store
 Thumbs.db

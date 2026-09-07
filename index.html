@@ -126,6 +126,9 @@
     <!-- 视频号/抖音 整理面板 -->
     <div id="video-panel">
       <div class="row" style="margin-top:6px">
+        <span id="vhealth" style="font-size:12px;color:var(--mut)">工具状态：检测中…</span>
+      </div>
+      <div class="row" style="margin-top:6px">
         <textarea id="vurls" placeholder="粘贴抖音 / 视频号直链，每行一个（支持批量清单，一次处理 N 条）&#10;例：https://v.douyin.com/xxxx&#10;https://.../xxx.m3u8"></textarea>
       </div>
       <div class="row">
@@ -157,6 +160,24 @@ async function loadHist(){
 }
 function stxt(s){return s==='done'?'✓ 完成':s==='error'?'✗ 失败':s==='running'?'… 进行中':'·'}
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+// 视频工具健康自检：确认当前服务加载的是新代码、yt-dlp/ffmpeg 可用
+async function checkVideoHealth(){
+  const el = document.getElementById('vhealth');
+  if(!el) return;
+  try{
+    const r = await fetch('/api/video/health');
+    const h = await r.json();
+    const t = h.tools||{};
+    const ok = x => x && x.ok ? '🟢' : '🔴';
+    const yt = t.yt_dlp, ff = t.ffmpeg, fw = t.faster_whisper;
+    el.innerHTML = `工具状态：${ok(yt)}yt-dlp ${ok(ff)}ffmpeg ${ok(fw)?'🟡转写(模型待下载)':'🔴'}`
+      + (yt && !yt.ok ? ` <b style="color:#e06c75">yt-dlp 缺失，请重装依赖后重启服务</b>` : '')
+      + (ff && !ff.ok ? ` <b style="color:#e06c75">ffmpeg 缺失</b>` : '');
+  }catch(e){
+    el.textContent = '工具状态：检测失败（服务未启动？）';
+  }
+}
 
 async function crawl(){
   const url = $('#url').value.trim();
@@ -248,6 +269,7 @@ function switchTab(t, btn){
   $('#status').style.display = web?'block':'none';
   $('#result').style.display = web?'block':'none';
   $('#video-panel').style.display = web?'none':'flex';
+  if(!web) checkVideoHealth();
 }
 async function runVideo(){
   const urls = $('#vurls').value.split('\n').map(s=>s.trim()).filter(Boolean);

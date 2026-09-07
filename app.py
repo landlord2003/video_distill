@@ -342,6 +342,29 @@ class Handler(BaseHTTPRequestHandler):
                          "md_len", "status", "vault_path"], r)))
             self._send(200, rows)
             return
+        if p == "/api/video/health":
+            # 工具可用性自诊断：确认当前进程加载的是新代码、依赖齐全
+            health = {"python": sys.executable, "tools": {}}
+            try:
+                yt = vdl.get_yt_dlp_cmd()
+                health["tools"]["yt_dlp"] = {"ok": True, "cmd": yt}
+            except Exception as e:
+                health["tools"]["yt_dlp"] = {"ok": False, "error": str(e)[:300]}
+            try:
+                ff = vp.get_ffmpeg()
+                health["tools"]["ffmpeg"] = {"ok": bool(ff and os.path.exists(ff)),
+                                             "path": ff}
+            except Exception as e:
+                health["tools"]["ffmpeg"] = {"ok": False, "error": str(e)[:300]}
+            try:
+                import faster_whisper  # noqa
+                health["tools"]["faster_whisper"] = {"ok": True}
+            except Exception as e:
+                health["tools"]["faster_whisper"] = {"ok": False,
+                                                     "error": "未安装（转写将降级）"}
+            health["vault"] = vp.VAULT
+            self._send(200, health)
+            return
         self._send(404, {"error": "not found"})
 
     def do_DELETE(self):

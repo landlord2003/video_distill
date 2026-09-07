@@ -59,6 +59,18 @@ venv/bin/python app.py   # Linux/Mac
 
 打开 http://127.0.0.1:8788 → 点「🎬 视频号/抖音」。
 
+> 🔴 **重要：改完代码必须彻底重启服务！** 反复出现 `FileNotFoundError: [WinError 2]`
+> 通常是**旧 `app.py` 进程没退、仍占着 8788 端口**在跑旧代码。
+> 重启前先杀掉所有旧进程，确保只有一个服务在跑：
+> ```bash
+> # Windows：任务管理器结束所有 python / app.py 进程，或：
+> for /f "tokens=5" %a in ('netstat -ano ^| findstr :8788') do taskkill /PID %a /F
+> # 再启动：
+> launch.bat
+> ```
+> 打开页面切到「🎬 视频号/抖音」标签页，顶部会显示 **工具状态指示灯**
+> （🟢yt-dlp 🟢ffmpeg 🟡转写）——可立即确认当前服务加载的是新代码、依赖齐全。
+
 ## 4. 怎么把视频弄到手（获取层）
 
 | 平台 | 获取方式 | 说明 |
@@ -67,9 +79,23 @@ venv/bin/python app.py   # Linux/Mac
 | **视频号直链** | 抓包（Charles/mitmproxy）拿 `.m3u8/.mp4` → 粘贴 | 需你绕过微信 SSL Pinning，微信一更新可能失效 |
 | **本地文件** | 微信「保存到手机」/ 抖音「保存本地」→ 上传 | 最稳，立即可用 |
 
-> ⚠️ **抖音反爬**：现多数视频需浏览器 cookie。工具会自动依次尝试
-> `--cookies-from-browser chrome / edge / chromium`，**请在你已登录抖音的浏览器环境下运行本服务**。
-> 仍失败时可导出 `cookies.txt` 后改用直链下载。
+> ⚠️ **抖音反爬**：现多数视频需浏览器 cookie。工具会按以下顺序尝试：
+> 1. **`cookies.txt` 文件（最稳，推荐）**——见下方「导出 cookie」；
+> 2. 浏览器实时 cookie：`--cookies-from-browser chrome / edge / chromium / brave`
+>    （需该浏览器已登录抖音；且**Chrome 不能在下载时运行**，否则 cookie 库被占用而失败）。
+
+### 导出 cookie（一次性，最稳方案）
+
+1. 用**已登录抖音**的 Chrome 打开抖音网页；
+2. 安装浏览器插件「Get cookies.txt LOCALLY」（或「EditThisCookie」导出 Netscape 格式）；
+3. 导出 `cookies.txt`，放到本项目根目录，或设置环境变量：
+   ```bash
+   set VIDEO_COOKIES=C:\path\to\cookies.txt    # Windows
+   export VIDEO_COOKIES=/path/to/cookies.txt   # Linux/Mac
+   ```
+4. 重启服务后即可直接下载，无需 Chrome 实时在线。
+
+> 🔴 **cookies.txt 含登录态，已被 .gitignore 忽略，切勿提交！**
 
 > ⚠️ **关于「自动监控某视频号」**：抖音/视频号均无公开 feed/API，无法像 RSS 那样自动抓某号新视频；
 > 真正自动化需逆向协议（灰产+封号），本项目不提供。你只需做「复制链接 / 存相册」动作，其余全自动。
@@ -92,6 +118,7 @@ export VIDEO_VAULT_DIR=/path/to/vault           # Linux/Mac
 | POST | `/api/video` | body: `{"urls":[...], "write_vault":true}`，批量下载+整理 |
 | POST | `/api/video/upload` | multipart 上传本地视频文件 |
 | GET  | `/api/video/history` | 视频整理历史 |
+| GET  | `/api/video/health` | 工具可用性自检（yt-dlp/ffmpeg/whisper 状态） |
 
 ## 7. 项目结构
 
