@@ -132,6 +132,12 @@ def download_douyin(url: str, out_dir: str) -> str:
             "-f", "bestvideo+bestaudio/best",
             "--no-playlist", "--merge-output-format", "mp4",
             "--no-warnings",
+            # 抖音现强制浏览器指纹：必须带 UA + Referer，否则即便有 cookie 也报
+            # "Fresh cookies (not necessarily logged in) are needed"
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0.0.0 Safari/537.36",
+            "--referer", "https://www.douyin.com/",
             "-o", tmpl,
         ] + base_extra + [url]
 

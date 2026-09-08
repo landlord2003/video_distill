@@ -36,7 +36,10 @@ else:
     VAULT = os.path.join(BASE, "distilled")
 
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-SUMMARY_MODEL = "qwen3:14b"
+# 总结模型可通过环境变量 SUMMARY_MODEL 覆盖（默认 qwen3:14b）。
+# 注：本机 RTX 5070 的 Ollama 未启用 GPU（Vulkan/驱动不可用，全 CPU 推理），
+# qwen3:14b(9.8G) 在 CPU 上慢到超时；本机部署用 qwen3-vl:8b(6.1G) 更稳。
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "qwen3:14b")
 VISION_MODEL = "qwen3-vl:8b"
 TRANSCRIBE_MODEL = "tiny"                            # faster-whisper 模型尺寸
 N_KEYFRAMES = 10                                     # 抽帧数（教程类视频步骤还原靠帧密度）
@@ -56,9 +59,12 @@ def get_ffmpeg():
 
 
 # ---------------- Ollama ----------------
-def _ollama_generate(model, prompt, images=None, timeout=180):
-    """调用本机 Ollama /api/generate，返回文本。images: 本地图片路径列表。"""
+def _ollama_generate(model, prompt, images=None, timeout=180, keep_alive=None):
+    """调用本机 Ollama /api/generate，返回文本。images: 本地图片路径列表。
+    keep_alive: 模型驻留显存时长（如 "10m"/"5m"），用于避免大模型被反复冷加载。"""
     payload = {"model": model, "prompt": prompt, "stream": False}
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
     if images:
         payload["images"] = [b64(p) for p in images if p and os.path.exists(p)]
     data = json.dumps(payload).encode("utf-8")
@@ -186,7 +192,7 @@ def summarize(transcript, frame_descs, source_meta):
         f"【关键帧画面描述】\n{descs_text}\n\n"
         f"【语音转写】\n{transcript_text}\n"
     )
-    raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=300)
+    raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1800, keep_alive="10m")
     # 解析 JSON（容错：去掉代码块标记）
     raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
     try:
