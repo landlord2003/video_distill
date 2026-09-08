@@ -173,10 +173,23 @@ def download_douyin(url: str, out_dir: str) -> str:
         except FileNotFoundError as e:
             last_err = "找不到 yt-dlp：请用 venv 的 python 运行 `pip install yt-dlp`"
             break
+    # 3) 兜底：playwright 拦截直链（见 douyin_auto.py）
+    #    yt-dlp 的 DouyinIE 要前端实时生成的 msToken，静态 cookie 拿不到；
+    #    playwright 打开页面让抖音前端自己发 detail 请求，我们拦截响应拿直链。
+    try:
+        import douyin_auto
+        tried.append("playwright拦截(Edge直链)")
+        try:
+            return douyin_auto.download_douyin_playwright(url, str(out_dir))
+        except Exception as pe:
+            last_err = f"playwright 拦截方案失败：{pe}"
+    except ImportError:
+        tried.append("playwright拦截(未安装 playwright，跳过)")
+
     raise FileNotFoundError(
-        f"抖音下载失败：已依次尝试 [{' / '.join(tried)}] 均失败。\n"
+        f"抖音下载失败：已依次尝试 [{', '.join(tried)}] 均失败。\n"
         f"最后错误：{last_err}\n\n"
-        f"抖音现强制登录态，两条路选一：\n"
+        f"两条路选一：\n"
         f"  (A) 最稳：用浏览器插件(如 Get cookies.txt LOCALLY)导出已登录抖音的 "
         f"cookies.txt，放到本项目目录或设置 VIDEO_COOKIES 环境变量后重试（Chrome 关着也能用）。\n"
         f"  (B) 绕过下载：抖音 App 里视频→分享→「保存本地」→手机相册→传到电脑→"

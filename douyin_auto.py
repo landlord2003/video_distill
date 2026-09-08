@@ -10,22 +10,52 @@ douyin_auto.py — 用 playwright 复用已登录 cookie 抓取抖音视频直�
   本脚本改用 playwright 打开视频页（注入本机导出的登录 cookie），
   由抖音前端自行生成 msToken 并完成 detail 请求，我们拦截该响应
   直接拿到 aweme_detail 里的视频直链，再用 ffmpeg 下载。
-不依赖 yt-dlp 的抖音提取器，也不锁用户浏览器（用独立临时 profile）。
+不依赖 yt-dlp 的抖音提取器，也不锁用户浏览器（用独立临时 profile，
+channel="msedge" 直接复用系统已装的 Edge，无需下载 chromium）。
 
-用法：
-  python douyin_auto.py <douyin_url_or_id> [out_dir]
+双用法：
+  1) 命令行：python douyin_auto.py <douyin_url_or_id> [out_dir]
+  2) 被导入：from douyin_auto import download_douyin_playwright
+     path = download_douyin_playwright(url_or_id, out_dir)  # 失败抛 RuntimeError
 """
-import os, sys, time, re, json, subprocess
+import os
+import re
+import sys
+import shutil
+import time
+import subprocess
 
 PROJ = os.path.dirname(os.path.abspath(__file__))
 COOKIE_FILE = os.path.join(PROJ, "cookies.txt")
-FF_BIN = os.path.join(PROJ, "venv", "Lib", "site-packages",
-                      "imageio_ffmpeg", "binaries",
-                      "ffmpeg-win-x86_64-v7.1.exe")
 
-# 清掉继承的代理，避免 chromium / ffmpeg 走死代理
-for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
-    os.environ.pop(k, None)
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0")
+
+
+def _no_proxy_env():
+    """返回去掉代理变量的环境副本（抖音是国内 CDN，走代理反而失败）。"""
+    env = dict(os.environ)
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+              "ALL_PROXY", "all_proxy"):
+        env.pop(k, None)
+    return env
+
+
+def get_ffmpeg():
+    """动态定位 ffmpeg：imageio-ffmpeg 自带的优先，其次 PATH。"""
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe().replace("\\", "/")
+    except Exception:
+        return shutil.which("ffmpeg") or shutil.which("ffmpeg.exe") or "ffmpeg"
+
+
+def resolve_cookie_file(explicit=None):
+    """cookie 文件解析：显式指定 > VIDEO_COOKIES 环境变量 > 项目内 cookies.txt。"""
+    for c in (explicit, os.environ.get("VIDEO_COOKIES"), COOKIE_FILE):
+        if c and os.path.isfile(c):
+            return c
+    return None
 
 
 def parse_netscape(path):
@@ -72,52 +102,40 @@ def extract_video_url(aweme):
     return None, None
 
 
-def download(url, out_path):
-    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0")
-    headers = f"Referer: https://www.douyin.com/\r\nUser-Agent: {ua}"
-    # 优先带 Referer 下载（douyinvod 直链需要）
-    cmd = [FF_BIN, "-y", "-headers", headers, "-i", url, "-c", "copy", out_path]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    ok = r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
-    if ok:
-        return True
-    # 兜底：不带 header 重试
-    cmd2 = [FF_BIN, "-y", "-i", url, "-c", "copy", out_path]
-    r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=300)
-    return r2.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0
+def _log(verbose, msg):
+    if verbose:
+        print(msg)
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("用法: python douyin_auto.py <douyin_url_or_id> [out_dir]")
-        sys.exit(1)
-    arg = sys.argv[1]
-    out_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(PROJ, "downloads")
-    os.makedirs(out_dir, exist_ok=True)
+def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60):
+    """playwright 打开视频页并拦截 aweme_detail，返回 (vid, 标题, 视频直链)。
 
-    # 解析 aweme_id
-    m = re.search(r"(?:video/|modal_id=)(\d{5,})", arg)
+    失败抛 RuntimeError（含原因）。
+    """
+    m = re.search(r"(?:video/|modal_id=)(\d{5,})", arg or "")
     if m:
         vid = m.group(1)
     else:
-        vid = arg.strip() if arg.strip().isdigit() else None
+        vid = arg.strip() if (arg or "").strip().isdigit() else None
     if not vid:
-        print("无法从参数解析出视频ID:", arg)
-        sys.exit(1)
-    url = f"https://www.douyin.com/video/{vid}"
-    print("目标视频ID:", vid, "| 打开:", url)
+        raise RuntimeError(f"无法从参数解析出视频ID: {arg!r}")
 
-    if not os.path.exists(COOKIE_FILE):
-        print("缺少 cookies.txt，请先用已登录抖音的浏览器导出 Netscape 格式 cookie")
-        sys.exit(1)
-    cookies = parse_netscape(COOKIE_FILE)
-    print(f"已加载 {len(cookies)} 个 cookie")
+    cf = resolve_cookie_file(cookie_file)
+    if not cf:
+        raise RuntimeError(
+            "缺少 cookies.txt：请先用已登录抖音的浏览器导出 Netscape 格式 cookie"
+            "（放到项目目录或设 VIDEO_COOKIES 环境变量）")
+    cookies = parse_netscape(cf)
+    _log(verbose, f"目标视频ID: {vid} | 已加载 {len(cookies)} 个 cookie")
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise RuntimeError(f"playwright 未安装：{e}（pip install playwright）")
 
     detail = {}
     req_log = []
-
-    from playwright.sync_api import sync_playwright
+    url = f"https://www.douyin.com/video/{vid}"
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel="msedge", headless=True,
@@ -125,8 +143,7 @@ def main():
                   "--disable-blink-features=AutomationControlled"],
         )
         context = browser.new_context(
-            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"),
+            user_agent=UA,
             ignore_https_errors=True,
         )
         # 反检测：抹掉 webdriver 标志
@@ -140,73 +157,107 @@ def main():
             if "aweme" in u or "douyin" in u:
                 req_log.append(u)
                 if "aweme/v1/web/aweme/detail" in u:
-                    print("  [req] detail 请求已发出:", u[:140])
+                    _log(verbose, "  [req] detail 请求已发出: " + u[:140])
 
         def on_response(resp):
             u = resp.url
             if "aweme/v1/web/aweme/detail" in u:
-                print(f"  [resp] detail 状态={resp.status} {u[:120]}")
+                _log(verbose, f"  [resp] detail 状态={resp.status} {u[:120]}")
                 if not detail:
                     try:
                         j = resp.json()
                         aw = j.get("aweme_detail")
                         if aw:
                             detail["data"] = aw
-                            print("  [拦截] 抓到 aweme_detail")
+                            _log(verbose, "  [拦截] 抓到 aweme_detail")
                         else:
-                            print("  [resp] 无 aweme_detail 字段, body前160:",
-                                  str(j)[:160])
+                            _log(verbose, "  [resp] 无 aweme_detail 字段, body前160: "
+                                 + str(j)[:160])
                     except Exception as e:
-                        print("  [resp] json解析失败:", e)
+                        _log(verbose, f"  [resp] json解析失败: {e}")
 
         page.on("request", on_request)
         page.on("response", on_response)
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
         except Exception as e:
-            print("  页面打开异常(继续等拦截):", e)
-        # 等待拦截（最多 60s），期间探查登录态
-        for i in range(60):
+            _log(verbose, f"  页面打开异常(继续等拦截): {e}")
+        # 等待拦截，期间探查登录态
+        for i in range(wait_secs):
             if detail:
                 break
-            if i % 10 == 9:
+            if verbose and i % 10 == 9:
                 try:
                     curl = page.url
                     txt = page.inner_text("body")[:80].replace("\n", " ")
                     has_login = page.evaluate(
                         "document.cookie.includes('sessionid') || "
                         "document.querySelector('[data-e2e=login]')===null")
-                    print(f"  [等待{i+1}s] url={curl[:60]} login~={has_login} text='{txt}'")
+                    _log(verbose, f"  [等待{i+1}s] url={curl[:60]} "
+                         f"login~={has_login} text='{txt}'")
                 except Exception:
                     pass
             time.sleep(1)
-        if not detail:
-            print("  调试: 共观察到", len(req_log), "条 aweme/douyin 相关请求")
-            for r in req_log[:15]:
-                print("    -", r[:140])
         browser.close()
 
     if not detail:
-        print("✗ 未拦截到 aweme_detail（可能页面被验证拦截或未登录）")
-        sys.exit(1)
+        if verbose:
+            print("  调试: 共观察到", len(req_log), "条 aweme/douyin 相关请求")
+            for r in req_log[:15]:
+                print("    -", r[:140])
+        raise RuntimeError("未拦截到 aweme_detail（可能页面被验证拦截或未登录）")
 
     aw = detail["data"]
     title = (aw.get("desc") or "").strip() or vid
     vurl, src = extract_video_url(aw)
-    print(f"标题: {title}")
-    print(f"视频直链来源字段: {src}")
+    _log(verbose, f"标题: {title} | 直链来源字段: {src}")
     if not vurl:
-        print("✗ aweme_detail 中无可用视频地址")
-        sys.exit(1)
-    print("直链(截断):", vurl[:120], "...")
+        raise RuntimeError("aweme_detail 中无可用视频地址")
+    return vid, title, vurl
 
+
+def download(vurl, out_path):
+    """ffmpeg 下载直链：优先带 Referer（douyinvod 需要），失败去 header 重试。"""
+    env = _no_proxy_env()
+    headers = f"Referer: https://www.douyin.com/\r\nUser-Agent: {UA}"
+    cmd = [get_ffmpeg(), "-y", "-headers", headers, "-i", vurl, "-c", "copy", out_path]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+        if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return True
+        # 兜底：不带 header 重试
+        cmd2 = [get_ffmpeg(), "-y", "-i", vurl, "-c", "copy", out_path]
+        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=300, env=env)
+        return r2.returncode == 0 and os.path.exists(out_path) \
+            and os.path.getsize(out_path) > 0
+    except Exception:
+        return False
+
+
+def download_douyin_playwright(arg, out_dir, cookie_file=None, verbose=True):
+    """对外主接口：抖音链接/ID -> 本地 mp4。成功返回文件路径，失败抛 RuntimeError。"""
+    os.makedirs(out_dir, exist_ok=True)
+    vid, title, vurl = fetch_direct_url(arg, cookie_file=cookie_file, verbose=verbose)
     safe = re.sub(r'[\\/:*?"<>|]', "_", title)[:60]
     out_path = os.path.join(out_dir, f"{vid}_{safe}.mp4")
-    print("开始下载 ->", out_path)
+    _log(verbose, f"开始下载 -> {out_path}")
     if download(vurl, out_path):
-        print("✓ 下载成功:", out_path, f"({os.path.getsize(out_path)//1024} KB)")
-    else:
-        print("✗ 下载失败（直链可能过期或需登录）")
+        _log(verbose, f"✓ 下载成功: {out_path} ({os.path.getsize(out_path)//1024} KB)")
+        return out_path
+    raise RuntimeError("下载失败（直链可能过期或需登录）")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("用法: python douyin_auto.py <douyin_url_or_id> [out_dir]")
+        sys.exit(1)
+    arg = sys.argv[1]
+    out_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(PROJ, "downloads")
+    try:
+        download_douyin_playwright(arg, out_dir)
+    except RuntimeError as e:
+        print("✗", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

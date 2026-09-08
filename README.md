@@ -126,14 +126,17 @@ venv/bin/python app.py              # Linux/Mac
 | **视频号直链** | 抓包（Charles/mitmproxy）拿 `.m3u8/.mp4` → 粘贴 | 需绕过微信 SSL Pinning，微信更新可能失效 |
 | **本地文件** | 微信「保存到手机」/ 抖音「保存本地」→ 上传 | 最稳，立即可用，零 cookie 依赖 |
 
-> ⚠️ **抖音反爬**：现多数视频需浏览器 cookie。工具按以下顺序尝试：
-> 1. **`cookies.txt` 文件（最稳，推荐）**——见下方「导出 cookie」；
+> ⚠️ **抖音反爬**：现多数视频需浏览器 cookie。工具按以下顺序**自动三级兜底**：
+> 1. **`cookies.txt` 文件 + UA/Referer 指纹（最稳，推荐）**——见下方「导出 cookie」；
 > 2. 浏览器实时 cookie：`--cookies-from-browser chrome / edge / chromium / brave`
->    （需该浏览器已登录抖音；且**Chrome 不能在下载时运行**，否则 cookie 库被占用而失败）。
+>    （需该浏览器已登录抖音；且**Chrome 不能在下载时运行**，否则 cookie 库被占用而失败）；
+> 3. **playwright 拦截直链（`douyin_auto.py`，终极兜底）**——yt-dlp 的抖音提取器要前端实时生成的
+>    msToken（不写 cookie 库、导不出），静态 cookie 方案全失败时自动启用：playwright 无头打开
+>    视频页（复用系统 Edge + 注入 cookies.txt），让抖音前端自己发 detail 请求，拦截响应拿
+>    无水印直链再由 ffmpeg 下载。此路径还能拿到视频真实标题。
 >
-> 💡 **关键**：若你抖音主要用**手机 App**、网页端从没登录过，浏览器实时 cookie **必然失败**。
-> 两条出路二选一：① 先在抖音网页用浏览器登录一次，再按下面导出 `cookies.txt`；
-> ② **直接走「App 保存本地 → 本地上传」**（零 cookie 依赖，最省事，推荐先验证）。
+> 💡 **关键**：只要导出过一次 `cookies.txt`，三级链路全自动，无需人工干预；
+> 若连 cookie 都没有，仍可走「App 保存本地 → 本地上传」（零 cookie 依赖）。
 
 ### 导出 cookie（一次性，最稳方案，支持 Edge / Chrome）
 
@@ -237,7 +240,8 @@ venv\Scripts\python.exe video_pipeline.py videos_inbox/xxxxx.mp4
 ```
 app.py                # Web 服务（标准库 http.server，零额外依赖）
 index.html            # 前端（网页抓取 + 视频号/抖音 两个标签页）
-video_downloader.py   # 获取层：抖音(yt-dlp) / 直链(ffmpeg) / 本地文件 / cookie 处理
+video_downloader.py   # 获取层：抖音三级兜底(yt-dlp+UA/Referer → 浏览器cookie → playwright直链) / 直链(ffmpeg) / 本地文件
+douyin_auto.py        # playwright 拦截抖音 aweme/detail 拿无水印直链 + ffmpeg 下载（可导入复用，也可独立 CLI）
 video_pipeline.py     # 整理流水线：抽帧→逐帧视觉理解→AI总结→Markdown→入库
 wechat_dat.py         # 微信 .dat 缓存解密（图片类，可选工具）
 vendor/               # 前端依赖（marked / dompurify）
