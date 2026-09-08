@@ -215,7 +215,8 @@ def download_direct(url: str, out_dir: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     out = str(out_dir / "direct_%d.mp4" % int(time.time()))
     ff = get_ffmpeg_exe()
-    subprocess.run([ff, "-y", "-i", url, "-c", "copy", out], check=True)
+    subprocess.run([ff, "-y", "-i", url, "-c", "copy", out], check=True,
+                   timeout=600, stdin=subprocess.DEVNULL)
     return out
 
 

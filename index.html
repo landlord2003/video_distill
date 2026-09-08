@@ -350,20 +350,31 @@ async function runVideo(){
   $('#vstatus').innerHTML = '<span class="spinner"></span> 正在处理（抖音链接需联网下载，整理全本地）…';
   let results = [];
   try{
-    if(urls.length){
-      const r = await fetch('/api/video',{method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({urls, write_vault:wv})});
-      const d = await r.json();
-      results = d.results || [];
+    // 逐条提交：每条链接一个请求，处理完立即渲染。
+    // 好处：① 单条卡住/失败不影响其余；② 页面能看到第几条在处理；③ 服务端逐条入库。
+    for(let i=0;i<urls.length;i++){
+      $('#vstatus').innerHTML = `<span class="spinner"></span> (${i+1}/${urls.length}) 正在处理：${esc(urls[i].slice(0,60))}…`;
+      try{
+        const r = await fetch('/api/video',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({urls:[urls[i]], write_vault:wv})});
+        const d = await r.json();
+        results = results.concat(d.results || []);
+      }catch(err){
+        results.push({source_url:urls[i], ok:false, error:'请求失败: '+err.message, markdown:''});
+      }
+      renderVideo(results);
     }
     if(files.length){
-      for(const f of files){
+      for(let j=0;j<files.length;j++){
+        const f = files[j];
+        $('#vstatus').innerHTML = `<span class="spinner"></span> 上传本地文件 (${j+1}/${files.length})：${esc(f.name)}…`;
         const fd = new FormData();
         fd.append('file', f, f.name);
         const r = await fetch('/api/video/upload',{method:'POST',body:fd});
         const d = await r.json();
         results = results.concat(d.results || []);
+        renderVideo(results);
       }
     }
     if(!results.length){ $('#vstatus').textContent='未提交任何链接或文件'; }

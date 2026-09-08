@@ -39,6 +39,7 @@ import video_pipeline as vp
 
 # ---------- DB ----------
 _lock = threading.Lock()
+_video_lock = threading.Lock()   # 视频流水线全局互斥：多请求串行，防 Ollama/CPU 争抢
 
 
 def init_db():
@@ -168,20 +169,36 @@ def do_video_pipeline(source_url, video_path, write_vault):
 
 
 def do_video_batch(urls, write_vault):
-    """链接清单批量：下载每个 url 再整理。返回结果列表。"""
-    inbox = vp.INBOX
+    """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
+
+    设计要点（防止一条卡死拖垮整批）：
+    - 每条处理完立即 save_video 写 DB，后面哪怕卡住，已完成的记录也都在；
+    - 单条异常被捕获转为 error 记录，不会中断循环；
+    - 全程持 _video_lock 串行执行，避免多个并发请求同时压本机 Ollama/CPU。
+    """
     results = []
-    for item in vdl.download_batch(urls, inbox):
-        url = item["url"]
-        path = item["path"]
-        err = item["error"]
-        if not path:
-            results.append({"source_url": url, "ok": False,
-                            "error": err or "下载失败", "markdown": ""})
-            continue
-        rec = do_video_pipeline(url, path, write_vault)
-        rec["source_url"] = url
-        results.append(rec)
+    with _video_lock:
+        for raw in urls:
+            url = (raw or "").strip()
+            if not url or url.startswith("#"):
+                continue
+            try:
+                path, err = vdl.download_one(url, vp.INBOX)
+                if not path:
+                    rec = {"source_url": url, "ok": False,
+                           "error": err or "下载失败", "markdown": ""}
+                else:
+                    rec = do_video_pipeline(url, path, write_vault)
+                    rec["source_url"] = url
+            except Exception as e:
+                rec = {"source_url": url, "ok": False,
+                       "error": f"{type(e).__name__}: {e}", "markdown": ""}
+            try:
+                vid, _ = save_video(rec)
+                rec["id"] = vid
+            except Exception as se:
+                rec["save_error"] = str(se)[:200]
+            results.append(rec)
     return results
 
 
@@ -207,8 +224,20 @@ def parse_multipart(body, boundary):
 
 
 def save_video(rec):
-    vid = short_id(rec.get("source_url") or rec.get("title") or "video")
     with _lock:
+        src = rec.get("source_url", "")
+        vid = ""
+        # 去重：同一来源链接，成功记录复用原 id 覆盖更新，失败记录复用原失败行，
+        # 避免重复提交/重试在列表里堆积重复条目
+        if src:
+            want = "done" if rec.get("ok") else "error"
+            with db() as c:
+                row = c.execute("SELECT id FROM videos WHERE source_url=? AND status=?",
+                                (src, want)).fetchone()
+            if row:
+                vid = row[0]
+        if not vid:
+            vid = short_id(src or rec.get("title") or "video")
         path = os.path.join(CRAWLS_DIR, "video_" + vid + ".md")
         md = rec.get("markdown") or ""
         with io.open(path, "w", encoding="utf-8") as f:
@@ -492,9 +521,6 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "urls 不能为空"})
                     return
                 results = do_video_batch(urls, write_vault)
-                for rec in results:
-                    vid, _ = save_video(rec)
-                    rec["id"] = vid
                 self._send(200, {"results": results})
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
@@ -518,7 +544,8 @@ class Handler(BaseHTTPRequestHandler):
                     outp = os.path.join(vp.INBOX, fname)
                     with open(outp, "wb") as f:
                         f.write(fdata)
-                    rec = do_video_pipeline("", outp, write_vault)
+                    with _video_lock:
+                        rec = do_video_pipeline("", outp, write_vault)
                     rec["source_url"] = "(本地文件) " + fname
                     vid, _ = save_video(rec)
                     rec["id"] = vid
