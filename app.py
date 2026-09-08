@@ -416,6 +416,33 @@ class Handler(BaseHTTPRequestHandler):
                         os.remove(fp)
             self._send(200, {"ok": True})
             return
+        m = re.match(r"^/api/video/([^/]+)$", self.path)
+        if m:
+            vid = m.group(1)
+            removed = []
+            with _lock:
+                with db() as c:
+                    row = c.execute(
+                        "SELECT vault_path FROM videos WHERE id=?", (vid,)).fetchone()
+                    c.execute("DELETE FROM videos WHERE id=?", (vid,))
+                    c.commit()
+            # 删知识库内的笔记（自包含 md，无外部引用）
+            if row and row[0] and os.path.isfile(row[0]):
+                try:
+                    os.remove(row[0])
+                    removed.append(row[0])
+                except Exception:
+                    pass
+            # 删服务端的 md 副本
+            fp = os.path.join(CRAWLS_DIR, "video_" + vid + ".md")
+            if os.path.exists(fp):
+                try:
+                    os.remove(fp)
+                    removed.append(fp)
+                except Exception:
+                    pass
+            self._send(200, {"ok": True, "removed": removed})
+            return
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
