@@ -41,7 +41,7 @@ OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # 需用 qwen3-vl:8b(6.1G) 才稳；有 GPU 的机器（如 RTX 5070）可直接用 qwen3:14b。
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "qwen3:14b")
 VISION_MODEL = "qwen3-vl:8b"
-TRANSCRIBE_MODEL = "tiny"                            # faster-whisper 模型尺寸
+TRANSCRIBE_MODEL = os.environ.get("VIDEO_WHISPER", "small")   # faster-whisper 模型尺寸
 N_KEYFRAMES = 10                                     # 抽帧数（教程类视频步骤还原靠帧密度）
 
 for _d in (INBOX, FRAMES, VAULT):
@@ -90,6 +90,22 @@ def b64(path):
 
 
 # ---------------- 转写 ----------------
+WHISPER_LOCAL_ROOT = os.path.join(BASE, "whisper_models")
+
+
+def _resolve_whisper_source(model_size):
+    """优先本地模型目录（国内 ModelScope 预下载，绕开 HF CDN 被墙），否则回退模型名。"""
+    local = os.path.join(WHISPER_LOCAL_ROOT, f"faster-whisper-{model_size}", "model.bin")
+    if os.path.isfile(local) and os.path.getsize(local) > 1_000_000:
+        return os.path.dirname(local)
+    # 指定尺寸的本地模型缺失时，回退到任何可用的本地模型（small -> tiny）
+    if model_size != "tiny":
+        local_tiny = os.path.join(WHISPER_LOCAL_ROOT, "faster-whisper-tiny", "model.bin")
+        if os.path.isfile(local_tiny) and os.path.getsize(local_tiny) > 1_000_000:
+            return os.path.dirname(local_tiny)
+    return model_size
+
+
 def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
     """faster-whisper 转写。不可用则返回 ('', 原因)。"""
     try:
@@ -97,9 +113,21 @@ def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
     except Exception as e:
         return "", f"faster-whisper 未安装：{e}"
     try:
-        # device auto 在 Blackwell(RTX50x0) 上会落到 CPU 若 CUDA 不可用；int8 省显存
-        model = WhisperModel(model_size, device="auto", compute_type="int8")
-        segs, _ = model.transcribe(video_path, beam_size=5, language="zh")
+        src = _resolve_whisper_source(model_size)
+        # 本机装的是 CUDA 版 ctranslate2 但缺 cublas DLL：懒加载在 transcribe 阶段才爆，
+        # 所以先跑一次，若报 CUDA 相关错误就用 CPU 模型重建重试
+        try:
+            model = WhisperModel(src, device="auto", compute_type="int8")
+            segs, _ = model.transcribe(video_path, beam_size=5, language="zh")
+            text = "\n".join(s.text for s in segs).strip()
+            return text, None
+        except RuntimeError as e:
+            if "cublas" not in str(e).lower() and "cuda" not in str(e).lower() \
+                    and "cudnn" not in str(e).lower() and "gpu" not in str(e).lower():
+                raise
+        model = WhisperModel(src, device="cpu", compute_type="int8")
+        segs, _ = model.transcribe(video_path, beam_size=5, language="zh",
+                                   initial_prompt="以下是普通话的视频旁白，请用简体中文转写。")
         text = "\n".join(s.text for s in segs).strip()
         return text, None
     except Exception as e:

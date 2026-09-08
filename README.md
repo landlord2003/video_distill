@@ -203,6 +203,8 @@ export VIDEO_VAULT_DIR=/path/to/vault           # Linux/Mac
 | POST | `/api/video` | body: `{"urls":[...], "write_vault":true}`，批量下载+整理 |
 | POST | `/api/video/upload` | multipart 上传本地视频文件 |
 | GET  | `/api/video/history` | 视频整理历史 |
+| GET  | `/api/video/records/<id>` | 单条记录详情（含笔记全文） |
+| DELETE | `/api/video/<id>` | 删除记录（DB 记录 + 知识库笔记 + 服务端副本） |
 | GET  | `/api/video/health` | 工具可用性自检（yt-dlp / ffmpeg / whisper / vault 状态） |
 
 命令行直跑：
@@ -256,4 +258,4 @@ docs/设计方案.md       # 原实施方案
 - 实测通过：抖音搜索页链接（含 `modal_id`）→ 自动改写 → 下载 → 抽帧 → 视觉理解 → 总结 → 入库 Obsidian
 - 实测样例：古法香皂教学视频自动产出 **9 步完整制作流程**（含皂化反应、香料融合等细节），
   10 帧关键帧 base64 内嵌，Obsidian / IMA 均可显示图片
-- 当前状态：下载 ✅ / 抽帧 ✅ / 视觉理解 ✅ / 制作流程还原 ✅ / 总结 ✅ / 转写 ⚠️（网络限制降级）
+- 当前状态：下载 ✅ / 抽帧 ✅ / 视觉理解 ✅ / 制作流程还原 ✅ / 总结 ✅ / **语音转写 ✅（ModelScope 本地模型，small）** / 记录管理（查看/删除）✅

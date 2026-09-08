@@ -171,7 +171,7 @@ async function checkVideoHealth(){
     const t = h.tools||{};
     const ok = x => x && x.ok ? '🟢' : '🔴';
     const yt = t.yt_dlp, ff = t.ffmpeg, fw = t.faster_whisper;
-    el.innerHTML = `工具状态：${ok(yt)}yt-dlp ${ok(ff)}ffmpeg ${ok(fw)?'🟡转写(模型待下载)':'🔴'}`
+    el.innerHTML = `工具状态：${ok(yt)}yt-dlp ${ok(ff)}ffmpeg ${fw && fw.ok ? (fw.local_model ? '🟢转写就绪' : '🟡转写(模型待下载)') : '🔴'}`
       + (yt && !yt.ok ? ` <b style="color:#e06c75">yt-dlp 缺失，请重装依赖后重启服务</b>` : '')
       + (ff && !ff.ok ? ` <b style="color:#e06c75">ffmpeg 缺失</b>` : '');
   }catch(e){
@@ -269,8 +269,65 @@ function switchTab(t, btn){
   $('#status').style.display = web?'block':'none';
   $('#result').style.display = web?'block':'none';
   $('#video-panel').style.display = web?'none':'flex';
-  if(!web) checkVideoHealth();
+  if(!web){ checkVideoHealth(); loadVideoHist(); }
 }
+// ---------- 已入库记录：查看 / 删除 ----------
+async function loadVideoHist(){
+  const box = $('#vhist'), st = $('#vhist-status');
+  st.textContent = '加载中…';
+  try{
+    const r = await fetch('/api/video/history');
+    const rows = await r.json();
+    if(!rows.length){ box.innerHTML = '<div class="empty" style="padding:14px">暂无视频整理记录</div>'; st.textContent=''; return; }
+    box.innerHTML = rows.map(x=>`
+      <div class="item" style="cursor:default">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+          <div style="min-width:0">
+            <div class="t">${esc(x.title||x.source_url)} <span class="st ${x.status}">${stxt(x.status)}</span></div>
+            <div class="u">${esc(x.source_url||'')}</div>
+            <div class="m"><span>${x.created_at||''} · ${x.md_len||0}字</span>
+              <span style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((x.vault_path||'').replace(/\\\\/g,'/'))}</span></div>
+          </div>
+          <div style="flex-shrink:0;display:flex;gap:6px">
+            <button class="btn" onclick="viewVideo('${x.id}')">查看</button>
+            <button class="btn del" onclick="delVideo('${x.id}','${esc(x.title||x.id)}')">删除</button>
+          </div>
+        </div>
+      </div>`).join('');
+    st.textContent = '共 '+rows.length+' 条';
+  }catch(e){ st.textContent = '加载失败：'+e.message; }
+}
+async function viewVideo(id){
+  const st = $('#vhist-status');
+  st.innerHTML = '<span class="spinner"></span> 加载笔记…';
+  try{
+    const r = await fetch('/api/video/records/'+id);
+    if(!r.ok){ st.textContent = '✗ 记录不存在'; return; }
+    const d = await r.json();
+    $('#vresult').innerHTML = `<div class="vcard">
+      <div style="font-weight:700">${esc(d.title||d.source_url)}</div>
+      <div class="mut">${esc(d.source_url||'')} · ${d.created_at||''} · ${d.md_len||0}字
+        ${d.vault_path?('· '+esc(d.vault_path.replace(/\\\\/g,'/'))):''}</div>
+      ${d.error?`<div style="color:var(--red);font-size:12px">${esc(d.error)}</div>`:''}
+      <div class="md-body" style="margin-top:8px">${DOMPurify.sanitize(marked.parse(d.markdown||'(笔记文件不存在或已被删除)'))}</div>
+    </div>`;
+    st.textContent = '✓ 已加载';
+  }catch(e){ st.textContent = '✗ '+e.message; }
+}
+async function delVideo(id, title){
+  if(!confirm('确定删除记录「'+title+'」？\\n\\n将同时删除：数据库记录、知识库中的整理笔记（Claw/07-视频号整理）、服务端副本。\\n此操作不可恢复。')) return;
+  const st = $('#vhist-status');
+  st.innerHTML = '<span class="spinner"></span> 删除中…';
+  try{
+    const r = await fetch('/api/video/'+id, {method:'DELETE'});
+    const d = await r.json();
+    if(r.ok && d.ok){
+      st.textContent = '✓ 已删除（含笔记 '+((d.removed||[]).length)+' 个文件）';
+      loadVideoHist();
+    } else { st.textContent = '✗ 删除失败：'+(d.error||r.status); }
+  }catch(e){ st.textContent = '✗ '+e.message; }
+}
+
 async function runVideo(){
   const urls = $('#vurls').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const files = $('#vfiles').files;

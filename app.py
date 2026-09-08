@@ -358,12 +358,44 @@ class Handler(BaseHTTPRequestHandler):
                 health["tools"]["ffmpeg"] = {"ok": False, "error": str(e)[:300]}
             try:
                 import faster_whisper  # noqa
-                health["tools"]["faster_whisper"] = {"ok": True}
+                ws_dir = os.path.join(vp.WHISPER_LOCAL_ROOT,
+                                      f"faster-whisper-{vp.TRANSCRIBE_MODEL}")
+                binp = os.path.join(ws_dir, "model.bin")
+                local_ok = os.path.isfile(binp) and os.path.getsize(binp) > 1_000_000
+                health["tools"]["faster_whisper"] = {
+                    "ok": True, "local_model": local_ok,
+                    "model": vp.TRANSCRIBE_MODEL if local_ok else "tiny(回退)",
+                    "model_dir": ws_dir if local_ok else ""}
             except Exception as e:
                 health["tools"]["faster_whisper"] = {"ok": False,
                                                      "error": "未安装（转写将降级）"}
             health["vault"] = vp.VAULT
             self._send(200, health)
+            return
+        m = re.match(r"^/api/video/records/([^/]+)$", p)
+        if m:
+            vid = m.group(1)
+            with db() as c:
+                row = c.execute(
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error "
+                    "FROM videos WHERE id=?", (vid,)).fetchone()
+            if not row:
+                self._send(404, {"error": "not found"})
+                return
+            rec = dict(zip(["id", "source_url", "title", "created_at", "md_len",
+                            "status", "vault_path", "error"], row))
+            md = ""
+            vpath = rec.get("vault_path") or ""
+            if vpath and os.path.isfile(vpath):
+                with io.open(vpath, "r", encoding="utf-8") as f:
+                    md = f.read()
+            else:
+                cp = os.path.join(CRAWLS_DIR, "video_" + vid + ".md")
+                if os.path.exists(cp):
+                    with io.open(cp, "r", encoding="utf-8") as f:
+                        md = f.read()
+            rec["markdown"] = md
+            self._send(200, rec)
             return
         self._send(404, {"error": "not found"})
 

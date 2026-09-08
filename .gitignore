@@ -36,3 +36,6 @@ downloads/
 *.mp4
 exported-cookies.txt
 cookies.txt.bak_invalid
+
+# 本地语音转写模型（体积大，不入库；换机部署时手动复制或从 ModelScope 下载）
+whisper_models/
