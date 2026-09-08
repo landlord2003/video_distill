@@ -37,8 +37,8 @@ else:
 
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 # 总结模型可通过环境变量 SUMMARY_MODEL 覆盖（默认 qwen3:14b）。
-# 注：本机 RTX 5070 的 Ollama 未启用 GPU（Vulkan/驱动不可用，全 CPU 推理），
-# qwen3:14b(9.8G) 在 CPU 上慢到超时；本机部署用 qwen3-vl:8b(6.1G) 更稳。
+# 注：无 GPU 的机器（如本机，纯 CPU 推理）上 qwen3:14b(9.8G) 慢到超时，
+# 需用 qwen3-vl:8b(6.1G) 才稳；有 GPU 的机器（如 RTX 5070）可直接用 qwen3:14b。
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "qwen3:14b")
 VISION_MODEL = "qwen3-vl:8b"
 TRANSCRIBE_MODEL = "tiny"                            # faster-whisper 模型尺寸
