@@ -198,7 +198,7 @@ def describe_frames(frame_paths, max_frames=N_KEYFRAMES):
 # ---------------- 结构化总结 ----------------
 def summarize(transcript, frame_descs, source_meta):
     descs_text = "\n".join(f"- {d}" for d in frame_descs) if frame_descs else "（无关键帧描述）"
-    transcript_text = (transcript[:6000] if transcript else "（无转写文本）")
+    transcript_text = (transcript[:12000] if transcript else "（无转写文本）")
     prompt = (
         "你是知识库整理助手。基于一段视频的【语音转写】与【关键帧画面描述】，"
         "产出结构化笔记。请只输出一个 JSON 对象，字段如下（不要输出任何多余文字、不要 Markdown 代码块标记）：\n"
@@ -211,6 +211,12 @@ def summarize(transcript, frame_descs, source_meta):
         '  "标签": ["标签1","标签2",...],\n'
         '  "关键结论": "可执行的结论或金句（如有）"\n'
         "}\n\n"
+        "【要点】填写规则（极重要）：\n"
+        "1. 给出 6~10 条要点；每条必须是一个信息完整的句子，从【语音转写】中蒸馏出**具体事实**：\n"
+        "   人物、机构、金额、时间、数量、比例、因果关系等细节，缺一不可。\n"
+        "2. **严禁空泛概括**。不要写「讲了资本运作」「介绍了一个案例」这种话；\n"
+        "   要写成「随天立注册20家壳公司控制上下游，虚构交易闭环」这种带细节、可独立成立的表述。\n"
+        "3. 按视频叙事顺序排列；转写中的口语错误请自行纠正为规范书面语（如同音字、人名机构名）。\n\n"
         "【制作流程】填写规则（极重要）：\n"
         "1. 若视频是制作方法/教程/工艺/实验类，请务必填写『制作流程』——按视频出现顺序，"
         "逐步还原每一步的具体操作、所用原料与工具、关键参数（温度/时间/配比/火候）、以及成败要点。\n"

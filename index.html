@@ -312,7 +312,10 @@ async function viewVideo(id){
     if(!r.ok){ st.textContent = '✗ 记录不存在'; return; }
     const d = await r.json();
     $('#vresult').innerHTML = `<div class="vcard">
-      <div style="font-weight:700">${esc(d.title||d.source_url)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="font-weight:700;min-width:0">${esc(d.title||d.source_url)}</div>
+        <button class="btn" style="flex-shrink:0" onclick="closeDetailView()">收起 ▲</button>
+      </div>
       <div class="mut">${esc(d.source_url||'')} · ${d.created_at||''} · ${d.md_len||0}字
         ${d.vault_path?('· '+esc(d.vault_path.replace(/\\\\/g,'/'))):''}</div>
       ${d.error?`<div style="color:var(--red);font-size:12px">${esc(d.error)}</div>`:''}
@@ -320,6 +323,10 @@ async function viewVideo(id){
     </div>`;
     st.textContent = '✓ 已加载';
   }catch(e){ st.textContent = '✗ '+e.message; }
+}
+function closeDetailView(){
+  $('#vresult').innerHTML = '';
+  const st = $('#vhist-status'); if(st) st.textContent = '已收起详情';
 }
 async function delVideo(id, title){
   if(!confirm('确定删除记录「'+title+'」？\\n\\n将同时删除：数据库记录、知识库中的整理笔记（Claw/07-视频号整理）、服务端副本。\\n此操作不可恢复。')) return;
