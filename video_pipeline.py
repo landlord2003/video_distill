@@ -143,13 +143,19 @@ def extract_keyframes(video_path, out_dir, n=4):
     stem = Path(video_path).stem
     pat = str(out_dir / f"{stem}_%03d.jpg")
     # 每 ~2 秒抽 1 帧（fps=1/2），不依赖视频时长
-    subprocess.run([ff, "-y", "-i", video_path, "-vf", "fps=1/2", "-q:v", "3", pat],
-                   capture_output=True)
+    try:
+        subprocess.run([ff, "-y", "-i", video_path, "-vf", "fps=1/2", "-q:v", "3", pat],
+                       capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        pass
     files = sorted(out_dir.glob(f"{stem}_*.jpg"))
     if not files:
         single = str(out_dir / f"{stem}_001.jpg")
-        subprocess.run([ff, "-y", "-ss", "0.5", "-i", video_path,
-                        "-frames:v", "1", "-q:v", "3", single], capture_output=True)
+        try:
+            subprocess.run([ff, "-y", "-ss", "0.5", "-i", video_path,
+                            "-frames:v", "1", "-q:v", "3", single], capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            pass
         files = sorted(out_dir.glob(f"{stem}_*.jpg"))
     if not files:
         return []
