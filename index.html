@@ -347,13 +347,22 @@ async function runVideo(){
   const files = $('#vfiles').files;
   const wv = $('#vvault').checked;
   const go = $('#vgo'); go.disabled=true; go.textContent='处理中…';
-  $('#vstatus').innerHTML = '<span class="spinner"></span> 正在处理（抖音链接需联网下载，整理全本地）…';
   let results = [];
+  const total = urls.length + files.length;
+  const t0 = Date.now();
+  // 每秒刷新一次用时显示
+  const timerId = setInterval(()=>{
+    const el = document.getElementById('vtimer');
+    if(el) el.textContent = Math.round((Date.now()-t0)/1000) + ' 秒';
+  }, 1000);
+  const doneMsgs = [];
   try{
     // 逐条提交：每条链接一个请求，处理完立即渲染。
     // 好处：① 单条卡住/失败不影响其余；② 页面能看到第几条在处理；③ 服务端逐条入库。
     for(let i=0;i<urls.length;i++){
-      $('#vstatus').innerHTML = `<span class="spinner"></span> (${i+1}/${urls.length}) 正在处理：${esc(urls[i].slice(0,60))}…`;
+      go.textContent = `处理中 ${results.length+1}/${total}…`;
+      $('#vstatus').innerHTML = `<span class="spinner"></span> <b>正在处理第 ${i+1}/${urls.length} 条链接</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`;
+      const itemT0 = Date.now();
       try{
         const r = await fetch('/api/video',{method:'POST',
           headers:{'Content-Type':'application/json'},
@@ -363,25 +372,38 @@ async function runVideo(){
       }catch(err){
         results.push({source_url:urls[i], ok:false, error:'请求失败: '+err.message, markdown:''});
       }
+      const last = results[results.length-1] || {};
+      const secs = Math.round((Date.now()-itemT0)/1000);
+      doneMsgs.unshift(last.ok
+        ? `✅ 第 ${i+1} 条完成（${secs} 秒）：${esc((last.title||'').slice(0,30))}`
+        : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
       renderVideo(results);
     }
     if(files.length){
       for(let j=0;j<files.length;j++){
         const f = files[j];
-        $('#vstatus').innerHTML = `<span class="spinner"></span> 上传本地文件 (${j+1}/${files.length})：${esc(f.name)}…`;
+        go.textContent = `处理中 ${results.length+1}/${total}…`;
+        $('#vstatus').innerHTML = `<span class="spinner"></span> <b>正在上传本地文件 ${j+1}/${files.length}</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(f.name)}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`;
+        const itemT0 = Date.now();
         const fd = new FormData();
         fd.append('file', f, f.name);
         const r = await fetch('/api/video/upload',{method:'POST',body:fd});
         const d = await r.json();
         results = results.concat(d.results || []);
+        const last = results[results.length-1] || {};
+        const secs = Math.round((Date.now()-itemT0)/1000);
+        doneMsgs.unshift(last.ok
+          ? `✅ 文件「${esc(f.name.slice(0,20))}」完成（${secs} 秒）`
+          : `❌ 文件「${esc(f.name.slice(0,20))}」失败（${secs} 秒）`);
         renderVideo(results);
       }
     }
+    const totalSecs = Math.round((Date.now()-t0)/1000);
     if(!results.length){ $('#vstatus').textContent='未提交任何链接或文件'; }
-    else { $('#vstatus').textContent='✓ 完成 '+results.length+' 条'; }
+    else { $('#vstatus').innerHTML = '🎉 全部完成：成功 '+(results.filter(x=>x.ok).length)+'/'+results.length+' 条（总用时 '+totalSecs+' 秒）'; }
     renderVideo(results);
   }catch(e){ $('#vstatus').textContent='✗ '+e.message; }
-  finally{ go.disabled=false; go.textContent='运行整理'; }
+  finally{ clearInterval(timerId); go.disabled=false; go.textContent='运行整理'; }
 }
 function renderVideo(list){
   const box = $('#vresult');
