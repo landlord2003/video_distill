@@ -185,7 +185,7 @@
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
-      <span class="ver">v3.1 · 工作台布局 · 记录管理✓ · 主页采集✓</span>
+      <span class="ver">v3.2 · 工作台布局 · 记录管理✓ · 同步刷新✓ · 清空重置✓</span>
     </div>
     <!-- 网页抓取（保持原有结构） -->
     <div id="bar">
@@ -255,6 +255,9 @@
             </div>
           </div>
           <div id="vhealth" class="vhealth">工具状态：检测中…</div>
+          <div style="display:flex;justify-content:flex-end;margin-top:6px">
+            <button class="btn" onclick="clearVideoAll()" title="清空链接清单、采集清单与处理进度（不影响已入库记录）">🧹 清空重置</button>
+          </div>
         </div>
         <div id="vsplit" title="拖动调整宽度"></div>
         <!-- 右：产出区 -->
@@ -730,6 +733,20 @@ function vpFill(){
   $('#vst2').scrollIntoView({behavior:'smooth', block:'center'});
 }
 
+// 清空重置：待处理清单 / 采集清单 / 处理进度（不影响已入库记录与整理结果）
+function clearVideoAll(){
+  if($('#vgo') && $('#vgo').disabled){ $('#vpstatus').textContent = '✗ 正在处理中，不能清空'; return; }
+  if(!confirm('清空粘贴的链接、采集清单与处理进度？\n（已入库记录和整理结果不受影响）')) return;
+  $('#vurls').value = ''; v2count();               // ② 待处理清单
+  $('#vprofile').value = '';                        // ① 抖音号输入框
+  _profileVideos = [];                              // ① 采集清单
+  $('#vplist').innerHTML = '';
+  $('#vpstatus').textContent = '采集该账号的视频清单，勾选后填入 ② 待处理清单';
+  $('#vbar').style.width = '0%';                    // ③ 处理进度
+  $('#vstatus').innerHTML = '等待提交…';
+  $('#v3sub').textContent = '就绪';
+}
+
 async function runVideo(){
   const urls = $('#vurls').value.split('\n').map(s=>s.trim()).filter(Boolean);
   const files = $('#vfiles').files;
@@ -774,6 +791,7 @@ async function runVideo(){
         : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
       setBar(results.length/total*100);
       renderVideo(results);
+      loadVideoHist();   // 每条入库后同步刷新「已入库记录」
     }
     if(files.length){
       for(let j=0;j<files.length;j++){
@@ -796,6 +814,7 @@ async function runVideo(){
           : `❌ 文件「${esc(f.name.slice(0,20))}」失败（${secs} 秒）`);
         setBar(results.length/total*100);
         renderVideo(results);
+        loadVideoHist();   // 每条入库后同步刷新「已入库记录」
       }
     }
     const totalSecs = Math.round((Date.now()-t0)/1000);
