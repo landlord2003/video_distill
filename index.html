@@ -131,6 +131,12 @@
       </div>
       <div class="row">
         <input id="vprofile" style="flex:1;min-width:260px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--txt);outline:none;font-size:13px" placeholder="抖音号输入：粘贴对方主页链接（douyin.com/user/… 或分享短链），自动采集该账号视频清单" onkeydown="if(event.key==='Enter')collectProfile()">
+        <select id="vpcount" style="padding:8px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--txt);outline:none;font-size:13px">
+          <option value="50" selected>前 50 条</option>
+          <option value="100">前 100 条</option>
+          <option value="200">前 200 条</option>
+          <option value="0">全部作品</option>
+        </select>
         <button id="vpg" class="btn" onclick="collectProfile()">🔍 采集该抖音号</button>
       </div>
       <div class="row" style="margin-top:6px">
@@ -358,7 +364,7 @@ async function collectProfile(){
   try{
     const r = await fetch('/api/video/profile',{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({url, max_count:50})});
+      body:JSON.stringify({url, max_count:parseInt($('#vpcount').value,10)})});
     const d = await r.json();
     if(!r.ok){
       $('#vplist').innerHTML = `<div class="vcard" style="border-color:var(--red)">✗ 采集失败：${esc(d.error||r.status)}</div>`;

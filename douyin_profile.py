@@ -59,6 +59,11 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
     """
     profile_url = resolve_profile_url(profile_arg)
 
+    # 不限量模式：放宽滚动次数与总时长兜底（仍受接口 has_more=0 自然终止）
+    if not max_count:
+        max_scrolls = max(max_scrolls, 300)
+        deadline_secs = max(deadline_secs, 900)
+
     cf = resolve_cookie_file(cookie_file)
     cookies = parse_netscape(cf) if cf else []
     if verbose:

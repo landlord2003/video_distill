@@ -542,7 +542,9 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", 0))
                 data = json.loads(self.rfile.read(length).decode("utf-8"))
                 url = (data.get("url") or "").strip()
-                max_count = int(data.get("max_count") or 50)
+                # max_count: 0/缺省语义区分——None 才用默认 50，显式 0 表示不限量
+                mc = data.get("max_count", None)
+                max_count = 50 if mc is None else max(0, int(mc))
                 if not url:
                     self._send(400, {"error": "url required（抖音用户主页链接）"})
                     return
