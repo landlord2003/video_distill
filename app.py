@@ -588,10 +588,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
 
+class NoReuseServer(ThreadingHTTPServer):
+    # 禁用 SO_REUSEADDR：Windows 下它允许多个进程重复绑同一端口，
+    # 造成双实例并存（请求随机分发 + GPU/模型争抢死锁），必须独占
+    allow_reuse_address = False
+
+
 def main():
+    # 单实例守卫：启动前主动探测端口，已有实例则拒绝启动
+    import socket
+    _s = socket.socket()
+    _s.settimeout(1)
+    _already = (_s.connect_ex(("127.0.0.1", PORT)) == 0)
+    _s.close()
+    if _already:
+        print(f"[abort] 端口 {PORT} 已有实例在运行，拒绝重复启动（这是防双实例死锁的守卫）")
+        sys.exit(1)
     init_db()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"crawl4ai app running at http://127.0.0.1:{PORT}")
+    srv = NoReuseServer(("127.0.0.1", PORT), Handler)
+    print(f"crawl4ai app running at http://127.0.0.1:{PORT} (pid={os.getpid()})")
     sys.stdout.flush()
     try:
         srv.serve_forever()
