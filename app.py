@@ -74,6 +74,11 @@ def init_db():
             vault_path TEXT,
             error TEXT
         )""")
+        # 迁移：videos 增加 category 列（记录分类管理，''=未分类）
+        try:
+            c.execute("ALTER TABLE videos ADD COLUMN category TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         c.commit()
 
 
@@ -236,15 +241,17 @@ def save_video(rec):
     with _lock:
         src = rec.get("source_url", "")
         vid = ""
+        prev_cat = ""
         # 去重：同一来源链接，成功记录复用原 id 覆盖更新，失败记录复用原失败行，
         # 避免重复提交/重试在列表里堆积重复条目
         if src:
             want = "done" if rec.get("ok") else "error"
             with db() as c:
-                row = c.execute("SELECT id FROM videos WHERE source_url=? AND status=?",
+                row = c.execute("SELECT id, category FROM videos WHERE source_url=? AND status=?",
                                 (src, want)).fetchone()
             if row:
                 vid = row[0]
+                prev_cat = row[1] or ""
         if not vid:
             vid = short_id(src or rec.get("title") or "video")
         path = os.path.join(CRAWLS_DIR, "video_" + vid + ".md")
@@ -254,12 +261,12 @@ def save_video(rec):
         with db() as c:
             c.execute(
                 "INSERT OR REPLACE INTO videos "
-                "(id,source_url,title,created_at,status,md_len,vault_path,error) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "(id,source_url,title,created_at,status,md_len,vault_path,error,category) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (vid, rec.get("source_url", ""), (rec.get("title", "") or "")[:120],
                  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                  "done" if rec.get("ok") else "error", len(md),
-                 rec.get("vault_path", ""), str(rec.get("error", ""))[:500]))
+                 rec.get("vault_path", ""), str(rec.get("error", ""))[:500], prev_cat))
             c.commit()
     return vid, path
 
@@ -375,12 +382,12 @@ class Handler(BaseHTTPRequestHandler):
             rows = []
             with db() as c:
                 cur = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,category "
                     "FROM videos ORDER BY created_at DESC LIMIT 200")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "source_url", "title", "created_at",
-                         "md_len", "status", "vault_path"], r)))
+                         "md_len", "status", "vault_path", "category"], r)))
             self._send(200, rows)
             return
         if p == "/api/video/health":
@@ -418,13 +425,13 @@ class Handler(BaseHTTPRequestHandler):
             vid = m.group(1)
             with db() as c:
                 row = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error,category "
                     "FROM videos WHERE id=?", (vid,)).fetchone()
             if not row:
                 self._send(404, {"error": "not found"})
                 return
             rec = dict(zip(["id", "source_url", "title", "created_at", "md_len",
-                            "status", "vault_path", "error"], row))
+                            "status", "vault_path", "error", "category"], row))
             md = ""
             vpath = rec.get("vault_path") or ""
             if vpath and os.path.isfile(vpath):
@@ -441,6 +448,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_DELETE(self):
+        # 删除分类：该分类下的记录回落到未分类（记录本身不动）
+        m = re.match(r"^/api/video/cats/(.+)$", self.path)
+        if m:
+            cat = urllib.parse.unquote(m.group(1)).strip()
+            if not cat:
+                self._send(400, {"error": "分类名为空"})
+                return
+            with _lock:
+                with db() as c:
+                    n = c.execute("UPDATE videos SET category='' WHERE category=?",
+                                  (cat,)).rowcount
+                    c.commit()
+            self._send(200, {"ok": True, "affected": n})
+            return
         m = re.match(r"^/api/crawls/([^/]+)$", self.path)
         if m:
             cid = m.group(1)
@@ -483,7 +504,72 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(404, {"error": "not found"})
 
+    def do_PATCH(self):
+        # 编辑视频记录：改名（同步重命名 Obsidian 笔记文件）/ 归类
+        m = re.match(r"^/api/video/([^/]+)$", self.path)
+        if m:
+            vid = m.group(1)
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            new_title = (data.get("title") or "").strip()
+            new_cat = data.get("category")
+            with _lock:
+                with db() as c:
+                    row = c.execute(
+                        "SELECT title, vault_path, category FROM videos WHERE id=?",
+                        (vid,)).fetchone()
+                    if not row:
+                        self._send(404, {"error": "not found"})
+                        return
+                    old_title, vpath, _old_cat = row
+                    vault_renamed = False
+                    if new_title and new_title != old_title:
+                        # 同步重命名知识库里的笔记文件（保持库内一致）
+                        if vpath and os.path.isfile(vpath):
+                            safe = re.sub(r'[\\/:*?"<>|\r\n]', "_", new_title)[:120]
+                            nv = os.path.join(os.path.dirname(vpath), safe + ".md")
+                            if not os.path.exists(nv):
+                                try:
+                                    os.rename(vpath, nv)
+                                    vpath = nv
+                                    vault_renamed = True
+                                except Exception:
+                                    pass  # 文件被占用等：只改数据库，vault_path 不变
+                        c.execute("UPDATE videos SET title=?, vault_path=? WHERE id=?",
+                                  (new_title[:120], vpath, vid))
+                    if new_cat is not None:
+                        cat = (str(new_cat) or "").strip()[:30]
+                        c.execute("UPDATE videos SET category=? WHERE id=?", (cat, vid))
+                    c.commit()
+            self._send(200, {"ok": True, "vault_renamed": vault_renamed,
+                             "vault_path": vpath})
+            return
+        self._send(404, {"error": "not found"})
+
     def do_POST(self):
+        if self.path == "/api/video/cats/rename":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            old = (data.get("old") or "").strip()
+            new = (data.get("new") or "").strip()[:30]
+            if not old or not new:
+                self._send(400, {"error": "分类名不能为空"})
+                return
+            with _lock:
+                with db() as c:
+                    n = c.execute("UPDATE videos SET category=? WHERE category=?",
+                                  (new, old)).rowcount
+                    c.commit()
+            self._send(200, {"ok": True, "affected": n})
+            return
         if self.path == "/api/crawl":
             try:
                 length = int(self.headers.get("Content-Length", 0))

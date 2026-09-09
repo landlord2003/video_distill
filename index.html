@@ -102,6 +102,18 @@
   /* ===== 方案A：视频工作台 左右分栏 ===== */
   #video-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   .layoutA{flex:1;display:flex;min-height:0}
+  #vsplit{width:6px;cursor:col-resize;flex-shrink:0;border-left:1px solid var(--line)}
+  #vsplit:hover,#vsplit.dragging{background:var(--acc)}
+  /* 模态弹窗（编辑记录/管理分类） */
+  .mback{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:90;display:none;
+         align-items:center;justify-content:center}
+  .mback.show{display:flex}
+  .mpanel{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+          padding:18px;width:440px;max-width:92vw;max-height:82vh;overflow:auto}
+  .mpanel h3{margin:0 0 12px;font-size:15px}
+  .mpanel label{display:block;color:var(--mut);font-size:12px;margin:10px 0 4px}
+  .catrow{display:flex;gap:6px;align-items:center;padding:7px 0;border-bottom:1px dashed var(--line)}
+  .chip.on{background:var(--acc);color:#fff;border-color:var(--acc)}
   .flow{width:400px;flex-shrink:0;border-right:1px solid var(--line);overflow:auto;padding:14px;
         display:flex;flex-direction:column;gap:12px}
   .step{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;flex-shrink:0}
@@ -173,7 +185,7 @@
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
-      <span class="ver">v3.0 · 工作台布局 · 转写✓ · 主页采集✓</span>
+      <span class="ver">v3.1 · 工作台布局 · 记录管理✓ · 主页采集✓</span>
     </div>
     <!-- 网页抓取（保持原有结构） -->
     <div id="bar">
@@ -191,7 +203,7 @@
     <div id="video-panel">
       <div class="layoutA">
         <!-- 左：操作流 -->
-        <div class="flow">
+        <div class="flow" id="vflow">
           <div class="step" id="vst1">
             <div class="step-h" onclick="fold('vst1')"><span class="no">1</span><span class="tt">添加视频</span>
               <span class="sub">抖音号 / 本地文件</span></div>
@@ -244,6 +256,7 @@
           </div>
           <div id="vhealth" class="vhealth">工具状态：检测中…</div>
         </div>
+        <div id="vsplit" title="拖动调整宽度"></div>
         <!-- 右：产出区 -->
         <div class="work">
           <div class="work-tabs">
@@ -261,6 +274,7 @@
                 <div><div class="k">失败</div><div class="v err" id="vk-err">–</div></div>
                 <div><div class="k">总字数</div><div class="v" id="vk-chars">–</div></div>
               </div>
+              <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
               <input type="text" id="vhq" placeholder="🔍 搜索已入库记录（标题 / 来源）…" style="margin-bottom:10px" oninput="renderVhistList()">
               <div id="vh-detail"></div>
               <div id="vhist"><div class="empty" style="padding:14px">加载中…</div></div>
@@ -271,6 +285,8 @@
     </div>
   </main>
 </div>
+<!-- 通用模态弹窗 -->
+<div id="mback" class="mback" onclick="if(event.target===this)hideModal()"><div class="mpanel" id="mpanel"></div></div>
 <script>
 const $ = s => document.querySelector(s);
 async function loadHist(){
@@ -290,6 +306,35 @@ async function loadHist(){
 }
 function stxt(s){return s==='done'?'✓ 完成':s==='error'?'✗ 失败':s==='running'?'… 进行中':'·'}
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function escAttr(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function showModal(html){ $('#mpanel').innerHTML = html; $('#mback').classList.add('show'); }
+function hideModal(){ $('#mback').classList.remove('show'); }
+
+// ---------- 拖拽调整左右栏宽度 ----------
+(function(){
+  const sp = document.getElementById('vsplit'), fl = document.getElementById('vflow');
+  if(!sp || !fl) return;
+  const saved = parseInt(localStorage.getItem('vflow_w')||'0',10);
+  if(saved>=300 && saved<=700) fl.style.width = saved+'px';
+  let drag = false;
+  sp.addEventListener('mousedown', e=>{
+    drag = true; sp.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e=>{
+    if(!drag) return;
+    const left = fl.getBoundingClientRect().left;
+    const w = Math.min(700, Math.max(300, e.clientX - left - 3));
+    fl.style.width = w + 'px';
+  });
+  document.addEventListener('mouseup', ()=>{
+    if(!drag) return;
+    drag = false; sp.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    localStorage.setItem('vflow_w', parseInt(fl.style.width,10)||400);
+  });
+})();
 
 // 视频工作台布局：折叠 / 分段 / 产出页签
 function fold(id){ document.getElementById(id).classList.toggle('folded'); }
@@ -427,8 +472,10 @@ function switchTab(t, btn){
   $('#video-panel').style.display = web?'none':'flex';
   if(!web){ checkVideoHealth(); loadVideoHist(); }
 }
-// ---------- 已入库记录：统计 / 搜索 / 查看 / 删除 ----------
+// ---------- 已入库记录：统计 / 分类 / 搜索 / 查看 / 编辑 / 删除 ----------
 let _vhistRows = [];
+let _vcatFilter = '';      // ''=全部 '__uncat__'=未分类 其他=分类名
+let _catKeys = [];         // 当前分类名列表（避免内联onclick注入）
 async function loadVideoHist(){
   const st = $('#vhist-status');
   st.textContent = '…';
@@ -444,31 +491,149 @@ async function loadVideoHist(){
     $('#vk-err').textContent   = err;
     $('#vk-chars').textContent = chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars;
     st.textContent = _vhistRows.length ? _vhistRows.length+' 条' : '';
+    renderCatChips();
     renderVhistList();
   }catch(e){ st.textContent = '加载失败'; }
 }
+function catCounts(){
+  const counts = {}; let uncat = 0;
+  _vhistRows.forEach(x=>{
+    const c = (x.category||'').trim();
+    if(c) counts[c] = (counts[c]||0)+1; else uncat++;
+  });
+  return {counts, uncat, cats: Object.keys(counts).sort()};
+}
+function renderCatChips(){
+  const {counts, uncat, cats} = catCounts();
+  _catKeys = cats;
+  const chips = [
+    ['', '全部 '+_vhistRows.length],
+    ['__uncat__', '未分类 '+uncat],
+    ...cats.map(c=>[c, esc(c)+' '+counts[c]])
+  ];
+  $('#vcats').innerHTML = chips.map(([k,label],i)=>
+    `<span class="chip ${_vcatFilter===k?'on':''}" style="cursor:pointer" onclick="_setCat('${escAttr(k)}')">${label}</span>`
+  ).join('')
+  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats()">⚙ 管理分类</span>`;
+}
+function _setCat(k){ _vcatFilter = k; renderCatChips(); renderVhistList(); }
 function renderVhistList(){
   const box = $('#vhist');
   const q = ($('#vhq') ? $('#vhq').value.trim().toLowerCase() : '');
   let rows = _vhistRows;
+  if(_vcatFilter==='__uncat__') rows = rows.filter(x=>!((x.category||'').trim()));
+  else if(_vcatFilter) rows = rows.filter(x=>((x.category||'').trim())===_vcatFilter);
   if(q) rows = rows.filter(x =>
     ((x.title||'')+' '+(x.source_url||'')+' '+(x.vault_path||'')).toLowerCase().includes(q));
   if(!rows.length){
-    box.innerHTML = `<div class="empty" style="padding:14px">${q?'没有匹配的记录':'暂无视频整理记录'}</div>`;
+    box.innerHTML = `<div class="empty" style="padding:14px">${q||_vcatFilter?'没有匹配的记录':'暂无视频整理记录'}</div>`;
     return;
   }
-  box.innerHTML = `<div class="vcard" style="margin-bottom:24px">` + rows.map(x=>`
+  box.innerHTML = `<div class="vcard" style="margin-bottom:24px">` + rows.map(x=>{
+    const cat = (x.category||'').trim();
+    return `
       <div class="rec" onclick="viewVideo('${x.id}')">
         <div class="ic">🎬</div>
         <div class="bd">
-          <div class="t">${esc(x.title||x.source_url)} <span class="st ${x.status}">${stxt(x.status)}</span></div>
+          <div class="t">${esc(x.title||x.source_url)} <span class="st ${x.status}">${stxt(x.status)}</span>
+            ${cat?`<span class="chip">${esc(cat)}</span>`:''}</div>
           <div class="u">${esc(x.source_url||'')} · ${x.created_at||''} · ${x.md_len||0}字</div>
         </div>
         <div class="sp">
+          <button class="btn" onclick="event.stopPropagation();editRec('${x.id}')">编辑</button>
           <button class="btn" onclick="event.stopPropagation();viewVideo('${x.id}')">查看</button>
-          <button class="btn del" onclick="event.stopPropagation();delVideo('${x.id}','${esc(x.title||x.id)}')">删除</button>
+          <button class="btn del" onclick="event.stopPropagation();delVideo('${x.id}','${escAttr(x.title||x.id)}')">删除</button>
         </div>
-      </div>`).join('') + `</div>`;
+      </div>`;
+  }).join('') + `</div>`;
+}
+// 编辑记录：改名（同步重命名库内笔记文件）+ 归类
+function editRec(id){
+  const x = _vhistRows.find(r=>r.id===id);
+  if(!x) return;
+  const {cats} = catCounts();
+  const cat = (x.category||'').trim();
+  showModal(`<h3>✏️ 编辑记录</h3>
+    <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
+    <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
+    <label>分类</label>
+    <select id="me-cat" onchange="document.getElementById('me-newcat').style.display=this.value==='__new__'?'block':'none'">
+      <option value="">未分类</option>
+      ${cats.map(c=>`<option value="${escAttr(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
+      <option value="__new__">➕ 新建分类…</option>
+    </select>
+    <input type="text" id="me-newcat" placeholder="输入新分类名（填写则优先使用）" maxlength="30"
+           style="display:none;margin-top:6px">
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn" onclick="hideModal()">取消</button>
+      <button class="btn pri" onclick="saveRec('${id}')">保存</button>
+    </div>`);
+}
+async function saveRec(id){
+  const title = $('#me-title').value.trim();
+  if(!title){ $('#me-title').focus(); return; }
+  const newCatInput = $('#me-newcat');
+  const cat = (newCatInput.style.display!=='none' && newCatInput.value.trim())
+    ? newCatInput.value.trim() : $('#me-cat').value;
+  try{
+    const r = await fetch('/api/video/'+id, {method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({title, category:cat})});
+    const d = await r.json();
+    if(r.ok && d.ok){
+      hideModal();
+      closeDetailView();
+      if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
+      loadVideoHist();
+    } else { alert('保存失败：'+(d.error||r.status)); }
+  }catch(e){ alert('保存异常：'+e.message); }
+}
+// 管理分类：重命名 / 删除（删除后记录回落未分类，记录本身不动）
+function manageCats(){
+  const {counts, cats} = catCounts();
+  showModal(`<h3>⚙ 管理分类</h3>
+    <div class="mut" style="margin-bottom:8px">删除分类不会删除记录，其中的记录将回落到「未分类」。新建分类请在某条记录的「编辑」里选「➕ 新建分类」。</div>
+    ${cats.length ? cats.map((c,i)=>`
+      <div class="catrow">
+        <input type="text" id="mc-${i}" value="${escAttr(c)}" maxlength="30" style="flex:1">
+        <span class="mut" style="flex-shrink:0">${counts[c]} 条</span>
+        <button class="btn" onclick="renCat(${i})">重命名</button>
+        <button class="btn del" onclick="delCat(${i})">删除</button>
+      </div>`).join('')
+    : '<div class="empty" style="padding:14px">还没有分类</div>'}
+    <div style="display:flex;justify-content:flex-end;margin-top:14px">
+      <button class="btn" onclick="hideModal()">关闭</button>
+    </div>`);
+}
+async function renCat(i){
+  const nv = document.getElementById('mc-'+i).value.trim();
+  if(!nv){ alert('分类名不能为空'); return; }
+  const old = _catKeys[i];
+  try{
+    const r = await fetch('/api/video/cats/rename', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({old, new:nv})});
+    const d = await r.json();
+    if(r.ok && d.ok){
+      if(_vcatFilter===old) _vcatFilter = nv;
+      hideModal();
+      loadVideoHist();
+    } else { alert('重命名失败：'+(d.error||r.status)); }
+  }catch(e){ alert('异常：'+e.message); }
+}
+async function delCat(i){
+  const old = _catKeys[i];
+  const n = (_vhistRows.filter(x=>(x.category||'').trim()===old)).length;
+  if(!confirm(`删除分类「${old}」？\n其中 ${n} 条记录将回落到「未分类」，记录本身不受影响。`)) return;
+  try{
+    const r = await fetch('/api/video/cats/'+encodeURIComponent(old), {method:'DELETE'});
+    const d = await r.json();
+    if(r.ok && d.ok){
+      if(_vcatFilter===old) _vcatFilter='';
+      hideModal();
+      loadVideoHist();
+    } else { alert('删除失败：'+(d.error||r.status)); }
+  }catch(e){ alert('异常：'+e.message); }
 }
 async function viewVideo(id){
   const det = $('#vh-detail');
@@ -573,12 +738,14 @@ async function runVideo(){
   let results = [];
   const total = urls.length + files.length;
   const t0 = Date.now();
+  let curT0 = t0;   // 当前这条的开始时刻（用于「本条用时」）
   showResultTab();
   setBar(total ? 2 : 0);
-  // 每秒刷新一次用时显示
+  // 每秒刷新：本条用时 + 总用时
   const timerId = setInterval(()=>{
-    const el = document.getElementById('vtimer');
-    if(el) el.textContent = Math.round((Date.now()-t0)/1000) + ' 秒';
+    const tt = document.getElementById('vtotal-t'), it = document.getElementById('vitem-t');
+    if(tt) tt.textContent = Math.round((Date.now()-t0)/1000) + ' 秒';
+    if(it) it.textContent = Math.round((Date.now()-curT0)/1000) + ' 秒';
   }, 1000);
   const doneMsgs = [];
   try{
@@ -586,7 +753,10 @@ async function runVideo(){
     // 好处：① 单条卡住/失败不影响其余；② 页面能看到第几条在处理；③ 服务端逐条入库。
     for(let i=0;i<urls.length;i++){
       go.textContent = `处理中 ${results.length+1}/${total}…`;
-      setV3(`<b>正在处理第 ${i+1}/${urls.length} 条链接</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+      curT0 = Date.now();
+      setV3(`<b>正在处理第 ${i+1}/${urls.length} 条链接</b><br>
+        ⏱ 本条 <span id="vitem-t">0 秒</span> · 总用时 <span id="vtotal-t">0 秒</span><br>
+        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
       const itemT0 = Date.now();
       try{
         const r = await fetch('/api/video',{method:'POST',
@@ -609,7 +779,10 @@ async function runVideo(){
       for(let j=0;j<files.length;j++){
         const f = files[j];
         go.textContent = `处理中 ${results.length+1}/${total}…`;
-        setV3(`<b>正在上传本地文件 ${j+1}/${files.length}</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(f.name)}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+        curT0 = Date.now();
+        setV3(`<b>正在上传本地文件 ${j+1}/${files.length}</b><br>
+          ⏱ 本条 <span id="vitem-t">0 秒</span> · 总用时 <span id="vtotal-t">0 秒</span><br>
+          <span style="font-size:11px">${esc(f.name)}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
         const itemT0 = Date.now();
         const fd = new FormData();
         fd.append('file', f, f.name);
