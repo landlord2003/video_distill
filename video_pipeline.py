@@ -16,6 +16,7 @@ import re
 import json
 import base64
 import subprocess
+import threading
 import urllib.request
 from pathlib import Path
 from datetime import datetime
@@ -106,32 +107,75 @@ def _resolve_whisper_source(model_size):
     return model_size
 
 
+# 转写设备：固定 CPU int8。
+# 历史教训：device="auto" 先试 GPU，12GB 显存被 Ollama(keep_alive) 占住时
+# ctranslate2 的 CUDA 初始化会零 CPU 永久挂死（且不抛异常，except 兜不住）。
+# 短视频 CPU small int8 速度足够，确定性优先。可用环境变量 WHISPER_DEVICE 覆盖。
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
+# 单条转写总超时（含模型加载），超时报错放行，绝不让批量无限挂死
+WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT", "600"))
+
+_WHISPER_CACHE = {"model": None, "size": None}
+
+
+def _load_whisper_model(src, timeout=300):
+    """在子线程加载 Whisper 模型（带看门狗）。
+
+    ctranslate2 在 GPU/资源初始化挂死时不抛异常，主线程会永远等——
+    所以放到 daemon 线程加载，超时即中止等待并报错。
+    """
+    from faster_whisper import WhisperModel
+    result = {}
+
+    def _load():
+        try:
+            result["m"] = WhisperModel(src, device=WHISPER_DEVICE, compute_type="int8")
+        except Exception as e:
+            result["err"] = e
+
+    th = threading.Thread(target=_load, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        raise RuntimeError(f"Whisper 模型加载超过 {timeout}s 未完成，疑似初始化挂死，已中止")
+    if "err" in result:
+        raise result["err"]
+    return result["m"]
+
+
+def _get_whisper(model_size):
+    """全局单例：模型只加载一次，后续转写零加载开销。"""
+    if _WHISPER_CACHE["model"] is None or _WHISPER_CACHE["size"] != model_size:
+        src = _resolve_whisper_source(model_size)
+        _WHISPER_CACHE["model"] = _load_whisper_model(src)
+        _WHISPER_CACHE["size"] = model_size
+        print(f"[video] whisper 模型就绪: {src} (device={WHISPER_DEVICE})", flush=True)
+    return _WHISPER_CACHE["model"]
+
+
 def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
-    """faster-whisper 转写。不可用则返回 ('', 原因)。"""
+    """faster-whisper 转写。不可用则返回 ('', 原因)。整段在看门狗线程里跑。"""
     try:
-        from faster_whisper import WhisperModel
+        from faster_whisper import WhisperModel  # noqa: F401 提前暴露缺依赖
     except Exception as e:
         return "", f"faster-whisper 未安装：{e}"
-    try:
-        src = _resolve_whisper_source(model_size)
-        # 本机装的是 CUDA 版 ctranslate2 但缺 cublas DLL：懒加载在 transcribe 阶段才爆，
-        # 所以先跑一次，若报 CUDA 相关错误就用 CPU 模型重建重试
+    result = {}
+
+    def _work():
         try:
-            model = WhisperModel(src, device="auto", compute_type="int8")
-            segs, _ = model.transcribe(video_path, beam_size=5, language="zh")
-            text = "\n".join(s.text for s in segs).strip()
-            return text, None
-        except RuntimeError as e:
-            if "cublas" not in str(e).lower() and "cuda" not in str(e).lower() \
-                    and "cudnn" not in str(e).lower() and "gpu" not in str(e).lower():
-                raise
-        model = WhisperModel(src, device="cpu", compute_type="int8")
-        segs, _ = model.transcribe(video_path, beam_size=5, language="zh",
-                                   initial_prompt="以下是普通话的视频旁白，请用简体中文转写。")
-        text = "\n".join(s.text for s in segs).strip()
-        return text, None
-    except Exception as e:
-        return "", f"转写出错：{type(e).__name__}: {e}"
+            model = _get_whisper(model_size)
+            segs, _ = model.transcribe(video_path, beam_size=5, language="zh",
+                                       initial_prompt="以下是普通话的视频旁白，请用简体中文转写。")
+            result["text"] = "\n".join(s.text for s in segs).strip()
+        except Exception as e:
+            result["err"] = f"转写出错：{type(e).__name__}: {e}"
+
+    th = threading.Thread(target=_work, daemon=True)
+    th.start()
+    th.join(WHISPER_TIMEOUT)
+    if th.is_alive():
+        return "", f"转写超时（>{WHISPER_TIMEOUT}s 未完成，模型或解码疑似挂死），已中止本条"
+    return result.get("text", ""), result.get("err")
 
 
 # ---------------- 关键帧 ----------------
@@ -146,18 +190,21 @@ def extract_keyframes(video_path, out_dir, n=4):
     try:
         subprocess.run([ff, "-y", "-i", video_path, "-vf", "fps=1/2", "-q:v", "3", pat],
                        capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        pass
+    except subprocess.TimeoutExpired as e:
+        err = (e.stderr or b"")[-200:]
+        print(f"[video] ffmpeg 抽帧超时: {video_path} stderr={err!r}", flush=True)
     files = sorted(out_dir.glob(f"{stem}_*.jpg"))
     if not files:
         single = str(out_dir / f"{stem}_001.jpg")
         try:
             subprocess.run([ff, "-y", "-ss", "0.5", "-i", video_path,
                             "-frames:v", "1", "-q:v", "3", single], capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
-        except subprocess.TimeoutExpired:
-            pass
+        except subprocess.TimeoutExpired as e:
+            err = (e.stderr or b"")[-200:]
+            print(f"[video] ffmpeg 单帧兜底超时: {video_path} stderr={err!r}", flush=True)
         files = sorted(out_dir.glob(f"{stem}_*.jpg"))
     if not files:
+        print(f"[video] 抽帧失败(无产出，将跳过视觉理解): {video_path}", flush=True)
         return []
     # 从抽出的帧里均匀挑 n 张
     if len(files) > n:
