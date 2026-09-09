@@ -111,7 +111,7 @@
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
-      <span style="align-self:center;margin-left:auto;color:var(--mut);font-size:11px">v2.2 · 转写✓ · 记录管理✓ · 抖音主页采集✓</span>
+      <span style="align-self:center;margin-left:auto;color:var(--mut);font-size:11px">v2.2.1 · 转写✓ · 记录管理✓ · 抖音主页采集✓</span>
     </div>
     <div id="bar" data-page-node-id="lV8l0M1RGiG3lRrPSEmIuu">
       <input id="url" placeholder="输入要抓取的网址，如 https://www.ehang.com/" onkeydown="if(event.key==='Enter')crawl()" data-page-node-id="77RQBFUEdXyztRbJwKBweu">
@@ -392,7 +392,7 @@ function renderProfileList(nickname){
       <span style="display:flex;gap:6px;flex-shrink:0">
         <button class="btn" onclick="vpSelAll(true)">全选</button>
         <button class="btn" onclick="vpSelAll(false)">全不选</button>
-        <button class="btn" onclick="vpFill()">把选中链接填入下方清单</button>
+        <button class="btn" onclick="vpFill()">把选中链接填入上方清单</button>
       </span>
     </div>
     <div style="margin-top:6px;max-height:260px;overflow:auto">${rows}</div>
@@ -476,17 +476,50 @@ async function runVideo(){
 function renderVideo(list){
   const box = $('#vresult');
   if(!list.length){ box.innerHTML=''; return; }
-  box.innerHTML = list.map(x=>{
+  _lastResults = list;
+  const bar = list.length>1 ? `
+    <div class="row" style="margin-bottom:8px">
+      <b>整理结果（${list.length} 条）</b>
+      <button class="btn" onclick="collapseAllV(true)">全部收起</button>
+      <button class="btn" onclick="collapseAllV(false)">全部展开</button>
+    </div>` : '';
+  box.innerHTML = bar + list.map((x,idx)=>{
     const md = x.markdown || '';
     const ok = x.ok;
     const vp = (x.vault_path||'').replace(/\\/g,'/');
+    const key = x.source_url || x.title || String(idx);
+    const hid = _vCollapsed.has(key);
     return `<div class="vcard">
-      <div style="font-weight:700">${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <div style="font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}</div>
+        <button class="btn" style="flex-shrink:0" onclick="toggleVCard(${idx})">${hid?'展开 ▼':'收起 ▲'}</button>
+      </div>
       <div class="mut">${esc(x.source_url||'')} ${x.vault_path?('· 已入库: '+esc(vp)):'· 未入库'}</div>
       ${x.error?`<div style="color:var(--red);font-size:12px">${esc(x.error)}</div>`:''}
-      <div class="md-body" style="margin-top:8px">${DOMPurify.sanitize(marked.parse(md))}</div>
+      <div class="md-body" id="vmd-${idx}" style="margin-top:8px;${hid?'display:none':''}">${DOMPurify.sanitize(marked.parse(md))}</div>
     </div>`;
   }).join('');
+}
+// 结果卡片收起/展开：用 Set 记状态，批量逐条重渲染时不丢
+let _lastResults = [];
+let _vCollapsed = new Set();
+function _vkey(x, idx){ return (x && (x.source_url || x.title)) || String(idx); }
+function toggleVCard(idx){
+  const x = _lastResults[idx] || {};
+  const md = document.getElementById('vmd-'+idx);
+  if(!md) return;
+  const hide = md.style.display !== 'none';
+  md.style.display = hide ? 'none' : '';
+  const btn = md.closest('.vcard').querySelector('button');
+  if(btn) btn.textContent = hide ? '展开 ▼' : '收起 ▲';
+  if(hide) _vCollapsed.add(_vkey(x, idx)); else _vCollapsed.delete(_vkey(x, idx));
+}
+function collapseAllV(hide){
+  _lastResults.forEach((x,i)=>{
+    const k = _vkey(x, i);
+    if(hide) _vCollapsed.add(k); else _vCollapsed.delete(k);
+  });
+  renderVideo(_lastResults);
 }
 loadHist();
 </script>
