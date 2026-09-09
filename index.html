@@ -1,19 +1,20 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-page-node-id="z1KR4qcv3kJLJRwwLaBvoK">
-<head data-page-node-id="YP2ayK3L3Y5CMBS0boHCA7">
-<meta charset="utf-8" data-page-node-id="uUnsjob7BVtErBCt4ZrYWB">
-<meta name="viewport" content="width=device-width, initial-scale=1" data-page-node-id="FqXsQySfiI9lfP6aGIWBAA">
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crawl4ai 本地采集器</title>
 <style>
   :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--line:#2a2f3a;
-        --txt:#e6e9ef;--mut:#8b93a3;--acc:#4f9dff;--acc2:#2bd4a4;--red:#ff5f6e;}
+        --txt:#e6e9ef;--mut:#8b93a3;--acc:#4f9dff;--acc2:#2bd4a4;--red:#ff5f6e;
+        --amber:#e8b64c;}
   *{box-sizing:border-box}
   body{margin:0;font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
        background:var(--bg);color:var(--txt);height:100vh;overflow:hidden}
   #app{display:flex;height:100vh}
-  /* sidebar */
-  #side{width:320px;background:var(--panel);border-right:1px solid var(--line);
-        display:flex;flex-direction:column}
+  /* ===== 左侧栏（网页抓取历史） ===== */
+  #side{width:280px;background:var(--panel);border-right:1px solid var(--line);
+        display:flex;flex-direction:column;flex-shrink:0}
   #side h2{margin:0;padding:14px 16px;font-size:15px;border-bottom:1px solid var(--line);
            display:flex;align-items:center;gap:8px}
   #side h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--acc2)}
@@ -28,10 +29,16 @@
   .item .u{color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .item .m{color:var(--mut);font-size:11px;margin-top:3px;display:flex;justify-content:space-between}
   .item .st{font-size:11px}
+  .st{font-size:11px}
   .st.done{color:var(--acc2)} .st.error{color:var(--red)} .st.running{color:var(--acc)}
   .empty{color:var(--mut);padding:20px;text-align:center}
-  /* main */
-  #main{flex:1;display:flex;flex-direction:column}
+  /* ===== 主区通用 ===== */
+  #main{flex:1;display:flex;flex-direction:column;min-width:0}
+  #tabs{padding:10px 18px 0;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--line)}
+  .tab{background:var(--panel2);border:1px solid var(--line);border-bottom:none;color:var(--mut);
+       border-radius:8px 8px 0 0;padding:8px 18px;cursor:pointer;font-size:13px}
+  .tab.active{background:var(--bg);color:var(--txt);border-bottom:1px solid var(--bg);margin-bottom:-1px}
+  .ver{margin-left:auto;color:var(--mut);font-size:11px;padding-bottom:8px}
   #bar{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--panel);
        display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   #url{flex:1;min-width:260px;padding:10px 12px;background:var(--panel2);border:1px solid var(--line);
@@ -78,6 +85,7 @@
   .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;
        padding:5px 12px;cursor:pointer;font-size:12px}
   .btn:hover{border-color:var(--acc)}
+  .btn.pri{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
   .btn.del{color:var(--red);border-color:transparent}
   .btn.del:hover{border-color:var(--red)}
   .delwrap{margin-top:6px;text-align:right}
@@ -85,77 +93,181 @@
   .spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--mut);
            border-top-color:var(--acc);border-radius:50%;animation:spin .7s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
-  /* tabs */
-  #tabs{padding:10px 18px 0;display:flex;gap:8px}
-  .tab{background:var(--panel2);border:1px solid var(--line);color:var(--mut);
-       border-radius:8px 8px 0 0;padding:8px 16px;cursor:pointer;font-size:13px}
-  .tab.active{background:var(--panel);color:var(--txt);border-bottom-color:var(--panel)}
-  #video-panel{display:none;flex-direction:column;overflow:auto;padding:12px 18px 18px;flex:1}
-  #vurls{width:100%;height:90px;background:var(--panel2);border:1px solid var(--line);
+  /* chips */
+  .chip{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;
+        background:var(--panel2);border:1px solid var(--line);color:var(--mut)}
+  .chip.ok{color:var(--acc2);border-color:rgba(43,212,164,.4)}
+  .chip.err{color:var(--red);border-color:rgba(255,95,110,.4)}
+  .chip.run{color:var(--acc);border-color:rgba(79,157,255,.4)}
+  /* ===== 方案A：视频工作台 左右分栏 ===== */
+  #video-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
+  .layoutA{flex:1;display:flex;min-height:0}
+  .flow{width:400px;flex-shrink:0;border-right:1px solid var(--line);overflow:auto;padding:14px;
+        display:flex;flex-direction:column;gap:12px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;flex-shrink:0}
+  .step-h{padding:10px 14px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+  .step-h:hover{background:var(--panel2)}
+  .step-h .no{width:22px;height:22px;border-radius:50%;background:var(--acc);color:#fff;
+              font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .step-h .tt{font-weight:700;font-size:13px}
+  .step-h .sub{margin-left:auto;color:var(--mut);font-size:11px}
+  .step-b{padding:12px 14px 14px;border-top:1px solid var(--line)}
+  .step.folded .step-b{display:none}
+  .step.folded .no{background:var(--panel2);color:var(--mut);border:1px solid var(--line)}
+  .seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+       padding:3px;gap:3px;margin-bottom:10px}
+  .seg button{flex:1;border:none;background:transparent;color:var(--mut);padding:5px;border-radius:6px;
+              cursor:pointer;font-size:12px}
+  .seg button.on{background:var(--acc);color:#fff;font-weight:600}
+  .segbtns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
+  .vhealth{color:var(--mut);font-size:11px;text-align:center;padding:2px 0 8px}
+  .work{flex:1;min-width:0;display:flex;flex-direction:column}
+  .work-tabs{display:flex;padding:10px 18px 0;border-bottom:1px solid var(--line);align-items:center;flex-shrink:0}
+  .wtab{padding:8px 18px;cursor:pointer;font-size:13px;color:var(--mut);border-bottom:2px solid transparent;
+        display:flex;align-items:center;gap:8px}
+  .wtab.active{color:var(--txt);border-bottom-color:var(--acc);font-weight:700}
+  .work-body{flex:1;overflow:auto;padding:14px 18px}
+  .wpane{display:none}
+  .wpane.active{display:block}
+  .kpi{display:flex;gap:22px;padding:10px 14px;border:1px solid var(--line);border-radius:10px;
+       background:var(--panel);margin-bottom:10px}
+  .kpi .k{font-size:11px;color:var(--mut)}
+  .kpi .v{font-size:18px;font-weight:700}
+  .kpi .v.ok{color:var(--acc2)} .kpi .v.err{color:var(--red)}
+  /* 产出卡片（结果与记录共用） */
+  .vcard{padding:0;border:1px solid var(--line);border-radius:10px;margin:0 0 12px;
+         background:var(--panel);overflow:hidden}
+  .vcard .mut{color:var(--mut);font-size:12px}
+  .vcard-h{padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .vcard-h>div:first-child{font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .vcard-b{border-top:1px solid var(--line);padding:12px 16px}
+  .rec{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .rec:hover{background:var(--panel2)}
+  .rec .ic{width:34px;height:34px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);
+           display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+  .rec .bd{min-width:0;flex:1}
+  .rec .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+  .rec .u{color:var(--mut);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rec .sp{flex-shrink:0;display:flex;gap:6px;align-items:center}
+  #vurls{width:100%;height:110px;background:var(--panel2);border:1px solid var(--line);
          border-radius:8px;color:var(--txt);padding:10px;outline:none;resize:vertical;font-size:13px}
   #vurls:focus{border-color:var(--acc)}
-  .vcard{padding:12px;border:1px solid var(--line);border-radius:8px;margin:12px 0}
-  .vcard .mut{color:var(--mut);font-size:12px}
+  #vprofile{flex:1;min-width:0;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);
+         border-radius:8px;color:var(--txt);outline:none;font-size:13px}
+  #vprofile:focus{border-color:var(--acc)}
+  select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--txt);
+         padding:8px;outline:none;font-size:13px}
+  @media(max-width:960px){.flow{width:320px}}
 </style>
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
 </head>
-<body data-page-node-id="qnAzSStCzM4xXTc9uDbmOh">
-<div id="app" data-page-node-id="WxIPX7D7HoNwLgOpGdHmjn">
-  <aside id="side" data-page-node-id="HgBmyx2JQFYqN0ojwDZp6f">
-    <h2 data-page-node-id="135FHbU5rBQjqljfUsH0V3"><span class="dot" data-page-node-id="vPHHCIo0C73frckZzqrZAQ"></span>抓取历史</h2>
-    <div id="search" data-page-node-id="azDHc0uAU3rR8x2UNsH0zw"><input id="q" placeholder="搜索 URL / 标题…" oninput="loadHist()" data-page-node-id="Zc6VMHuxnS6CAHWDmH5x7T"></div>
-    <div id="hist" data-page-node-id="B0vQs9BvPRUWp8Uo9CjrvW"><div class="empty" data-page-node-id="a8gcfxytmFWB4bmkkeRnnc">暂无记录</div></div>
+<body>
+<div id="app">
+  <aside id="side">
+    <h2><span class="dot"></span>抓取历史</h2>
+    <div id="search"><input id="q" placeholder="搜索 URL / 标题…" oninput="loadHist()"></div>
+    <div id="hist"><div class="empty">暂无记录</div></div>
   </aside>
-  <main id="main" data-page-node-id="2FB2ktMMcWlZqna8exq1ba">
+  <main id="main">
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
-      <span style="align-self:center;margin-left:auto;color:var(--mut);font-size:11px">v2.2.1 · 转写✓ · 记录管理✓ · 抖音主页采集✓</span>
+      <span class="ver">v3.0 · 工作台布局 · 转写✓ · 主页采集✓</span>
     </div>
-    <div id="bar" data-page-node-id="lV8l0M1RGiG3lRrPSEmIuu">
-      <input id="url" placeholder="输入要抓取的网址，如 https://www.ehang.com/" onkeydown="if(event.key==='Enter')crawl()" data-page-node-id="77RQBFUEdXyztRbJwKBweu">
-      <label class="toggle" data-page-node-id="qxIvVKnJnqYSgG0biq2kGp"><input type="checkbox" id="llm" data-page-node-id="GkJIAizrF6eOPK0hC8iE1M"> 结构化抽取(本地Ollama)</label>
-      <button id="go" onclick="crawl()" data-page-node-id="nh9U12JWfEjWTjBdcSThBY">抓取</button>
+    <!-- 网页抓取（保持原有结构） -->
+    <div id="bar">
+      <input id="url" placeholder="输入要抓取的网址，如 https://www.ehang.com/" onkeydown="if(event.key==='Enter')crawl()">
+      <label class="toggle"><input type="checkbox" id="llm"> 结构化抽取(本地Ollama)</label>
+      <button id="go" onclick="crawl()">抓取</button>
     </div>
-    <div id="status" data-page-node-id="4iLNjnbnOADynZCrTmyUXJ">就绪</div>
-    <div id="result" data-page-node-id="Y0r7sf0OWzdc6PXmfDGdJY">
-      <div class="empty" style="color:var(--mut);padding:40px;text-align:center" data-page-node-id="7u5Mc5tfuX9Za6yYojvfYe">
+    <div id="status">就绪</div>
+    <div id="result">
+      <div class="empty" style="color:var(--mut);padding:40px;text-align:center">
         输入网址点击「抓取」，结果 Markdown 会显示在这里并自动存入历史。
       </div>
     </div>
-    <!-- 视频号/抖音 整理面板 -->
+    <!-- 视频工作台：左操作流 / 右产出区 -->
     <div id="video-panel">
-      <div class="row" style="margin-top:6px">
-        <span id="vhealth" style="font-size:12px;color:var(--mut)">工具状态：检测中…</span>
+      <div class="layoutA">
+        <!-- 左：操作流 -->
+        <div class="flow">
+          <div class="step" id="vst1">
+            <div class="step-h" onclick="fold('vst1')"><span class="no">1</span><span class="tt">添加视频</span>
+              <span class="sub">抖音号 / 本地文件</span></div>
+            <div class="step-b">
+              <div class="seg">
+                <button class="on" onclick="seg1(this,'p1a')">🔍 抖音号采集</button>
+                <button onclick="seg1(this,'p1c')">📁 本地文件</button>
+              </div>
+              <div id="p1a">
+                <div style="display:flex;gap:6px">
+                  <input id="vprofile" placeholder="粘贴对方主页链接（douyin.com/user/… 或分享短链）" onkeydown="if(event.key==='Enter')collectProfile()">
+                  <select id="vpcount" style="flex-shrink:0">
+                    <option value="50" selected>前 50 条</option>
+                    <option value="100">前 100 条</option>
+                    <option value="200">前 200 条</option>
+                    <option value="0">全部作品</option>
+                  </select>
+                  <button id="vpg" class="btn pri" onclick="collectProfile()" style="flex-shrink:0">🔍 采集</button>
+                </div>
+                <div id="vpstatus" class="mut" style="margin-top:6px">采集该账号的视频清单，勾选后填入 ② 待处理清单</div>
+                <div id="vplist" style="margin-top:8px"></div>
+              </div>
+              <div id="p1c" style="display:none">
+                <input type="file" id="vfiles" multiple accept="video/*" style="width:100%">
+                <div class="mut" style="margin-top:6px">视频号视频：手机保存 → 微信传输助手 → 此处上传</div>
+              </div>
+            </div>
+          </div>
+          <div class="step" id="vst2">
+            <div class="step-h" onclick="fold('vst2')"><span class="no">2</span><span class="tt">待处理清单</span>
+              <span class="sub" id="v2sub">粘贴直链，每行一个</span></div>
+            <div class="step-b">
+              <textarea id="vurls" placeholder="粘贴抖音 / 视频号直链，每行一个（支持批量清单，一次处理 N 条）&#10;例：https://v.douyin.com/xxxx&#10;https://.../xxx.m3u8" oninput="v2count()"></textarea>
+              <div class="segbtns">
+                <label class="toggle"><input type="checkbox" id="vvault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
+                <span style="flex:1"></span>
+                <button id="vgo" class="btn pri" onclick="runVideo()" style="padding:8px 22px">▶ 运行整理</button>
+              </div>
+            </div>
+          </div>
+          <div class="step" id="vst3">
+            <div class="step-h" onclick="fold('vst3')"><span class="no">3</span><span class="tt">处理进度</span>
+              <span class="sub" id="v3sub">就绪</span></div>
+            <div class="step-b">
+              <div style="background:var(--panel2);border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px">
+                <div id="vbar" style="width:0%;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .4s"></div>
+              </div>
+              <div id="vstatus" class="mut" style="line-height:1.9;min-height:20px">等待提交…</div>
+            </div>
+          </div>
+          <div id="vhealth" class="vhealth">工具状态：检测中…</div>
+        </div>
+        <!-- 右：产出区 -->
+        <div class="work">
+          <div class="work-tabs">
+            <div class="wtab active" id="wt-res" onclick="wtab('wresult',this)">✨ 整理结果 <span class="chip run" id="vres-count" style="display:none"></span></div>
+            <div class="wtab" id="wt-hist" onclick="wtab('whist',this)">📚 已入库记录 <span class="chip" id="vhist-status"></span></div>
+          </div>
+          <div class="work-body">
+            <div id="wresult" class="wpane active">
+              <div id="vresult"><div class="empty" style="padding:40px">批量整理的结果卡片会出现在这里。</div></div>
+            </div>
+            <div id="whist" class="wpane">
+              <div class="kpi">
+                <div><div class="k">累计入库</div><div class="v" id="vk-total">–</div></div>
+                <div><div class="k">完成</div><div class="v ok" id="vk-done">–</div></div>
+                <div><div class="k">失败</div><div class="v err" id="vk-err">–</div></div>
+                <div><div class="k">总字数</div><div class="v" id="vk-chars">–</div></div>
+              </div>
+              <input type="text" id="vhq" placeholder="🔍 搜索已入库记录（标题 / 来源）…" style="margin-bottom:10px" oninput="renderVhistList()">
+              <div id="vh-detail"></div>
+              <div id="vhist"><div class="empty" style="padding:14px">加载中…</div></div>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="row">
-        <input id="vprofile" style="flex:1;min-width:260px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--txt);outline:none;font-size:13px" placeholder="抖音号输入：粘贴对方主页链接（douyin.com/user/… 或分享短链），自动采集该账号视频清单" onkeydown="if(event.key==='Enter')collectProfile()">
-        <select id="vpcount" style="padding:8px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--txt);outline:none;font-size:13px">
-          <option value="50" selected>前 50 条</option>
-          <option value="100">前 100 条</option>
-          <option value="200">前 200 条</option>
-          <option value="0">全部作品</option>
-        </select>
-        <button id="vpg" class="btn" onclick="collectProfile()">🔍 采集该抖音号</button>
-      </div>
-      <div class="row" style="margin-top:6px">
-        <textarea id="vurls" placeholder="粘贴抖音 / 视频号直链，每行一个（支持批量清单，一次处理 N 条）&#10;例：https://v.douyin.com/xxxx&#10;https://.../xxx.m3u8"></textarea>
-      </div>
-      <div id="vplist"></div>
-      <div class="row">
-        <input type="file" id="vfiles" multiple accept="video/*">
-        <label class="toggle"><input type="checkbox" id="vvault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
-        <button id="vgo" class="btn" onclick="runVideo()">运行整理</button>
-        <span id="vstatus" style="color:var(--mut);font-size:12px"></span>
-      </div>
-      <div id="vresult"></div>
-      <div class="row" style="margin-top:20px;border-top:1px solid var(--line);padding-top:12px">
-        <b>📚 已入库记录</b>
-        <button class="btn" onclick="loadVideoHist()">刷新</button>
-        <span id="vhist-status" style="color:var(--mut);font-size:12px"></span>
-      </div>
-      <div id="vhist"></div>
     </div>
   </main>
 </div>
@@ -179,7 +291,33 @@ async function loadHist(){
 function stxt(s){return s==='done'?'✓ 完成':s==='error'?'✗ 失败':s==='running'?'… 进行中':'·'}
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 
-// 视频工具健康自检：确认当前服务加载的是新代码、yt-dlp/ffmpeg 可用
+// 视频工作台布局：折叠 / 分段 / 产出页签
+function fold(id){ document.getElementById(id).classList.toggle('folded'); }
+function seg1(btn, pid){
+  btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  ['p1a','p1c'].forEach(p=>{ const el=document.getElementById(p); if(el) el.style.display=(p===pid)?'block':'none'; });
+}
+function wtab(pid, el){
+  document.querySelectorAll('.wtab').forEach(b=>b.classList.remove('active'));
+  if(el) el.classList.add('active');
+  document.querySelectorAll('.wpane').forEach(p=>p.classList.remove('active'));
+  document.getElementById(pid).classList.add('active');
+}
+function showResultTab(){
+  if(!$('#wt-res').classList.contains('active')) wtab('wresult', $('#wt-res'));
+}
+function v2count(){
+  const n = $('#vurls').value.split('\n').map(s=>s.trim()).filter(Boolean).length;
+  $('#v2sub').textContent = n ? `${n} 条待处理` : '粘贴直链，每行一个';
+}
+function setBar(pct){
+  const bar = $('#vbar'); if(!bar) return;
+  bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+}
+function setV3(html){ $('#vstatus').innerHTML = html; if($('#v3sub')) $('#v3sub').textContent = '处理中'; }
+
+// 视频工具健康自检
 async function checkVideoHealth(){
   const el = document.getElementById('vhealth');
   if(!el) return;
@@ -189,8 +327,8 @@ async function checkVideoHealth(){
     const t = h.tools||{};
     const ok = x => x && x.ok ? '🟢' : '🔴';
     const yt = t.yt_dlp, ff = t.ffmpeg, fw = t.faster_whisper;
-    el.innerHTML = `工具状态：${ok(yt)}yt-dlp ${ok(ff)}ffmpeg ${fw && fw.ok ? (fw.local_model ? '🟢转写就绪' : '🟡转写(模型待下载)') : '🔴'}`
-      + (yt && !yt.ok ? ` <b style="color:#e06c75">yt-dlp 缺失，请重装依赖后重启服务</b>` : '')
+    el.innerHTML = `${ok(yt)}yt-dlp ${ok(ff)}ffmpeg ${fw && fw.ok ? (fw.local_model ? '🟢转写就绪' : '🟡转写(模型待下载)') : '🔴'} · 127.0.0.1:8788`
+      + (yt && !yt.ok ? ` <b style="color:#e06c75">yt-dlp 缺失</b>` : '')
       + (ff && !ff.ok ? ` <b style="color:#e06c75">ffmpeg 缺失</b>` : '');
   }catch(e){
     el.textContent = '工具状态：检测失败（服务未启动？）';
@@ -289,93 +427,109 @@ function switchTab(t, btn){
   $('#video-panel').style.display = web?'none':'flex';
   if(!web){ checkVideoHealth(); loadVideoHist(); }
 }
-// ---------- 已入库记录：查看 / 删除 ----------
+// ---------- 已入库记录：统计 / 搜索 / 查看 / 删除 ----------
+let _vhistRows = [];
 async function loadVideoHist(){
-  const box = $('#vhist'), st = $('#vhist-status');
-  st.textContent = '加载中…';
+  const st = $('#vhist-status');
+  st.textContent = '…';
   try{
     const r = await fetch('/api/video/history');
     const rows = await r.json();
-    if(!rows.length){ box.innerHTML = '<div class="empty" style="padding:14px">暂无视频整理记录</div>'; st.textContent=''; return; }
-    box.innerHTML = rows.map(x=>`
-      <div class="item" style="cursor:default">
-        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
-          <div style="min-width:0">
-            <div class="t">${esc(x.title||x.source_url)} <span class="st ${x.status}">${stxt(x.status)}</span></div>
-            <div class="u">${esc(x.source_url||'')}</div>
-            <div class="m"><span>${x.created_at||''} · ${x.md_len||0}字</span>
-              <span style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((x.vault_path||'').replace(/\\\\/g,'/'))}</span></div>
-          </div>
-          <div style="flex-shrink:0;display:flex;gap:6px">
-            <button class="btn" onclick="viewVideo('${x.id}')">查看</button>
-            <button class="btn del" onclick="delVideo('${x.id}','${esc(x.title||x.id)}')">删除</button>
-          </div>
+    _vhistRows = rows || [];
+    const done = _vhistRows.filter(x=>x.status==='done').length;
+    const err  = _vhistRows.filter(x=>x.status==='error').length;
+    const chars= _vhistRows.reduce((a,x)=>a+(x.md_len||0),0);
+    $('#vk-total').textContent = _vhistRows.length;
+    $('#vk-done').textContent  = done;
+    $('#vk-err').textContent   = err;
+    $('#vk-chars').textContent = chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars;
+    st.textContent = _vhistRows.length ? _vhistRows.length+' 条' : '';
+    renderVhistList();
+  }catch(e){ st.textContent = '加载失败'; }
+}
+function renderVhistList(){
+  const box = $('#vhist');
+  const q = ($('#vhq') ? $('#vhq').value.trim().toLowerCase() : '');
+  let rows = _vhistRows;
+  if(q) rows = rows.filter(x =>
+    ((x.title||'')+' '+(x.source_url||'')+' '+(x.vault_path||'')).toLowerCase().includes(q));
+  if(!rows.length){
+    box.innerHTML = `<div class="empty" style="padding:14px">${q?'没有匹配的记录':'暂无视频整理记录'}</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="vcard" style="margin-bottom:24px">` + rows.map(x=>`
+      <div class="rec" onclick="viewVideo('${x.id}')">
+        <div class="ic">🎬</div>
+        <div class="bd">
+          <div class="t">${esc(x.title||x.source_url)} <span class="st ${x.status}">${stxt(x.status)}</span></div>
+          <div class="u">${esc(x.source_url||'')} · ${x.created_at||''} · ${x.md_len||0}字</div>
         </div>
-      </div>`).join('');
-    st.textContent = '共 '+rows.length+' 条';
-  }catch(e){ st.textContent = '加载失败：'+e.message; }
+        <div class="sp">
+          <button class="btn" onclick="event.stopPropagation();viewVideo('${x.id}')">查看</button>
+          <button class="btn del" onclick="event.stopPropagation();delVideo('${x.id}','${esc(x.title||x.id)}')">删除</button>
+        </div>
+      </div>`).join('') + `</div>`;
 }
 async function viewVideo(id){
-  const st = $('#vhist-status');
-  st.innerHTML = '<span class="spinner"></span> 加载笔记…';
+  const det = $('#vh-detail');
+  det.innerHTML = '<div class="empty" style="padding:14px"><span class="spinner"></span> 加载笔记…</div>';
   try{
     const r = await fetch('/api/video/records/'+id);
-    if(!r.ok){ st.textContent = '✗ 记录不存在'; return; }
+    if(!r.ok){ det.innerHTML = '<div class="empty" style="padding:14px">✗ 记录不存在</div>'; return; }
     const d = await r.json();
-    $('#vresult').innerHTML = `<div class="vcard">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <div style="font-weight:700;min-width:0">${esc(d.title||d.source_url)}</div>
+    det.innerHTML = `<div class="vcard">
+      <div class="vcard-h">
+        <div>${esc(d.title||d.source_url)}</div>
         <button class="btn" style="flex-shrink:0" onclick="closeDetailView()">收起 ▲</button>
       </div>
-      <div class="mut">${esc(d.source_url||'')} · ${d.created_at||''} · ${d.md_len||0}字
-        ${d.vault_path?('· '+esc(d.vault_path.replace(/\\\\/g,'/'))):''}</div>
-      ${d.error?`<div style="color:var(--red);font-size:12px">${esc(d.error)}</div>`:''}
-      <div class="md-body" style="margin-top:8px">${DOMPurify.sanitize(marked.parse(d.markdown||'(笔记文件不存在或已被删除)'))}</div>
+      <div class="vcard-b">
+        <div class="mut" style="margin-bottom:8px">${esc(d.source_url||'')} · ${d.created_at||''} · ${d.md_len||0}字
+          ${d.vault_path?('· '+esc(d.vault_path.replace(/\\\\/g,'/'))):''}</div>
+        ${d.error?`<div style="color:var(--red);font-size:12px">${esc(d.error)}</div>`:''}
+        <div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||'(笔记文件不存在或已被删除)'))}</div>
+      </div>
     </div>`;
-    st.textContent = '✓ 已加载';
-  }catch(e){ st.textContent = '✗ '+e.message; }
+    det.scrollIntoView({behavior:'smooth', block:'start'});
+  }catch(e){ det.innerHTML = '<div class="empty" style="padding:14px">✗ '+e.message+'</div>'; }
 }
-function closeDetailView(){
-  $('#vresult').innerHTML = '';
-  const st = $('#vhist-status'); if(st) st.textContent = '已收起详情';
-}
+function closeDetailView(){ $('#vh-detail').innerHTML = ''; }
 async function delVideo(id, title){
   if(!confirm('确定删除记录「'+title+'」？\\n\\n将同时删除：数据库记录、知识库中的整理笔记（Claw/07-视频号整理）、服务端副本。\\n此操作不可恢复。')) return;
   const st = $('#vhist-status');
-  st.innerHTML = '<span class="spinner"></span> 删除中…';
+  st.innerHTML = '…';
   try{
     const r = await fetch('/api/video/'+id, {method:'DELETE'});
     const d = await r.json();
     if(r.ok && d.ok){
-      st.textContent = '✓ 已删除（含笔记 '+((d.removed||[]).length)+' 个文件）';
+      st.textContent = '已删除';
+      $('#vh-detail').innerHTML = '<div class="empty" style="padding:10px">✓ 已删除（含笔记 '+((d.removed||[]).length)+' 个文件）</div>';
       loadVideoHist();
-    } else { st.textContent = '✗ 删除失败：'+(d.error||r.status); }
+    } else { st.textContent = '✗ 删除失败'; }
   }catch(e){ st.textContent = '✗ '+e.message; }
 }
-
 // ---------- 抖音主页采集：清单先行，人工过目后再入库 ----------
 let _profileVideos = [];
 async function collectProfile(){
   const url = $('#vprofile').value.trim();
-  if(!url){ $('#vstatus').textContent = '请先粘贴抖音用户主页链接'; return; }
+  if(!url){ $('#vpstatus').textContent = '✗ 请先粘贴抖音用户主页链接'; return; }
   const btn = $('#vpg'); btn.disabled = true; btn.textContent = '采集中…';
   $('#vplist').innerHTML = '<div class="empty" style="padding:14px">正在打开主页并滚动采集清单，约需 1~3 分钟…</div>';
-  $('#vstatus').textContent = '';
+  $('#vpstatus').textContent = '';
   try{
     const r = await fetch('/api/video/profile',{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({url, max_count:parseInt($('#vpcount').value,10)})});
     const d = await r.json();
     if(!r.ok){
-      $('#vplist').innerHTML = `<div class="vcard" style="border-color:var(--red)">✗ 采集失败：${esc(d.error||r.status)}</div>`;
+      $('#vplist').innerHTML = `<div class="vcard" style="border-color:var(--red)"><div class="vcard-b">✗ 采集失败：${esc(d.error||r.status)}</div></div>`;
       return;
     }
     _profileVideos = d.videos || [];
     renderProfileList(d.nickname || '');
-    $('#vstatus').textContent = `✓ 采集到 ${_profileVideos.length} 条视频，勾选后「填入下方清单」再运行整理`;
+    $('#vpstatus').textContent = `✓ 采集到 ${_profileVideos.length} 条视频，勾选后点「填入下方清单」`;
   }catch(e){
-    $('#vplist').innerHTML = `<div class="vcard" style="border-color:var(--red)">✗ 请求异常：${esc(e.message)}</div>`;
-  }finally{ btn.disabled = false; btn.textContent = '🔍 采集该抖音号'; }
+    $('#vplist').innerHTML = `<div class="vcard" style="border-color:var(--red)"><div class="vcard-b">✗ 请求异常：${esc(e.message)}</div></div>`;
+  }finally{ btn.disabled = false; btn.textContent = '🔍 采集'; }
 }
 function renderProfileList(nickname){
   const box = $('#vplist');
@@ -387,15 +541,15 @@ function renderProfileList(nickname){
       <span class="mut" style="flex-shrink:0;font-size:11px">${v.id}</span>
     </label>`).join('');
   box.innerHTML = `<div class="vcard">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-      <b>📋 采集清单${nickname?('：'+esc(nickname)):''}（${_profileVideos.length} 条）</b>
+    <div class="vcard-h" style="flex-wrap:wrap">
+      <div style="white-space:normal">📋 采集清单${nickname?('：'+esc(nickname)):''}（${_profileVideos.length} 条）</div>
       <span style="display:flex;gap:6px;flex-shrink:0">
         <button class="btn" onclick="vpSelAll(true)">全选</button>
         <button class="btn" onclick="vpSelAll(false)">全不选</button>
-        <button class="btn" onclick="vpFill()">把选中链接填入上方清单</button>
+        <button class="btn pri" onclick="vpFill()">填入下方清单 ↓</button>
       </span>
     </div>
-    <div style="margin-top:6px;max-height:260px;overflow:auto">${rows}</div>
+    <div style="border-top:1px solid var(--line);max-height:260px;overflow:auto;padding:0 14px">${rows}</div>
   </div>`;
 }
 function vpSelAll(on){
@@ -404,10 +558,11 @@ function vpSelAll(on){
 function vpFill(){
   const sel = [...document.querySelectorAll('.vp-chk')].filter(c=>c.checked)
     .map(c=>_profileVideos[+c.dataset.i].url);
-  if(!sel.length){ $('#vstatus').textContent = '未勾选任何视频'; return; }
+  if(!sel.length){ $('#vpstatus').textContent = '✗ 未勾选任何视频'; return; }
   $('#vurls').value = sel.join('\n');
-  $('#vstatus').textContent = `✓ 已填入 ${sel.length} 条链接，点「运行整理」开始批量下载蒸馏`;
-  $('#vurls').scrollIntoView({behavior:'smooth', block:'center'});
+  v2count();
+  $('#vpstatus').textContent = `✓ 已填入 ${sel.length} 条链接`;
+  $('#vst2').scrollIntoView({behavior:'smooth', block:'center'});
 }
 
 async function runVideo(){
@@ -418,6 +573,8 @@ async function runVideo(){
   let results = [];
   const total = urls.length + files.length;
   const t0 = Date.now();
+  showResultTab();
+  setBar(total ? 2 : 0);
   // 每秒刷新一次用时显示
   const timerId = setInterval(()=>{
     const el = document.getElementById('vtimer');
@@ -429,7 +586,7 @@ async function runVideo(){
     // 好处：① 单条卡住/失败不影响其余；② 页面能看到第几条在处理；③ 服务端逐条入库。
     for(let i=0;i<urls.length;i++){
       go.textContent = `处理中 ${results.length+1}/${total}…`;
-      $('#vstatus').innerHTML = `<span class="spinner"></span> <b>正在处理第 ${i+1}/${urls.length} 条链接</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`;
+      setV3(`<b>正在处理第 ${i+1}/${urls.length} 条链接</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
       const itemT0 = Date.now();
       try{
         const r = await fetch('/api/video',{method:'POST',
@@ -445,13 +602,14 @@ async function runVideo(){
       doneMsgs.unshift(last.ok
         ? `✅ 第 ${i+1} 条完成（${secs} 秒）：${esc((last.title||'').slice(0,30))}`
         : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
+      setBar(results.length/total*100);
       renderVideo(results);
     }
     if(files.length){
       for(let j=0;j<files.length;j++){
         const f = files[j];
         go.textContent = `处理中 ${results.length+1}/${total}…`;
-        $('#vstatus').innerHTML = `<span class="spinner"></span> <b>正在上传本地文件 ${j+1}/${files.length}</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(f.name)}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`;
+        setV3(`<b>正在上传本地文件 ${j+1}/${files.length}</b>（已用时 <span id="vtimer">0 秒</span>）<br><span style="font-size:11px">${esc(f.name)}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
         const itemT0 = Date.now();
         const fd = new FormData();
         fd.append('file', f, f.name);
@@ -463,22 +621,29 @@ async function runVideo(){
         doneMsgs.unshift(last.ok
           ? `✅ 文件「${esc(f.name.slice(0,20))}」完成（${secs} 秒）`
           : `❌ 文件「${esc(f.name.slice(0,20))}」失败（${secs} 秒）`);
+        setBar(results.length/total*100);
         renderVideo(results);
       }
     }
     const totalSecs = Math.round((Date.now()-t0)/1000);
-    if(!results.length){ $('#vstatus').textContent='未提交任何链接或文件'; }
-    else { $('#vstatus').innerHTML = '🎉 全部完成：成功 '+(results.filter(x=>x.ok).length)+'/'+results.length+' 条（总用时 '+totalSecs+' 秒）'; }
+    if(!results.length){ setV3('未提交任何链接或文件'); }
+    else {
+      setV3('🎉 全部完成：成功 '+(results.filter(x=>x.ok).length)+'/'+results.length+' 条（总用时 '+totalSecs+' 秒）<br>'+doneMsgs.join('<br>'));
+      $('#v3sub').textContent = '完成';
+    }
+    setBar(100);
     renderVideo(results);
-  }catch(e){ $('#vstatus').textContent='✗ '+e.message; }
-  finally{ clearInterval(timerId); go.disabled=false; go.textContent='运行整理'; }
+  }catch(e){ setV3('✗ '+e.message); }
+  finally{ clearInterval(timerId); go.disabled=false; go.textContent='▶ 运行整理'; }
 }
 function renderVideo(list){
   const box = $('#vresult');
-  if(!list.length){ box.innerHTML=''; return; }
+  const cnt = $('#vres-count');
+  if(!list.length){ box.innerHTML='<div class="empty" style="padding:40px">批量整理的结果卡片会出现在这里。</div>'; cnt.style.display='none'; return; }
   _lastResults = list;
+  cnt.style.display=''; cnt.textContent = '本次 '+list.length+' 条';
   const bar = list.length>1 ? `
-    <div class="row" style="margin-bottom:8px">
+    <div class="row" style="margin-bottom:10px">
       <b>整理结果（${list.length} 条）</b>
       <button class="btn" onclick="collapseAllV(true)">全部收起</button>
       <button class="btn" onclick="collapseAllV(false)">全部展开</button>
@@ -490,13 +655,18 @@ function renderVideo(list){
     const key = x.source_url || x.title || String(idx);
     const hid = _vCollapsed.has(key);
     return `<div class="vcard">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <div style="font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}</div>
-        <button class="btn" style="flex-shrink:0" onclick="toggleVCard(${idx})">${hid?'展开 ▼':'收起 ▲'}</button>
+      <div class="vcard-h">
+        <div>${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}</div>
+        <span style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+          ${ok?'<span class="chip ok">✓ 已入库</span>':'<span class="chip err">失败</span>'}
+          <button class="btn" onclick="toggleVCard(${idx})">${hid?'展开 ▼':'收起 ▲'}</button>
+        </span>
       </div>
-      <div class="mut">${esc(x.source_url||'')} ${x.vault_path?('· 已入库: '+esc(vp)):'· 未入库'}</div>
-      ${x.error?`<div style="color:var(--red);font-size:12px">${esc(x.error)}</div>`:''}
-      <div class="md-body" id="vmd-${idx}" style="margin-top:8px;${hid?'display:none':''}">${DOMPurify.sanitize(marked.parse(md))}</div>
+      <div class="vcard-b" id="vmd-${idx}" style="${hid?'display:none':''}">
+        <div class="mut" style="margin-bottom:8px">${esc(x.source_url||'')} ${x.vault_path?('· 已入库: '+esc(vp)):'· 未入库'}</div>
+        ${x.error?`<div style="color:var(--red);font-size:12px">${esc(x.error)}</div>`:''}
+        <div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div>
+      </div>
     </div>`;
   }).join('');
 }
@@ -510,7 +680,7 @@ function toggleVCard(idx){
   if(!md) return;
   const hide = md.style.display !== 'none';
   md.style.display = hide ? 'none' : '';
-  const btn = md.closest('.vcard').querySelector('button');
+  const btn = md.closest('.vcard').querySelector('.vcard-h button');
   if(btn) btn.textContent = hide ? '展开 ▼' : '收起 ▲';
   if(hide) _vCollapsed.add(_vkey(x, idx)); else _vCollapsed.delete(_vkey(x, idx));
 }
