@@ -37,6 +37,15 @@ os.makedirs(CRAWLS_DIR, exist_ok=True)
 import video_downloader as vdl
 import video_pipeline as vp
 
+# ---------- 抖音主页采集 ----------
+try:
+    import douyin_profile as dp
+except Exception as _dpe:  # 依赖缺失不让整个服务挂掉
+    dp = None
+    print("[warn] douyin_profile 加载失败:", _dpe, file=sys.stderr)
+
+_profile_lock = threading.Lock()   # 主页采集互斥：playwright 实例只跑一个
+
 # ---------- DB ----------
 _lock = threading.Lock()
 _video_lock = threading.Lock()   # 视频流水线全局互斥：多请求串行，防 Ollama/CPU 争抢
@@ -522,6 +531,26 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 results = do_video_batch(urls, write_vault)
                 self._send(200, {"results": results})
+            except Exception as e:
+                self._send(500, {"error": str(e)[:500]})
+            return
+        if self.path == "/api/video/profile":
+            try:
+                if dp is None:
+                    self._send(500, {"error": "douyin_profile 模块未加载（看服务日志）"})
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                url = (data.get("url") or "").strip()
+                max_count = int(data.get("max_count") or 50)
+                if not url:
+                    self._send(400, {"error": "url required（抖音用户主页链接）"})
+                    return
+                # 采集比较慢（要滚动翻页），与视频流水线互不抢资源但自身串行
+                with _profile_lock:
+                    out = dp.fetch_profile_videos(url, verbose=False,
+                                                  max_count=max_count)
+                self._send(200, out)
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
             return

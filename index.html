@@ -111,7 +111,7 @@
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
-      <span style="align-self:center;margin-left:auto;color:var(--mut);font-size:11px">v2.1 · 转写✓ · 记录管理✓</span>
+      <span style="align-self:center;margin-left:auto;color:var(--mut);font-size:11px">v2.2 · 转写✓ · 记录管理✓ · 抖音主页采集✓</span>
     </div>
     <div id="bar" data-page-node-id="lV8l0M1RGiG3lRrPSEmIuu">
       <input id="url" placeholder="输入要抓取的网址，如 https://www.ehang.com/" onkeydown="if(event.key==='Enter')crawl()" data-page-node-id="77RQBFUEdXyztRbJwKBweu">
@@ -129,9 +129,14 @@
       <div class="row" style="margin-top:6px">
         <span id="vhealth" style="font-size:12px;color:var(--mut)">工具状态：检测中…</span>
       </div>
+      <div class="row">
+        <input id="vprofile" style="flex:1;min-width:260px;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--txt);outline:none;font-size:13px" placeholder="抖音号输入：粘贴对方主页链接（douyin.com/user/… 或分享短链），自动采集该账号视频清单" onkeydown="if(event.key==='Enter')collectProfile()">
+        <button id="vpg" class="btn" onclick="collectProfile()">🔍 采集该抖音号</button>
+      </div>
       <div class="row" style="margin-top:6px">
         <textarea id="vurls" placeholder="粘贴抖音 / 视频号直链，每行一个（支持批量清单，一次处理 N 条）&#10;例：https://v.douyin.com/xxxx&#10;https://.../xxx.m3u8"></textarea>
       </div>
+      <div id="vplist"></div>
       <div class="row">
         <input type="file" id="vfiles" multiple accept="video/*">
         <label class="toggle"><input type="checkbox" id="vvault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
@@ -340,6 +345,63 @@ async function delVideo(id, title){
       loadVideoHist();
     } else { st.textContent = '✗ 删除失败：'+(d.error||r.status); }
   }catch(e){ st.textContent = '✗ '+e.message; }
+}
+
+// ---------- 抖音主页采集：清单先行，人工过目后再入库 ----------
+let _profileVideos = [];
+async function collectProfile(){
+  const url = $('#vprofile').value.trim();
+  if(!url){ $('#vstatus').textContent = '请先粘贴抖音用户主页链接'; return; }
+  const btn = $('#vpg'); btn.disabled = true; btn.textContent = '采集中…';
+  $('#vplist').innerHTML = '<div class="empty" style="padding:14px">正在打开主页并滚动采集清单，约需 1~3 分钟…</div>';
+  $('#vstatus').textContent = '';
+  try{
+    const r = await fetch('/api/video/profile',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url, max_count:50})});
+    const d = await r.json();
+    if(!r.ok){
+      $('#vplist').innerHTML = `<div class="vcard" style="border-color:var(--red)">✗ 采集失败：${esc(d.error||r.status)}</div>`;
+      return;
+    }
+    _profileVideos = d.videos || [];
+    renderProfileList(d.nickname || '');
+    $('#vstatus').textContent = `✓ 采集到 ${_profileVideos.length} 条视频，勾选后「填入下方清单」再运行整理`;
+  }catch(e){
+    $('#vplist').innerHTML = `<div class="vcard" style="border-color:var(--red)">✗ 请求异常：${esc(e.message)}</div>`;
+  }finally{ btn.disabled = false; btn.textContent = '🔍 采集该抖音号'; }
+}
+function renderProfileList(nickname){
+  const box = $('#vplist');
+  if(!_profileVideos.length){ box.innerHTML=''; return; }
+  const rows = _profileVideos.map((v,i)=>`
+    <label style="display:flex;gap:8px;align-items:center;padding:5px 2px;border-bottom:1px dashed var(--line);cursor:pointer">
+      <input type="checkbox" class="vp-chk" data-i="${i}" checked>
+      <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v.title)}">${esc(v.title.slice(0,60))}</span>
+      <span class="mut" style="flex-shrink:0;font-size:11px">${v.id}</span>
+    </label>`).join('');
+  box.innerHTML = `<div class="vcard">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <b>📋 采集清单${nickname?('：'+esc(nickname)):''}（${_profileVideos.length} 条）</b>
+      <span style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn" onclick="vpSelAll(true)">全选</button>
+        <button class="btn" onclick="vpSelAll(false)">全不选</button>
+        <button class="btn" onclick="vpFill()">把选中链接填入下方清单</button>
+      </span>
+    </div>
+    <div style="margin-top:6px;max-height:260px;overflow:auto">${rows}</div>
+  </div>`;
+}
+function vpSelAll(on){
+  document.querySelectorAll('.vp-chk').forEach(c=>c.checked=on);
+}
+function vpFill(){
+  const sel = [...document.querySelectorAll('.vp-chk')].filter(c=>c.checked)
+    .map(c=>_profileVideos[+c.dataset.i].url);
+  if(!sel.length){ $('#vstatus').textContent = '未勾选任何视频'; return; }
+  $('#vurls').value = sel.join('\n');
+  $('#vstatus').textContent = `✓ 已填入 ${sel.length} 条链接，点「运行整理」开始批量下载蒸馏`;
+  $('#vurls').scrollIntoView({behavior:'smooth', block:'center'});
 }
 
 async function runVideo(){
