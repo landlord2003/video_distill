@@ -159,12 +159,13 @@ def do_crawl(url: str, use_llm: bool):
 
 
 # ---------- 视频整理（视频号/抖音） ----------
-def do_video_pipeline(source_url, video_path, write_vault):
+def do_video_pipeline(source_url, video_path, write_vault, bilingual=False, first_frame_only=False):
     """处理单个已下载/已上传的视频：转写->总结->Markdown->落库。"""
     rec = {"source_url": source_url, "video_path": video_path}
     try:
         r = vp.process_video(video_path, url=source_url, source="视频号/抖音",
-                             write_vault=write_vault)
+                             write_vault=write_vault,
+                             bilingual=bilingual, first_frame_only=first_frame_only)
         rec.update({
             "ok": r.get("ok", False),
             "title": r.get("title", os.path.basename(video_path)),
@@ -173,6 +174,8 @@ def do_video_pipeline(source_url, video_path, write_vault):
             "transcript_len": r.get("transcript_len", 0),
             "frames": r.get("frames", 0),
             "tags": r.get("tags", []),
+            "lang": r.get("lang", ""),
+            "bilingual": r.get("bilingual", False),
             "error": r.get("vault_error") or r.get("transcript_error") or "",
         })
     except Exception as e:
@@ -182,7 +185,7 @@ def do_video_pipeline(source_url, video_path, write_vault):
     return rec
 
 
-def do_video_batch(urls, write_vault):
+def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
 
     设计要点（防止一条卡死拖垮整批）：
@@ -202,7 +205,9 @@ def do_video_batch(urls, write_vault):
                     rec = {"source_url": url, "ok": False,
                            "error": err or "下载失败", "markdown": ""}
                 else:
-                    rec = do_video_pipeline(url, path, write_vault)
+                    rec = do_video_pipeline(url, path, write_vault,
+                                            bilingual=bilingual,
+                                            first_frame_only=first_frame_only)
                     rec["source_url"] = url
             except Exception as e:
                 rec = {"source_url": url, "ok": False,
@@ -612,10 +617,14 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(raw.decode("utf-8"))
                 urls = data.get("urls") or []
                 write_vault = bool(data.get("write_vault", True))
+                bilingual = bool(data.get("bilingual", False))
+                first_frame_only = bool(data.get("first_frame", False))
                 if not urls:
                     self._send(400, {"error": "urls 不能为空"})
                     return
-                results = do_video_batch(urls, write_vault)
+                results = do_video_batch(urls, write_vault,
+                                         bilingual=bilingual,
+                                         first_frame_only=first_frame_only)
                 self._send(200, {"results": results})
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})

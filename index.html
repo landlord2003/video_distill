@@ -185,7 +185,7 @@
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
-      <span class="ver">v3.2 · 工作台布局 · 记录管理✓ · 同步刷新✓ · 清空重置✓</span>
+      <span class="ver">v3.3 · 工作台布局 · 双语字幕✓ · 记录管理✓</span>
     </div>
     <!-- 网页抓取（保持原有结构） -->
     <div id="bar">
@@ -239,6 +239,10 @@
               <textarea id="vurls" placeholder="粘贴抖音 / 视频号直链，每行一个（支持批量清单，一次处理 N 条）&#10;例：https://v.douyin.com/xxxx&#10;https://.../xxx.m3u8" oninput="v2count()"></textarea>
               <div class="segbtns">
                 <label class="toggle"><input type="checkbox" id="vvault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
+                <label class="toggle" title="英文等外语视频：保留原文并逐段对照中文翻译（本地模型翻译）"><input type="checkbox" id="vbilingual"> 🔤 双语字幕对照</label>
+                <label class="toggle" title="只抽视频开头一帧作配图，不做全片抽帧"><input type="checkbox" id="v1frame"> 🖼 只取首页一帧</label>
+              </div>
+              <div class="segbtns" style="margin-top:8px">
                 <span style="flex:1"></span>
                 <button id="vgo" class="btn pri" onclick="runVideo()" style="padding:8px 22px">▶ 运行整理</button>
               </div>
@@ -778,7 +782,9 @@ async function runVideo(){
       try{
         const r = await fetch('/api/video',{method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({urls:[urls[i]], write_vault:wv})});
+          body:JSON.stringify({urls:[urls[i]], write_vault:wv,
+            bilingual:!!($('#vbilingual')&&$('#vbilingual').checked),
+            first_frame:!!($('#v1frame')&&$('#v1frame').checked)})});
         const d = await r.json();
         results = results.concat(d.results || []);
       }catch(err){

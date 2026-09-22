@@ -178,13 +178,98 @@ def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
     return result.get("text", ""), result.get("err")
 
 
+def transcribe_segments(video_path, model_size=TRANSCRIBE_MODEL):
+    """faster-whisper 带时间轴分段转写（语言自动检测）。
+
+    返回 (segments, language, err)；segments = [(start_sec, end_sec, text), ...]。
+    用于双语字幕模式：需要每段时间戳以便英/中逐段对照。
+    """
+    try:
+        from faster_whisper import WhisperModel  # noqa: F401 提前暴露缺依赖
+    except Exception as e:
+        return [], "", f"faster-whisper 未安装：{e}"
+    result = {}
+
+    def _work():
+        try:
+            model = _get_whisper(model_size)
+            segs, info = model.transcribe(video_path, beam_size=5)  # 语言自动检测
+            out = []
+            for s in segs:
+                txt = (s.text or "").strip()
+                if txt:
+                    out.append((float(s.start), float(s.end), txt))
+            result["segs"] = out
+            result["lang"] = (getattr(info, "language", "") or "").lower()
+        except Exception as e:
+            result["err"] = f"转写出错：{type(e).__name__}: {e}"
+
+    th = threading.Thread(target=_work, daemon=True)
+    th.start()
+    th.join(WHISPER_TIMEOUT)
+    if th.is_alive():
+        return [], "", f"转写超时（>{WHISPER_TIMEOUT}s 未完成），已中止本条"
+    return result.get("segs", []), result.get("lang", ""), result.get("err")
+
+
+def _fmt_ts(sec):
+    m, s = divmod(int(sec), 60)
+    h, m = divmod(m, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def translate_segments_zh(segments, batch_size=15):
+    """把英文字幕段批量翻译成中文（本地 qwen3:14b），返回与 segments 等长的中文列表。
+
+    分批（默认 15 段/批）防超长；按编号对齐，解析失败的段落留空并由调用方标注。
+    """
+    texts = [(t or "") for (_, _, t) in segments]
+    outs = [""] * len(segments)
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i:i + batch_size]
+        numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(chunk))
+        prompt = (
+            "你是专业字幕翻译。下面是视频字幕（英文原文）按序号排列，"
+            "请逐条翻译成自然流畅的简体中文，严格保持序号一一对应，不要合并或拆分条目。\n"
+            "输出格式：每行一条，形如「1. 翻译内容」，除序号行外不要输出任何解释。\n\n"
+            f"{numbered}"
+        )
+        raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=900)
+        if raw.startswith("[Ollama 调用失败"):
+            continue  # 本批失败，留空
+        for ln in raw.splitlines():
+            ln = ln.strip()
+            m = re.match(r"^(\d+)\s*[.、:：)）]\s*(.+)$", ln)
+            if not m:
+                continue
+            idx = int(m.group(1)) - 1
+            if 0 <= idx < len(chunk) and not outs[i + idx]:
+                outs[i + idx] = m.group(2).strip()
+    return outs
+
+
 # ---------------- 关键帧 ----------------
-def extract_keyframes(video_path, out_dir, n=4):
-    """均匀抽 n 帧，返回图片路径列表（失败返回 []）。不依赖 ffprobe/时长解析。"""
+def extract_keyframes(video_path, out_dir, n=4, first_only=False):
+    """均匀抽 n 帧，返回图片路径列表（失败返回 []）。不依赖 ffprobe/时长解析。
+
+    first_only=True 时只取开头 0.5 秒处一帧（视频首页/封面），用于双语字幕等
+    只需要一张画面配图的场景。
+    """
     ff = get_ffmpeg()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(video_path).stem
+    if first_only:
+        single = str(out_dir / f"{stem}_001.jpg")
+        try:
+            subprocess.run([ff, "-y", "-ss", "0.5", "-i", video_path,
+                            "-frames:v", "1", "-q:v", "3", single],
+                           capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired as e:
+            err = (e.stderr or b"")[-200:]
+            print(f"[video] ffmpeg 首帧抽取超时: {video_path} stderr={err!r}", flush=True)
+        files = sorted(out_dir.glob(f"{stem}_*.jpg"))
+        return [str(f) for f in files if os.path.getsize(f) > 200]
     pat = str(out_dir / f"{stem}_%03d.jpg")
     # 每 ~2 秒抽 1 帧（fps=1/2），不依赖视频时长
     try:
@@ -316,7 +401,7 @@ def _embed_image(fp):
             return ""
 
 
-def build_markdown(meta, transcript, frame_descs, summary, frames):
+def build_markdown(meta, transcript, frame_descs, summary, frames, bilingual_blocks=None):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = []
     title = summary.get("标题") or meta.get("title") or "未命名视频"
@@ -385,7 +470,16 @@ def build_markdown(meta, transcript, frame_descs, summary, frames):
             if i < len(frame_descs):
                 lines.append(f"> {frame_descs[i]}")
             lines.append("")
-    if transcript:
+    if bilingual_blocks:
+        # 双语字幕对照表（替代纯文本转写全文，避免重复）
+        lines.append("")
+        lines.append("## 双语字幕（原文 / 中文对照）")
+        lines.append("")
+        lines.append("| 时间 | 原文 | 中文翻译 |")
+        lines.append("|---|---|---|")
+        for ts, src, zh in bilingual_blocks:
+            lines.append(f"| {ts} | {src.replace('|', '/')} | {(zh or '（翻译缺失）').replace('|', '/')} |")
+    elif transcript:
         lines.append("## 语音转写全文")
         lines.append("")
         lines.append(transcript)
@@ -393,8 +487,14 @@ def build_markdown(meta, transcript, frame_descs, summary, frames):
     return "\n".join(lines)
 
 
-def process_video(video_path, url="", source="", write_vault=True, model_size=TRANSCRIBE_MODEL):
-    """主流程：单视频 -> Markdown + 落库。返回结果 dict。"""
+def process_video(video_path, url="", source="", write_vault=True, model_size=TRANSCRIBE_MODEL,
+                  bilingual=False, first_frame_only=False):
+    """主流程：单视频 -> Markdown + 落库。返回结果 dict。
+
+    bilingual: 双语字幕模式——转写语言自动检测，非中文音频产出「原文/中文对照」表
+               （中文翻译走本地 qwen3:14b）；中文音频自动退回普通模式并标注。
+    first_frame_only: 只抽开头 0.5s 一帧（视频首页/封面），不跑全片抽帧。
+    """
     video_path = str(video_path)
     if not os.path.exists(video_path):
         return {"ok": False, "error": f"视频不存在：{video_path}"}
@@ -405,16 +505,42 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
 
     meta = {"source": source or "视频号/抖音", "url": url, "title": stem}
 
-    # 1) 转写
-    transcript, terr = transcribe(video_path, model_size)
-    # 2) 关键帧
-    frames = extract_keyframes(video_path, frames_dir, n=N_KEYFRAMES)
+    bilingual_blocks = None
+    transcript, terr = "", None
+    if bilingual:
+        # 双语模式：带时间轴分段转写（语言自动检测）
+        segs, lang, terr = transcribe_segments(video_path, model_size)
+        if segs and lang == "zh":
+            # 中文音频：无需英中对照，退回普通全文
+            transcript = "\n".join(t for (_, _, t) in segs)
+            meta["lang"] = lang
+        elif segs:
+            # 非中文（英文等）音频：逐段翻译成中文，产出对照表
+            zhs = translate_segments_zh(segs)
+            bilingual_blocks = [(_fmt_ts(st), tx, zh) for (st, _, tx), zh in zip(segs, zhs)]
+            transcript = "\n".join(t for (_, _, t) in segs)
+            meta["lang"] = lang
+        else:
+            # 分段转写失败，兜底普通全文转写
+            transcript, terr = transcribe(video_path, model_size)
+    else:
+        # 1) 转写
+        transcript, terr = transcribe(video_path, model_size)
+    # 2) 关键帧（首页模式只取一帧）
+    frames = extract_keyframes(video_path, frames_dir, n=N_KEYFRAMES,
+                               first_only=first_frame_only)
     # 3) 视觉理解
     frame_descs = describe_frames(frames)
-    # 4) 结构化总结
-    summary = summarize(transcript, frame_descs, meta)
+    # 4) 结构化总结（双语模式喂中文翻译，总结质量更好）
+    summarize_text = transcript
+    if bilingual_blocks:
+        zh_join = "\n".join(zh for (_, _, zh) in bilingual_blocks if zh)
+        if len(zh_join) > 50:
+            summarize_text = zh_join
+    summary = summarize(summarize_text, frame_descs, meta)
     # 5) 拼装
-    md = build_markdown(meta, transcript, frame_descs, summary, frames)
+    md = build_markdown(meta, transcript, frame_descs, summary, frames,
+                        bilingual_blocks=bilingual_blocks)
 
     result = {
         "ok": True,
@@ -425,6 +551,8 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
         "transcript_error": terr,
         "frames": len(frames),
         "tags": summary.get("标签", []),
+        "lang": meta.get("lang", ""),
+        "bilingual": bool(bilingual_blocks),
         "markdown": md,
     }
 
