@@ -1,42 +1,36 @@
-# 虚拟环境（~几百 MB，随项目重建，见 README）
+# venv（含 Chromium，~150MB+，随项目拷贝，本地重建见 README）
 venv/
+
+# 运行时日志 / 测试产物
+server.log
+*.log
+crawl_test_resp.json
+
+# 抓取历史数据（按需决定是否入库，默认忽略）
+crawls.db
+crawls/*.md
+crawls/*.fit.md
+crawls/*.json
 
 # Python 缓存
 __pycache__/
 *.pyc
 
-# 运行时日志 / 测试产物
-*.log
-_whisper_dl.log
-_server.log
-server.log
-crawl_test_resp.json
-_selftest.py
+# YouTube 凭据与下载产物（绝不入库）
+yt_cookies.txt
+proxy.txt
+video_robot/
 
-# 抓取/整理历史数据（按需决定是否入库，默认忽略）
-crawls.db
-crawls/
+# 视频下载/抽帧产物与本地模型（大体积，绝不入库）
 videos_inbox/
 videos_frames/
-distilled/
-
-# 本地项目配置（不入库）
-.workbuddy/
-
-# 抖音/视频号 cookie 文件（含登录态，严禁入库！）
-cookies.txt
-*.cookies.txt
-
-# 系统/编辑器
-.DS_Store
-Thumbs.db
-
-# 运行时下载/测试产物（不入库）
-downloads/
-*.mp4
-exported-cookies.txt
-cookies.txt.bak_invalid
-
-# 本地语音转写模型（体积大，不入库；换机部署时手动复制或从 ModelScope 下载）
 whisper_models/
-_test_*.py
+yt-dlp.exe
+yt-dlp.exe.old
+cookies.txt
+
+# 本地调试临时文件与工作台数据
+_*
+tmp*.tmp*
+_superseded_notes/
+.workbuddy/
