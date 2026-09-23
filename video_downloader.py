@@ -55,7 +55,14 @@ def _resolve(module, exe_names):
 
 
 def get_yt_dlp_cmd():
-    """返回 yt-dlp 的可执行 argv 前缀；找不到则抛出带诊断信息的异常。"""
+    """返回 yt-dlp 的可执行 argv 前缀；找不到则抛出带诊断信息的异常。
+
+    优先用项目内独立版 yt-dlp.exe（nightly，YouTube 接口月更，
+    pip 装的版本常落后导致 'This video is unavailable' / 风控问题）。
+    """
+    pinned = os.path.join(BASE, "yt-dlp.exe")
+    if os.path.isfile(pinned):
+        return [pinned]
     cmd = _resolve("yt_dlp", ["yt-dlp", "yt_dlp"])
     if cmd:
         return cmd
@@ -197,8 +204,99 @@ def download_douyin(url: str, out_dir: str) -> str:
     )
 
 
+def _get_proxy():
+    """YouTube 下载代理来源：VIDEO_PROXY > HTTPS_PROXY/HTTP_PROXY > 项目内 proxy.txt。"""
+    for k in ("VIDEO_PROXY", "HTTPS_PROXY", "HTTP_PROXY"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return v
+    pf = os.path.join(BASE, "proxy.txt")
+    if os.path.isfile(pf):
+        try:
+            with open(pf, "r", encoding="utf-8") as f:
+                txt = f.read().strip()
+            if txt:
+                return txt.splitlines()[0].strip()
+        except Exception:
+            pass
+    return ""
+
+
+def download_youtube(url: str, out_dir: str) -> str:
+    """YouTube 链接 -> 本地 mp4（yt-dlp 原生支持）。
+
+    国内网络必须走代理：代理来源优先级
+      1. 环境变量 VIDEO_PROXY（专用于本工具，如 http://127.0.0.1:18081）
+      2. 环境变量 HTTPS_PROXY / HTTP_PROXY（系统/会话级代理）
+      3. 项目目录下 proxy.txt（第一行写代理地址，如 http://127.0.0.1:7890）
+    都没有时仍会直连尝试一次（透明代理/VPN 全局模式下可用）。
+    """
+    url = (url or "").strip()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmpl = str(out_dir / "yt_%(id)s.%(ext)s")
+    extra = []
+    proxy = _get_proxy()
+    if proxy:
+        extra += ["--proxy", proxy]
+    # 显式给 yt-dlp 指定 ffmpeg：否则（服务 PATH 里没有 ffmpeg 时）yt-dlp 会
+    # 静默跳过 bestvideo+bestaudio 的合并——产物是没有音轨的 fNNN.mp4 纯视频流，
+    # 转写环节解码空音频直接报 tuple index out of range（--no-warnings 吞了警告）。
+    try:
+        from video_pipeline import get_ffmpeg
+        extra += ["--ffmpeg-location", get_ffmpeg()]
+    except Exception:
+        pass
+    # YouTube 对代理出口 IP 常触发机器人风控（playability ERROR / "video is
+    # unavailable"）——带浏览器 cookie 可解。项目内 yt_cookies.txt 存在即自动启用。
+    ck = os.path.join(BASE, "yt_cookies.txt")
+    if os.path.isfile(ck):
+        extra += ["--cookies", ck]
+    # 新版 yt-dlp 需要 JS 运行时（默认 deno，未装则降级用本机 node）
+    try:
+        subprocess.run(["deno", "--version"], capture_output=True, timeout=10)
+    except Exception:
+        _node = r"C:\Users\Lenovo\.workbuddy\binaries\node\versions\v24.19.0\node.exe"
+        if os.path.isfile(_node):
+            extra += ["--js-runtimes", "node:" + _node]
+    cmd = get_yt_dlp_cmd() + [
+        "-f", "bestvideo+bestaudio/best",
+        "--no-playlist", "--merge-output-format", "mp4",
+        "--no-warnings",
+        # 长视频（讲座/播客类）下载耗时较长，放宽超时
+        "--socket-timeout", "30",
+        "-o", tmpl,
+    ] + extra + [url]
+    subprocess.run(cmd, check=True, timeout=1800, env=dict(os.environ))
+    picked = _pick(out_dir, None)
+    # 清理 split 中间产物（yt_<id>.fNNN.mp4/.webm/.part），防止 inbox 无限膨胀。
+    # 仅在已有合并成品（文件名不含 .fNNN）时才清，避免误删纯音轨兜底文件。
+    vid = _video_id(url)
+    merged_exists = any(
+        not re.search(r"\.f\d+\.", f.name) and f.suffix.lower() in (".mp4", ".mkv")
+        for f in Path(out_dir).glob(f"yt_{vid}.*") if f.name != ".part"
+    ) and vid
+    if merged_exists:
+        for f in Path(out_dir).glob(f"yt_{vid}.*"):
+            if f.name != os.path.basename(picked) and (
+                    re.search(r"\.f\d+\.", f.name) or f.suffix == ".part"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+    return picked
+
+
+def _video_id(url):
+    m = re.search(r"(?:v=|youtu\.be/)([\w-]{6,})", url or "")
+    return m.group(1) if m else ""
+
+
 def _pick(out_dir, last_err):
     files = sorted(out_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # 优先合并成品（yt_<id>.mp4），避免误选无音轨的 split（yt_<id>.fNNN.mp4）
+    merged = [f for f in files if not re.search(r"\.f\d+\.", f.name)]
+    files = merged + [f for f in files if re.search(r"\.f\d+\.", f.name)]
     if files:
         return str(files[0])
     alt = sorted(out_dir.glob("*.mkv"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -226,6 +324,8 @@ def detect_source(url: str) -> str:
         return "unknown"
     if "douyin.com" in u or "v.douyin" in u or "iesdouyin" in u:
         return "douyin"
+    if "youtube.com" in u or "youtu.be" in u:
+        return "youtube"
     if u.endswith(".m3u8") or "m3u8" in u or u.endswith(".mp4") or u.endswith(".mov") or "mp4" in u or "video" in u:
         return "direct"
     return "unknown"
@@ -237,9 +337,11 @@ def download_one(url: str, out_dir: str):
     try:
         if src == "douyin":
             return download_douyin(url, out_dir), None
+        if src == "youtube":
+            return download_youtube(url, out_dir), None
         if src == "direct":
             return download_direct(url, out_dir), None
-        return None, "无法识别来源（非抖音/直链）：" + url
+        return None, "无法识别来源（支持：抖音链接 / YouTube链接 / m3u8·mp4直链 / 本地文件）：" + url
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 

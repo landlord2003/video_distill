@@ -99,8 +99,12 @@
   .chip.ok{color:var(--acc2);border-color:rgba(43,212,164,.4)}
   .chip.err{color:var(--red);border-color:rgba(255,95,110,.4)}
   .chip.run{color:var(--acc);border-color:rgba(79,157,255,.4)}
+  /* 分类栏/来源栏：红色 + 大字号（抖音与 YouTube 两个页签共用） */
+  #vcats .chip,#ytvcats .chip,#vsrcs .chip,#ytvsrcs .chip{color:var(--red);font-size:14px;padding:2px 10px}
+  #vcats .chip.on,#ytvcats .chip.on,#vsrcs .chip.on,#ytvsrcs .chip.on{background:rgba(255,95,110,.18);border-color:var(--red)}
   /* ===== 方案A：视频工作台 左右分栏 ===== */
   #video-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
+  #yt-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   .layoutA{flex:1;display:flex;min-height:0}
   #vsplit{width:6px;cursor:col-resize;flex-shrink:0;border-left:1px solid var(--line)}
   #vsplit:hover,#vsplit.dragging{background:var(--acc)}
@@ -185,6 +189,7 @@
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
+      <button class="tab" onclick="switchTab('yt',this)">▶ YouTube</button>
       <span class="ver">v3.3 · 工作台布局 · 双语字幕✓ · 记录管理✓</span>
     </div>
     <!-- 网页抓取（保持原有结构） -->
@@ -227,8 +232,8 @@
                 <div id="vplist" style="margin-top:8px"></div>
               </div>
               <div id="p1c" style="display:none">
-                <input type="file" id="vfiles" multiple accept="video/*" style="width:100%">
-                <div class="mut" style="margin-top:6px">视频号视频：手机保存 → 微信传输助手 → 此处上传</div>
+                <input type="file" id="vfiles" multiple accept="video/*,audio/*" style="width:100%">
+                <div class="mut" style="margin-top:6px">视频号视频：手机保存 → 微信传输助手 → 此处上传；纯音频（mp3/wav/m4a等）也可直接蒸馏</div>
               </div>
             </div>
           </div>
@@ -282,9 +287,80 @@
                 <div><div class="k">总字数</div><div class="v" id="vk-chars">–</div></div>
               </div>
               <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+              <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
               <input type="text" id="vhq" placeholder="🔍 搜索已入库记录（标题 / 来源）…" style="margin-bottom:10px" oninput="renderVhistList()">
               <div id="vh-detail"></div>
               <div id="vhist"><div class="empty" style="padding:14px">加载中…</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- YouTube 工作台：独立页面，与抖音工作台互不干扰 -->
+    <div id="yt-panel">
+      <div class="layoutA">
+        <div class="flow" id="ytflow">
+          <div class="step" id="ytst1">
+            <div class="step-h" onclick="fold('ytst1')"><span class="no">1</span><span class="tt">添加视频</span>
+              <span class="sub" id="yt1sub">粘贴 YouTube 链接 / 本地文件</span></div>
+            <div class="step-b">
+              <textarea id="yturls" placeholder="粘贴 YouTube 链接，每行一个（支持批量，一次处理 N 条）&#10;例：https://www.youtube.com/watch?v=xxxx&#10;https://youtu.be/xxxx" oninput="yt1count()"></textarea>
+              <input type="file" id="ytfiles" multiple accept="video/*,audio/*" style="margin-top:8px">
+              <div class="mut" style="margin-top:6px">⚠ 国内网络需先开代理：工具按 VIDEO_PROXY → 系统代理 → 项目内 proxy.txt → 直连 依次尝试；纯音频文件（mp3/wav/m4a等）也可直接蒸馏</div>
+            </div>
+          </div>
+          <div class="step" id="ytst2">
+            <div class="step-h" onclick="fold('ytst2')"><span class="no">2</span><span class="tt">处理选项</span>
+              <span class="sub" id="yt2sub">就绪</span></div>
+            <div class="step-b">
+              <div class="segbtns">
+                <label class="toggle"><input type="checkbox" id="ytvault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
+                <label class="toggle" title="英文等外语视频：保留原文并逐段对照中文翻译（本地模型翻译）"><input type="checkbox" id="ytbilingual"> 🔤 双语字幕对照</label>
+                <label class="toggle" title="只抽视频开头一帧作配图，不做全片抽帧"><input type="checkbox" id="yt1frame"> 🖼 只取首页一帧</label>
+              </div>
+              <div class="segbtns" style="margin-top:8px">
+                <span style="flex:1"></span>
+                <button id="ytgo" class="btn pri" onclick="runYT()" style="padding:8px 22px">▶ 运行整理</button>
+              </div>
+            </div>
+          </div>
+          <div class="step" id="ytst3">
+            <div class="step-h" onclick="fold('ytst3')"><span class="no">3</span><span class="tt">处理进度</span>
+              <span class="sub" id="yt3sub">就绪</span></div>
+            <div class="step-b">
+              <div style="background:var(--panel2);border-radius:6px;height:8px;overflow:hidden;margin-bottom:10px">
+                <div id="ytbar" style="width:0%;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .4s"></div>
+              </div>
+              <div id="ytstatus" class="mut" style="line-height:1.9;min-height:20px">等待提交…</div>
+            </div>
+          </div>
+          <div id="ythealth" class="vhealth">工具状态：检测中…</div>
+          <div style="display:flex;justify-content:flex-end;margin-top:6px">
+            <button class="btn" onclick="clearYTAll()" title="清空链接与处理进度（不影响已入库记录）">🧹 清空重置</button>
+          </div>
+        </div>
+        <div id="ytsplit" title="拖动调整宽度"></div>
+        <div class="work">
+          <div class="work-tabs">
+            <div class="wtab active" id="ywt-res" onclick="wtab('ytresult',this)">✨ 整理结果 <span class="chip run" id="ytres-count" style="display:none"></span></div>
+            <div class="wtab" id="ywt-hist" onclick="wtab('ythist',this)">📚 已入库记录 <span class="chip" id="yhist-status"></span></div>
+          </div>
+          <div class="work-body">
+            <div id="ytresult" class="wpane active">
+              <div id="yt-result-list"><div class="empty" style="padding:40px">YouTube 整理的结果卡片会出现在这里。</div></div>
+            </div>
+            <div id="ythist" class="wpane">
+              <div class="kpi">
+                <div><div class="k">累计入库</div><div class="v" id="ytk-total">–</div></div>
+                <div><div class="k">完成</div><div class="v ok" id="ytk-done">–</div></div>
+                <div><div class="k">失败</div><div class="v err" id="ytk-err">–</div></div>
+                <div><div class="k">总字数</div><div class="v" id="ytk-chars">–</div></div>
+              </div>
+              <div id="ytvcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+              <div id="ytvsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+              <input type="text" id="ythq" placeholder="🔍 搜索已入库记录（标题 / 来源）…" style="margin-bottom:10px" oninput="renderYtHistList()">
+              <div id="ytvh-detail"></div>
+              <div id="ytrec"><div class="empty" style="padding:14px">加载中…</div></div>
             </div>
           </div>
         </div>
@@ -371,19 +447,20 @@ function setV3(html){ $('#vstatus').innerHTML = html; if($('#v3sub')) $('#v3sub'
 
 // 视频工具健康自检
 async function checkVideoHealth(){
-  const el = document.getElementById('vhealth');
-  if(!el) return;
+  const els = ['vhealth','ythealth'].map(id=>document.getElementById(id)).filter(Boolean);
+  if(!els.length) return;
   try{
     const r = await fetch('/api/video/health');
     const h = await r.json();
     const t = h.tools||{};
     const ok = x => x && x.ok ? '🟢' : '🔴';
     const yt = t.yt_dlp, ff = t.ffmpeg, fw = t.faster_whisper;
-    el.innerHTML = `${ok(yt)}yt-dlp ${ok(ff)}ffmpeg ${fw && fw.ok ? (fw.local_model ? '🟢转写就绪' : '🟡转写(模型待下载)') : '🔴'} · 127.0.0.1:8788`
+    const html = `${ok(yt)}yt-dlp ${ok(ff)}ffmpeg ${fw && fw.ok ? (fw.local_model ? '🟢转写就绪' : '🟡转写(模型待下载)') : '🔴'} · 127.0.0.1:8788`
       + (yt && !yt.ok ? ` <b style="color:#e06c75">yt-dlp 缺失</b>` : '')
       + (ff && !ff.ok ? ` <b style="color:#e06c75">ffmpeg 缺失</b>` : '');
+    els.forEach(el=>el.innerHTML = html);
   }catch(e){
-    el.textContent = '工具状态：检测失败（服务未启动？）';
+    els.forEach(el=>el.textContent = '工具状态：检测失败（服务未启动？）');
   }
 }
 
@@ -472,11 +549,12 @@ async function del(id){
 function switchTab(t, btn){
   document.querySelectorAll('#tabs .tab').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  const web = (t==='web');
+  const web = (t==='web'), yt = (t==='yt');
   $('#bar').style.display = web?'flex':'none';
   $('#status').style.display = web?'block':'none';
   $('#result').style.display = web?'block':'none';
-  $('#video-panel').style.display = web?'none':'flex';
+  $('#video-panel').style.display = (!web && !yt)?'flex':'none';
+  $('#yt-panel').style.display = yt?'flex':'none';
   if(!web){ checkVideoHealth(); loadVideoHist(); }
 }
 // ---------- 已入库记录：统计 / 分类 / 搜索 / 查看 / 编辑 / 删除 ----------
@@ -498,8 +576,20 @@ async function loadVideoHist(){
     $('#vk-err').textContent   = err;
     $('#vk-chars').textContent = chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars;
     st.textContent = _vhistRows.length ? _vhistRows.length+' 条' : '';
+    // YouTube 工作台的记录页签同步刷新（共用同一库）
+    const yst = document.getElementById('yhist-status');
+    if(yst) yst.textContent = st.textContent;
+    const setK = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
+    setK('ytk-total', _vhistRows.length);
+    setK('ytk-done', done);
+    setK('ytk-err', err);
+    setK('ytk-chars', chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars);
     renderCatChips();
     renderVhistList();
+    renderYtChips();
+    renderYtHistList();
+    renderSrcChips();
+    renderYtSrcChips();
   }catch(e){ st.textContent = '加载失败'; }
 }
 function catCounts(){
@@ -523,27 +613,81 @@ function renderCatChips(){
   ).join('')
   + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats()">⚙ 管理分类</span>`;
 }
-function _setCat(k){ _vcatFilter = k; renderCatChips(); renderVhistList(); }
-function renderVhistList(){
-  const box = $('#vhist');
-  const q = ($('#vhq') ? $('#vhq').value.trim().toLowerCase() : '');
+// ---------- YouTube 工作台：分类 chips + 记录列表（与抖音共用库，独立筛选） ----------
+let _ytCatFilter = '';
+function renderYtChips(){
+  const wrap = document.getElementById('ytvcats');
+  if(!wrap) return;
+  const {counts, uncat, cats} = catCounts();
+  const chips = [
+    ['', '全部 '+_vhistRows.length],
+    ['__uncat__', '未分类 '+uncat],
+    ...cats.map(c=>[c, esc(c)+' '+counts[c]])
+  ];
+  wrap.innerHTML = chips.map(([k,label])=>
+    `<span class="chip ${_ytCatFilter===k?'on':''}" style="cursor:pointer" onclick="_setYtCat('${escAttr(k)}')">${label}</span>`
+  ).join('')
+  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats()">⚙ 管理分类</span>`;
+}
+function _setYtCat(k){ _ytCatFilter = k; renderYtChips(); renderYtHistList(); }
+// ---------- 来源分类（抖音视频/YouTube视频…可增可管理） ----------
+let _vSrcFilter = '', _ytSrcFilter = '', _srcKeys = [];
+function srcCounts(){
+  const counts = {}; let none = 0;
+  _vhistRows.forEach(x=>{
+    const c = (x.source||'').trim();
+    if(c) counts[c] = (counts[c]||0)+1; else none++;
+  });
+  return {counts, none, srcs: Object.keys(counts).sort()};
+}
+function _srcChips(filter, setter){
+  const {counts, none, srcs} = srcCounts();
+  _srcKeys = srcs;
+  const chips = [['', '全部']];
+  if(none) chips.push(['__nosrc__', '未标来源 '+none]);
+  srcs.forEach(s=>chips.push([s, esc(s)+' '+counts[s]]));
+  return chips.map(([k,label])=>
+    `<span class="chip ${filter===k?'on':''}" style="cursor:pointer" onclick="${setter}('${escAttr(k)}')">${label}</span>`
+  ).join('')
+  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats('source')">⚙ 管理来源</span>`;
+}
+function renderSrcChips(){
+  const el = document.getElementById('vsrcs');
+  if(el) el.innerHTML = '<span class="mut" style="align-self:center;font-size:12px">来源</span>' + _srcChips(_vSrcFilter, '_setSrc');
+}
+function renderYtSrcChips(){
+  const el = document.getElementById('ytvsrcs');
+  if(el) el.innerHTML = '<span class="mut" style="align-self:center;font-size:12px">来源</span>' + _srcChips(_ytSrcFilter, '_setYtSrc');
+}
+function _setSrc(k){ _vSrcFilter = k; renderSrcChips(); renderVhistList(); }
+function _setYtSrc(k){ _ytSrcFilter = k; renderYtSrcChips(); renderYtHistList(); }
+function renderYtHistList(){
+  const box = document.getElementById('ytrec');
+  if(!box) return;
+  const q = ($('#ythq') ? $('#ythq').value.trim().toLowerCase() : '');
   let rows = _vhistRows;
-  if(_vcatFilter==='__uncat__') rows = rows.filter(x=>!((x.category||'').trim()));
-  else if(_vcatFilter) rows = rows.filter(x=>((x.category||'').trim())===_vcatFilter);
+  if(_ytCatFilter==='__uncat__') rows = rows.filter(x=>!((x.category||'').trim()));
+  else if(_ytCatFilter) rows = rows.filter(x=>((x.category||'').trim())===_ytCatFilter);
+  if(_ytSrcFilter==='__nosrc__') rows = rows.filter(x=>!((x.source||'').trim()));
+  else if(_ytSrcFilter) rows = rows.filter(x=>((x.source||'').trim())===_ytSrcFilter);
   if(q) rows = rows.filter(x =>
     ((x.title||'')+' '+(x.source_url||'')+' '+(x.vault_path||'')).toLowerCase().includes(q));
-  if(!rows.length){
-    box.innerHTML = `<div class="empty" style="padding:14px">${q||_vcatFilter?'没有匹配的记录':'暂无视频整理记录'}</div>`;
-    return;
-  }
-  box.innerHTML = `<div class="vcard" style="margin-bottom:24px">` + rows.map(x=>{
+  box.innerHTML = _recListHtml(rows, q||_ytCatFilter||_ytSrcFilter);
+}
+function _setCat(k){ _vcatFilter = k; renderCatChips(); renderVhistList(); }
+function _recListHtml(rows, hasFilter){
+  if(!rows.length)
+    return `<div class="empty" style="padding:14px">${hasFilter?'没有匹配的记录':'暂无视频整理记录'}</div>`;
+  return `<div class="vcard" style="margin-bottom:24px">` + rows.map(x=>{
     const cat = (x.category||'').trim();
+    const src = (x.source||'').trim();
     return `
       <div class="rec" onclick="viewVideo('${x.id}')">
         <div class="ic">🎬</div>
         <div class="bd">
           <div class="t">${esc(x.title||x.source_url)} <span class="st ${x.status}">${stxt(x.status)}</span>
-            ${cat?`<span class="chip">${esc(cat)}</span>`:''}</div>
+            ${cat?`<span class="chip" style="color:var(--red);border-color:rgba(255,95,110,.4)">${esc(cat)}</span>`:''}
+            ${src?`<span class="chip" style="color:var(--acc);border-color:rgba(79,157,255,.4)">${esc(src)}</span>`:''}</div>
           <div class="u">${esc(x.source_url||'')} · ${x.created_at||''} · ${x.md_len||0}字</div>
         </div>
         <div class="sp">
@@ -554,12 +698,26 @@ function renderVhistList(){
       </div>`;
   }).join('') + `</div>`;
 }
+function renderVhistList(){
+  const box = $('#vhist');
+  const q = ($('#vhq') ? $('#vhq').value.trim().toLowerCase() : '');
+  let rows = _vhistRows;
+  if(_vcatFilter==='__uncat__') rows = rows.filter(x=>!((x.category||'').trim()));
+  else if(_vcatFilter) rows = rows.filter(x=>((x.category||'').trim())===_vcatFilter);
+  if(_vSrcFilter==='__nosrc__') rows = rows.filter(x=>!((x.source||'').trim()));
+  else if(_vSrcFilter) rows = rows.filter(x=>((x.source||'').trim())===_vSrcFilter);
+  if(q) rows = rows.filter(x =>
+    ((x.title||'')+' '+(x.source_url||'')+' '+(x.vault_path||'')).toLowerCase().includes(q));
+  box.innerHTML = _recListHtml(rows, q||_vcatFilter||_vSrcFilter);
+}
 // 编辑记录：改名（同步重命名库内笔记文件）+ 归类
 function editRec(id){
   const x = _vhistRows.find(r=>r.id===id);
   if(!x) return;
   const {cats} = catCounts();
+  const {srcs} = srcCounts();
   const cat = (x.category||'').trim();
+  const src = (x.source||'').trim();
   showModal(`<h3>✏️ 编辑记录</h3>
     <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
     <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
@@ -570,6 +728,14 @@ function editRec(id){
       <option value="__new__">➕ 新建分类…</option>
     </select>
     <input type="text" id="me-newcat" placeholder="输入新分类名（填写则优先使用）" maxlength="30"
+           style="display:none;margin-top:6px">
+    <label>来源</label>
+    <select id="me-src" onchange="document.getElementById('me-newsrc').style.display=this.value==='__newsrc__'?'block':'none'">
+      <option value="">未标来源</option>
+      ${srcs.map(s=>`<option value="${escAttr(s)}" ${s===src?'selected':''}>${esc(s)}</option>`).join('')}
+      <option value="__newsrc__">➕ 新建来源…</option>
+    </select>
+    <input type="text" id="me-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn" onclick="hideModal()">取消</button>
@@ -582,68 +748,91 @@ async function saveRec(id){
   const newCatInput = $('#me-newcat');
   const cat = (newCatInput.style.display!=='none' && newCatInput.value.trim())
     ? newCatInput.value.trim() : $('#me-cat').value;
+  const newSrcInput = $('#me-newsrc');
+  const src = (newSrcInput.style.display!=='none' && newSrcInput.value.trim())
+    ? newSrcInput.value.trim() : $('#me-src').value;
   try{
     const r = await fetch('/api/video/'+id, {method:'PATCH',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({title, category:cat})});
+      body:JSON.stringify({title, category:cat, source:src})});
     const d = await r.json();
     if(r.ok && d.ok){
       hideModal();
       closeDetailView();
       if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
+      if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
       loadVideoHist();
     } else { alert('保存失败：'+(d.error||r.status)); }
   }catch(e){ alert('保存异常：'+e.message); }
 }
-// 管理分类：重命名 / 删除（删除后记录回落未分类，记录本身不动）
-function manageCats(){
-  const {counts, cats} = catCounts();
-  showModal(`<h3>⚙ 管理分类</h3>
-    <div class="mut" style="margin-bottom:8px">删除分类不会删除记录，其中的记录将回落到「未分类」。新建分类请在某条记录的「编辑」里选「➕ 新建分类」。</div>
-    ${cats.length ? cats.map((c,i)=>`
+// 管理分类/来源：重命名 / 删除（删除后记录回落，记录本身不动）
+// dim='category'（默认）管理分类；dim='source' 管理来源
+let _mgDim = 'category', _mgKeys = [];
+function manageCats(dim){
+  _mgDim = dim || 'category';
+  const isSrc = _mgDim === 'source';
+  let counts, keys;
+  if(isSrc){ const s = srcCounts(); counts = s.counts; keys = s.srcs; }
+  else { const c = catCounts(); counts = c.counts; keys = c.cats; }
+  _mgKeys = keys;
+  const label = isSrc ? '来源' : '分类';
+  const fallback = isSrc ? '「未标来源」' : '「未分类」';
+  showModal(`<h3>⚙ 管理${label}</h3>
+    <div class="mut" style="margin-bottom:8px">删除${label}不会删除记录，其中的记录将回落到${fallback}。新建${label}请在某条记录的「编辑」里选「➕ 新建${label}」。</div>
+    ${keys.length ? keys.map((c,i)=>`
       <div class="catrow">
         <input type="text" id="mc-${i}" value="${escAttr(c)}" maxlength="30" style="flex:1">
         <span class="mut" style="flex-shrink:0">${counts[c]} 条</span>
         <button class="btn" onclick="renCat(${i})">重命名</button>
         <button class="btn del" onclick="delCat(${i})">删除</button>
       </div>`).join('')
-    : '<div class="empty" style="padding:14px">还没有分类</div>'}
+    : `<div class="empty" style="padding:14px">还没有${label}</div>`}
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="hideModal()">关闭</button>
     </div>`);
 }
 async function renCat(i){
   const nv = document.getElementById('mc-'+i).value.trim();
-  if(!nv){ alert('分类名不能为空'); return; }
-  const old = _catKeys[i];
+  if(!nv){ alert('名称不能为空'); return; }
+  const old = _mgKeys[i];
+  const isSrc = _mgDim === 'source';
   try{
-    const r = await fetch('/api/video/cats/rename', {method:'POST',
+    const r = await fetch('/api/video/cats/rename'+(isSrc?'?dim=source':''), {method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({old, new:nv})});
     const d = await r.json();
     if(r.ok && d.ok){
-      if(_vcatFilter===old) _vcatFilter = nv;
+      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=nv; if(_ytSrcFilter===old) _ytSrcFilter=nv; }
+      else if(_vcatFilter===old) _vcatFilter = nv;
       hideModal();
       loadVideoHist();
     } else { alert('重命名失败：'+(d.error||r.status)); }
   }catch(e){ alert('异常：'+e.message); }
 }
 async function delCat(i){
-  const old = _catKeys[i];
-  const n = (_vhistRows.filter(x=>(x.category||'').trim()===old)).length;
-  if(!confirm(`删除分类「${old}」？\n其中 ${n} 条记录将回落到「未分类」，记录本身不受影响。`)) return;
+  const old = _mgKeys[i];
+  const isSrc = _mgDim === 'source';
+  const n = (_vhistRows.filter(x=>((isSrc?x.source:x.category)||'').trim()===old)).length;
+  const fb = isSrc ? '未标来源' : '未分类';
+  if(!confirm(`删除${isSrc?'来源':'分类'}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`)) return;
   try{
-    const r = await fetch('/api/video/cats/'+encodeURIComponent(old), {method:'DELETE'});
+    const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+(isSrc?'?dim=source':''), {method:'DELETE'});
     const d = await r.json();
     if(r.ok && d.ok){
-      if(_vcatFilter===old) _vcatFilter='';
+      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=''; if(_ytSrcFilter===old) _ytSrcFilter=''; }
+      else if(_vcatFilter===old) _vcatFilter='';
       hideModal();
       loadVideoHist();
     } else { alert('删除失败：'+(d.error||r.status)); }
   }catch(e){ alert('异常：'+e.message); }
 }
+function _histDetailEl(){
+  // 详情容器跟随当前所在工作台：YouTube 页签写自己的容器，抖音页签写抖音的
+  const yt = document.getElementById('ythist');
+  return $('#'+((yt && yt.classList.contains('active')) ? 'ytvh-detail' : 'vh-detail'));
+}
 async function viewVideo(id){
-  const det = $('#vh-detail');
+  const det = _histDetailEl();
   det.innerHTML = '<div class="empty" style="padding:14px"><span class="spinner"></span> 加载笔记…</div>';
   try{
     const r = await fetch('/api/video/records/'+id);
@@ -664,7 +853,7 @@ async function viewVideo(id){
     det.scrollIntoView({behavior:'smooth', block:'start'});
   }catch(e){ det.innerHTML = '<div class="empty" style="padding:14px">✗ '+e.message+'</div>'; }
 }
-function closeDetailView(){ $('#vh-detail').innerHTML = ''; }
+function closeDetailView(){ $('#vh-detail').innerHTML = ''; $('#ytvh-detail').innerHTML = ''; }
 async function delVideo(id, title){
   if(!confirm('确定删除记录「'+title+'」？\\n\\n将同时删除：数据库记录、知识库中的整理笔记（Claw/07-视频号整理）、服务端副本。\\n此操作不可恢复。')) return;
   const st = $('#vhist-status');
@@ -674,7 +863,7 @@ async function delVideo(id, title){
     const d = await r.json();
     if(r.ok && d.ok){
       st.textContent = '已删除';
-      $('#vh-detail').innerHTML = '<div class="empty" style="padding:10px">✓ 已删除（含笔记 '+((d.removed||[]).length)+' 个文件）</div>';
+      _histDetailEl().innerHTML = '<div class="empty" style="padding:10px">✓ 已删除（含笔记 '+((d.removed||[]).length)+' 个文件）</div>';
       loadVideoHist();
     } else { st.textContent = '✗ 删除失败'; }
   }catch(e){ st.textContent = '✗ '+e.message; }
@@ -761,6 +950,7 @@ async function runVideo(){
   const t0 = Date.now();
   let curT0 = t0;   // 当前这条的开始时刻（用于「本条用时」）
   showResultTab();
+  _lastResults = []; _vCollapsed.clear(); renderVideo([]);   // 新一轮开始，清掉上一轮结果（均已入库）
   setBar(total ? 2 : 0);
   // 每秒刷新：本条用时 + 总用时
   const timerId = setInterval(()=>{
@@ -784,7 +974,8 @@ async function runVideo(){
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({urls:[urls[i]], write_vault:wv,
             bilingual:!!($('#vbilingual')&&$('#vbilingual').checked),
-            first_frame:!!($('#v1frame')&&$('#v1frame').checked)})});
+            first_frame:!!($('#v1frame')&&$('#v1frame').checked),
+            source_hint:'抖音视频'})});
         const d = await r.json();
         results = results.concat(d.results || []);
       }catch(err){
@@ -793,7 +984,7 @@ async function runVideo(){
       const last = results[results.length-1] || {};
       const secs = Math.round((Date.now()-itemT0)/1000);
       doneMsgs.unshift(last.ok
-        ? `✅ 第 ${i+1} 条完成（${secs} 秒）：${esc((last.title||'').slice(0,30))}`
+        ? `✅ 第 ${i+1} 条完成（${secs} 秒${last.distill_chunks>1?`，分 ${last.distill_chunks} 段蒸馏`:''}）：${esc((last.title||'').slice(0,30))}`
         : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
       setBar(results.length/total*100);
       renderVideo(results);
@@ -810,13 +1001,13 @@ async function runVideo(){
         const itemT0 = Date.now();
         const fd = new FormData();
         fd.append('file', f, f.name);
-        const r = await fetch('/api/video/upload',{method:'POST',body:fd});
+        const r = await fetch('/api/video/upload?source_hint='+encodeURIComponent('抖音视频'),{method:'POST',body:fd});
         const d = await r.json();
         results = results.concat(d.results || []);
         const last = results[results.length-1] || {};
         const secs = Math.round((Date.now()-itemT0)/1000);
         doneMsgs.unshift(last.ok
-          ? `✅ 文件「${esc(f.name.slice(0,20))}」完成（${secs} 秒）`
+          ? `✅ 文件「${esc(f.name.slice(0,20))}」完成（${secs} 秒${last.distill_chunks>1?`，分 ${last.distill_chunks} 段蒸馏`:''}）`
           : `❌ 文件「${esc(f.name.slice(0,20))}」失败（${secs} 秒）`);
         setBar(results.length/total*100);
         renderVideo(results);
@@ -840,12 +1031,13 @@ function renderVideo(list){
   if(!list.length){ box.innerHTML='<div class="empty" style="padding:40px">批量整理的结果卡片会出现在这里。</div>'; cnt.style.display='none'; return; }
   _lastResults = list;
   cnt.style.display=''; cnt.textContent = '本次 '+list.length+' 条';
-  const bar = list.length>1 ? `
+  const bar = `
     <div class="row" style="margin-bottom:10px">
       <b>整理结果（${list.length} 条）</b>
-      <button class="btn" onclick="collapseAllV(true)">全部收起</button>
-      <button class="btn" onclick="collapseAllV(false)">全部展开</button>
-    </div>` : '';
+      ${list.length>1?`<button class="btn" onclick="collapseAllV(true)">全部收起</button>
+      <button class="btn" onclick="collapseAllV(false)">全部展开</button>`:''}
+      <button class="btn del" onclick="clearVresult()">🗑 清空结果</button>
+    </div>`;
   box.innerHTML = bar + list.map((x,idx)=>{
     const md = x.markdown || '';
     const ok = x.ok;
@@ -854,7 +1046,7 @@ function renderVideo(list){
     const hid = _vCollapsed.has(key);
     return `<div class="vcard">
       <div class="vcard-h">
-        <div>${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}</div>
+        <div>${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}${x.distill_chunks>1?' <span class="chip run">⛓ 分'+x.distill_chunks+'段蒸馏</span>':''}</div>
         <span style="display:flex;gap:6px;align-items:center;flex-shrink:0">
           ${ok?'<span class="chip ok">✓ 已入库</span>':'<span class="chip err">失败</span>'}
           <button class="btn" onclick="toggleVCard(${idx})">${hid?'展开 ▼':'收起 ▲'}</button>
@@ -867,6 +1059,12 @@ function renderVideo(list){
       </div>
     </div>`;
   }).join('');
+}
+function clearVresult(){
+  if($('#vgo') && $('#vgo').disabled){ alert('正在处理中，不能清空结果'); return; }
+  _lastResults = []; _vCollapsed.clear();
+  renderVideo([]);
+  $('#vres-count').style.display='none';
 }
 // 结果卡片收起/展开：用 Set 记状态，批量逐条重渲染时不丢
 let _lastResults = [];
@@ -889,6 +1087,187 @@ function collapseAllV(hide){
   });
   renderVideo(_lastResults);
 }
+
+// ================= YouTube 工作台 =================
+function yt1count(){
+  const n = $('#yturls').value.split('\n').map(s=>s.trim()).filter(Boolean).length;
+  $('#yt1sub').textContent = n ? `${n} 条待处理` : '粘贴 YouTube 链接 / 本地文件';
+}
+function setYtBar(pct){
+  const bar = $('#ytbar'); if(!bar) return;
+  bar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+}
+function setYt3(html){ $('#ytstatus').innerHTML = html; if($('#yt3sub')) $('#yt3sub').textContent = '处理中'; }
+function clearYTAll(){
+  if($('#ytgo') && $('#ytgo').disabled){ $('#ytstatus').textContent = '✗ 正在处理中，不能清空'; return; }
+  if(!confirm('清空 YouTube 链接与处理进度？\n（已入库记录和整理结果不受影响）')) return;
+  $('#yturls').value = ''; yt1count();
+  $('#ytbar').style.width = '0%';
+  $('#ytstatus').innerHTML = '等待提交…';
+  $('#yt3sub').textContent = '就绪';
+}
+async function runYT(){
+  const urls = $('#yturls').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const files = $('#ytfiles').files;
+  const wv = $('#ytvault').checked;
+  const go = $('#ytgo'); go.disabled=true; go.textContent='处理中…';
+  let results = [];
+  const total = urls.length + files.length;
+  const t0 = Date.now();
+  let curT0 = t0;
+  if(!$('#ywt-res').classList.contains('active')) wtab('ytresult', $('#ywt-res'));
+  _ytLastResults = []; _ytCollapsed.clear(); renderYT([]);   // 新一轮开始，清掉上一轮结果
+  setYtBar(total ? 2 : 0);
+  const timerId = setInterval(()=>{
+    const tt = document.getElementById('yttotal-t'), it = document.getElementById('ytitem-t');
+    if(tt) tt.textContent = Math.round((Date.now()-t0)/1000) + ' 秒';
+    if(it) it.textContent = Math.round((Date.now()-curT0)/1000) + ' 秒';
+  }, 1000);
+  const doneMsgs = [];
+  try{
+    for(let i=0;i<urls.length;i++){
+      go.textContent = `处理中 ${results.length+1}/${total}…`;
+      curT0 = Date.now();
+      setYt3(`<b>正在处理第 ${i+1}/${urls.length} 条链接</b><br>
+        ⏱ 本条 <span id="ytitem-t">0 秒</span> · 总用时 <span id="yttotal-t">0 秒</span><br>
+        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+      const itemT0 = Date.now();
+      try{
+        const r = await fetch('/api/video',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({urls:[urls[i]], write_vault:wv,
+            bilingual:!!($('#ytbilingual')&&$('#ytbilingual').checked),
+            first_frame:!!($('#yt1frame')&&$('#yt1frame').checked),
+            source_hint:'YouTube视频'})});
+        const d = await r.json();
+        results = results.concat(d.results || []);
+      }catch(err){
+        results.push({source_url:urls[i], ok:false, error:'请求失败: '+err.message, markdown:''});
+      }
+      const last = results[results.length-1] || {};
+      const secs = Math.round((Date.now()-itemT0)/1000);
+      doneMsgs.unshift(last.ok
+        ? `✅ 第 ${i+1} 条完成（${secs} 秒）：${esc((last.title||'').slice(0,30))}`
+        : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
+      setYtBar(results.length/total*100);
+      renderYT(results);
+      loadVideoHist();   // 共用同一库，两个面板的记录同步刷新
+    }
+    if(files.length){
+      for(let j=0;j<files.length;j++){
+        const f = files[j];
+        go.textContent = `处理中 ${results.length+1}/${total}…`;
+        curT0 = Date.now();
+        setYt3(`<b>正在上传本地文件 ${j+1}/${files.length}</b><br>
+          ⏱ 本条 <span id="ytitem-t">0 秒</span> · 总用时 <span id="yttotal-t">0 秒</span><br>
+          <span style="font-size:11px">${esc(f.name)}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+        const itemT0 = Date.now();
+        const fd = new FormData();
+        fd.append('file', f, f.name);
+        const r = await fetch('/api/video/upload?source_hint='+encodeURIComponent('YouTube视频'),{method:'POST',body:fd});
+        const d = await r.json();
+        results = results.concat(d.results || []);
+        const last = results[results.length-1] || {};
+        const secs = Math.round((Date.now()-itemT0)/1000);
+        doneMsgs.unshift(last.ok
+          ? `✅ 文件「${esc(f.name.slice(0,20))}」完成（${secs} 秒${last.distill_chunks>1?`，分 ${last.distill_chunks} 段蒸馏`:''}）`
+          : `❌ 文件「${esc(f.name.slice(0,20))}」失败（${secs} 秒）`);
+        setYtBar(results.length/total*100);
+        renderYT(results);
+        loadVideoHist();
+      }
+    }
+    setYtBar(100);
+    $('#yt3sub').textContent = '完成';
+  }catch(e){ $('#ytstatus').innerHTML = '✗ '+esc(e.message); $('#yt3sub').textContent = '出错'; }
+  finally{ clearInterval(timerId); go.disabled=false; go.textContent='▶ 运行整理'; }
+}
+let _ytLastResults = [];
+let _ytCollapsed = new Set();
+function _ytkey(x, idx){ return 'yt:' + ((x && (x.source_url || x.title)) || String(idx)); }
+function renderYT(list){
+  const box = $('#yt-result-list');
+  const cnt = $('#ytres-count');
+  if(!list.length){ box.innerHTML='<div class="empty" style="padding:40px">YouTube 整理的结果卡片会出现在这里。</div>'; cnt.style.display='none'; return; }
+  _ytLastResults = list;
+  cnt.style.display=''; cnt.textContent = '本次 '+list.length+' 条';
+  const bar = `
+    <div class="row" style="margin-bottom:10px">
+      <b>整理结果（${list.length} 条）</b>
+      ${list.length>1?`<button class="btn" onclick="collapseAllYT(true)">全部收起</button>
+      <button class="btn" onclick="collapseAllYT(false)">全部展开</button>`:''}
+      <button class="btn del" onclick="clearYTresult()">🗑 清空结果</button>
+    </div>`;
+  box.innerHTML = bar + list.map((x,idx)=>{
+    const md = x.markdown || '';
+    const ok = x.ok;
+    const vp = (x.vault_path||'').replace(/\\/g,'/');
+    const key = _ytkey(x, idx);
+    const hid = _ytCollapsed.has(key);
+    return `<div class="vcard">
+      <div class="vcard-h">
+        <div>${esc(x.title||x.source_url)} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}${x.distill_chunks>1?' <span class="chip run">⛓ 分'+x.distill_chunks+'段蒸馏</span>':''}</div>
+        <span style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+          ${ok?'<span class="chip ok">✓ 已入库</span>':'<span class="chip err">失败</span>'}
+          <button class="btn" onclick="toggleYTCard(${idx})">${hid?'展开 ▼':'收起 ▲'}</button>
+        </span>
+      </div>
+      <div class="vcard-b" id="ytmd-${idx}" style="${hid?'display:none':''}">
+        <div class="mut" style="margin-bottom:8px">${esc(x.source_url||'')} ${x.vault_path?('· 已入库: '+esc(vp)):'· 未入库'}</div>
+        ${x.error?`<div style="color:var(--red);font-size:12px">${esc(x.error)}</div>`:''}
+        <div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+function toggleYTCard(idx){
+  const x = _ytLastResults[idx] || {};
+  const md = document.getElementById('ytmd-'+idx);
+  if(!md) return;
+  const hide = md.style.display !== 'none';
+  md.style.display = hide ? 'none' : '';
+  const btn = md.closest('.vcard').querySelector('.vcard-h button');
+  if(btn) btn.textContent = hide ? '展开 ▼' : '收起 ▲';
+  if(hide) _ytCollapsed.add(_ytkey(x, idx)); else _ytCollapsed.delete(_ytkey(x, idx));
+}
+function collapseAllYT(hide){
+  _ytLastResults.forEach((x,i)=>{
+    const k = _ytkey(x, i);
+    if(hide) _ytCollapsed.add(k); else _ytCollapsed.delete(k);
+  });
+  renderYT(_ytLastResults);
+}
+function clearYTresult(){
+  if($('#ytgo') && $('#ytgo').disabled){ alert('正在处理中，不能清空结果'); return; }
+  _ytLastResults = []; _ytCollapsed.clear();
+  renderYT([]);
+}
+// YouTube 工作台：拖拽调整左右栏宽度（独立记忆宽度）
+(function(){
+  const sp = document.getElementById('ytsplit'), fl = document.getElementById('ytflow');
+  if(!sp || !fl) return;
+  const saved = parseInt(localStorage.getItem('ytflow_w')||'0',10);
+  if(saved>=300 && saved<=700) fl.style.width = saved+'px';
+  let drag = false;
+  sp.addEventListener('mousedown', e=>{
+    drag = true; sp.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e=>{
+    if(!drag) return;
+    const left = fl.getBoundingClientRect().left;
+    const w = Math.min(700, Math.max(300, e.clientX - left - 3));
+    fl.style.width = w + 'px';
+  });
+  document.addEventListener('mouseup', ()=>{
+    if(!drag) return;
+    drag = false; sp.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    localStorage.setItem('ytflow_w', parseInt(fl.style.width,10)||400);
+  });
+})();
+
 loadHist();
 </script>
 </body>

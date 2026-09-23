@@ -79,6 +79,11 @@ def init_db():
             c.execute("ALTER TABLE videos ADD COLUMN category TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 列已存在
+        # 迁移：videos 增加 source 列（来源分类：抖音视频/YouTube视频，''=未标来源）
+        try:
+            c.execute("ALTER TABLE videos ADD COLUMN source TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         c.commit()
 
 
@@ -159,11 +164,26 @@ def do_crawl(url: str, use_llm: bool):
 
 
 # ---------- 视频整理（视频号/抖音） ----------
-def do_video_pipeline(source_url, video_path, write_vault, bilingual=False, first_frame_only=False):
-    """处理单个已下载/已上传的视频：转写->总结->Markdown->落库。"""
-    rec = {"source_url": source_url, "video_path": video_path}
+def detect_source_name(url):
+    """按 URL 推断来源名称（写入 videos.source 列）；推断不出返回 ''。"""
     try:
-        r = vp.process_video(video_path, url=source_url, source="视频号/抖音",
+        s = vdl.detect_source(url)
+    except Exception:
+        s = ""
+    if s == "youtube":
+        return "YouTube视频"
+    if s == "douyin":
+        return "抖音视频"
+    return ""
+
+
+def do_video_pipeline(source_url, video_path, write_vault, bilingual=False, first_frame_only=False,
+                      source=""):
+    """处理单个已下载/已上传的视频：转写->总结->Markdown->落库。"""
+    rec = {"source_url": source_url, "video_path": video_path, "source": source or ""}
+    try:
+        r = vp.process_video(video_path, url=source_url,
+                             source=source or "视频号/抖音",
                              write_vault=write_vault,
                              bilingual=bilingual, first_frame_only=first_frame_only)
         rec.update({
@@ -185,7 +205,7 @@ def do_video_pipeline(source_url, video_path, write_vault, bilingual=False, firs
     return rec
 
 
-def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False):
+def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint=""):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
 
     设计要点（防止一条卡死拖垮整批）：
@@ -201,17 +221,22 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False):
                 continue
             try:
                 path, err = vdl.download_one(url, vp.INBOX)
+                # 来源：URL 可推断优先，否则用发起页提示（直链/短链场景）
+                rec_src = detect_source_name(url) or source_hint
                 if not path:
                     rec = {"source_url": url, "ok": False,
                            "error": err or "下载失败", "markdown": ""}
                 else:
                     rec = do_video_pipeline(url, path, write_vault,
                                             bilingual=bilingual,
-                                            first_frame_only=first_frame_only)
+                                            first_frame_only=first_frame_only,
+                                            source=rec_src)
                     rec["source_url"] = url
             except Exception as e:
                 rec = {"source_url": url, "ok": False,
                        "error": f"{type(e).__name__}: {e}", "markdown": ""}
+                rec_src = detect_source_name(url) or source_hint
+            rec["source"] = rec_src
             try:
                 vid, _ = save_video(rec)
                 rec["id"] = vid
@@ -247,16 +272,18 @@ def save_video(rec):
         src = rec.get("source_url", "")
         vid = ""
         prev_cat = ""
+        prev_source = ""
         # 去重：同一来源链接，成功记录复用原 id 覆盖更新，失败记录复用原失败行，
         # 避免重复提交/重试在列表里堆积重复条目
         if src:
             want = "done" if rec.get("ok") else "error"
             with db() as c:
-                row = c.execute("SELECT id, category FROM videos WHERE source_url=? AND status=?",
+                row = c.execute("SELECT id, category, source FROM videos WHERE source_url=? AND status=?",
                                 (src, want)).fetchone()
             if row:
                 vid = row[0]
                 prev_cat = row[1] or ""
+                prev_source = row[2] or ""
         if not vid:
             vid = short_id(src or rec.get("title") or "video")
         path = os.path.join(CRAWLS_DIR, "video_" + vid + ".md")
@@ -266,12 +293,13 @@ def save_video(rec):
         with db() as c:
             c.execute(
                 "INSERT OR REPLACE INTO videos "
-                "(id,source_url,title,created_at,status,md_len,vault_path,error,category) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "(id,source_url,title,created_at,status,md_len,vault_path,error,category,source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (vid, rec.get("source_url", ""), (rec.get("title", "") or "")[:120],
                  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                  "done" if rec.get("ok") else "error", len(md),
-                 rec.get("vault_path", ""), str(rec.get("error", ""))[:500], prev_cat))
+                 rec.get("vault_path", ""), str(rec.get("error", ""))[:500], prev_cat,
+                 (rec.get("source") or "").strip() or prev_source))
             c.commit()
     return vid, path
 
@@ -387,12 +415,12 @@ class Handler(BaseHTTPRequestHandler):
             rows = []
             with db() as c:
                 cur = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,category "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,category,source "
                     "FROM videos ORDER BY created_at DESC LIMIT 200")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "source_url", "title", "created_at",
-                         "md_len", "status", "vault_path", "category"], r)))
+                         "md_len", "status", "vault_path", "category", "source"], r)))
             self._send(200, rows)
             return
         if p == "/api/video/health":
@@ -430,13 +458,13 @@ class Handler(BaseHTTPRequestHandler):
             vid = m.group(1)
             with db() as c:
                 row = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error,category "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error,category,source "
                     "FROM videos WHERE id=?", (vid,)).fetchone()
             if not row:
                 self._send(404, {"error": "not found"})
                 return
             rec = dict(zip(["id", "source_url", "title", "created_at", "md_len",
-                            "status", "vault_path", "error", "category"], row))
+                            "status", "vault_path", "error", "category", "source"], row))
             md = ""
             vpath = rec.get("vault_path") or ""
             if vpath and os.path.isfile(vpath):
@@ -453,8 +481,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_DELETE(self):
-        # 删除分类：该分类下的记录回落到未分类（记录本身不动）
-        m = re.match(r"^/api/video/cats/(.+)$", self.path)
+        # 删除分类/来源：该值下的记录回落（记录本身不动）；?dim=source 表示操作来源列
+        _path_only, _, _query = self.path.partition("?")
+        _dim_col = "source" if "dim=source" in _query else "category"
+        m = re.match(r"^/api/video/cats/(.+)$", _path_only)
         if m:
             cat = urllib.parse.unquote(m.group(1)).strip()
             if not cat:
@@ -462,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with _lock:
                 with db() as c:
-                    n = c.execute("UPDATE videos SET category='' WHERE category=?",
+                    n = c.execute(f"UPDATE videos SET {_dim_col}='' WHERE {_dim_col}=?",
                                   (cat,)).rowcount
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
@@ -522,6 +552,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             new_title = (data.get("title") or "").strip()
             new_cat = data.get("category")
+            new_src = data.get("source")
             with _lock:
                 with db() as c:
                     row = c.execute(
@@ -549,6 +580,9 @@ class Handler(BaseHTTPRequestHandler):
                     if new_cat is not None:
                         cat = (str(new_cat) or "").strip()[:30]
                         c.execute("UPDATE videos SET category=? WHERE id=?", (cat, vid))
+                    if new_src is not None:
+                        sv = (str(new_src) or "").strip()[:30]
+                        c.execute("UPDATE videos SET source=? WHERE id=?", (sv, vid))
                     c.commit()
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
@@ -568,9 +602,10 @@ class Handler(BaseHTTPRequestHandler):
             if not old or not new:
                 self._send(400, {"error": "分类名不能为空"})
                 return
+            _col = "source" if "dim=source" in self.path else "category"
             with _lock:
                 with db() as c:
-                    n = c.execute("UPDATE videos SET category=? WHERE category=?",
+                    n = c.execute(f"UPDATE videos SET {_col}=? WHERE {_col}=?",
                                   (new, old)).rowcount
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
@@ -619,12 +654,14 @@ class Handler(BaseHTTPRequestHandler):
                 write_vault = bool(data.get("write_vault", True))
                 bilingual = bool(data.get("bilingual", False))
                 first_frame_only = bool(data.get("first_frame", False))
+                source_hint = (data.get("source_hint") or "").strip()[:30]
                 if not urls:
                     self._send(400, {"error": "urls 不能为空"})
                     return
                 results = do_video_batch(urls, write_vault,
                                          bilingual=bilingual,
-                                         first_frame_only=first_frame_only)
+                                         first_frame_only=first_frame_only,
+                                         source_hint=source_hint)
                 self._send(200, {"results": results})
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
@@ -651,8 +688,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
             return
-        if self.path == "/api/video/upload":
+        if self.path.split("?")[0] == "/api/video/upload":
             try:
+                _q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                _src_hint = (_q.get("source_hint", [""])[0] or "").strip()[:30]
                 ctype = self.headers.get("Content-Type", "")
                 write_vault = True
                 if "multipart/form-data" not in ctype:

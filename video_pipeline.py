@@ -112,8 +112,9 @@ def _resolve_whisper_source(model_size):
 # ctranslate2 的 CUDA 初始化会零 CPU 永久挂死（且不抛异常，except 兜不住）。
 # 短视频 CPU small int8 速度足够，确定性优先。可用环境变量 WHISPER_DEVICE 覆盖。
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
-# 单条转写总超时（含模型加载），超时报错放行，绝不让批量无限挂死
-WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT", "600"))
+# 单条转写总超时（含模型加载），超时报错放行，绝不让批量无限挂死。
+# 1800s：兼容 YouTube 长视频（1小时+ 讲座/播客类）在 CPU small int8 下的转写耗时
+WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT", "1800"))
 
 _WHISPER_CACHE = {"model": None, "size": None}
 
@@ -164,10 +165,13 @@ def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
     def _work():
         try:
             model = _get_whisper(model_size)
-            segs, _ = model.transcribe(video_path, beam_size=5, language="zh",
-                                       initial_prompt="以下是普通话的视频旁白，请用简体中文转写。")
+            # 语言自动检测：任何语种音频都全量转写，不再强制中文
+            # （强制 zh 会让英文等外语视频被硬解码成中文碎片，整段失真）
+            segs, _ = model.transcribe(video_path, beam_size=5)
             result["text"] = "\n".join(s.text for s in segs).strip()
         except Exception as e:
+            import traceback
+            traceback.print_exc()  # 完整堆栈进服务日志，便于事后排查
             result["err"] = f"转写出错：{type(e).__name__}: {e}"
 
     th = threading.Thread(target=_work, daemon=True)
@@ -271,10 +275,14 @@ def extract_keyframes(video_path, out_dir, n=4, first_only=False):
         files = sorted(out_dir.glob(f"{stem}_*.jpg"))
         return [str(f) for f in files if os.path.getsize(f) > 200]
     pat = str(out_dir / f"{stem}_%03d.jpg")
-    # 每 ~2 秒抽 1 帧（fps=1/2），不依赖视频时长
+    # 每 ~2 秒抽 1 帧（fps=1/2），不依赖视频时长。
+    # -skip_frame nokey：只解码关键帧，长视频(10min+)快 ~10 倍，否则 180s 超时被杀；
+    # keyframe 画质略降但足够视觉理解用。
     try:
-        subprocess.run([ff, "-y", "-i", video_path, "-vf", "fps=1/2", "-q:v", "3", pat],
-                       capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
+        subprocess.run([ff, "-y", "-i", video_path, "-skip_frame", "nokey",
+                        "-an", "-sn", "-dn",
+                        "-vf", "fps=1/2", "-q:v", "3", pat],
+                       capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired as e:
         err = (e.stderr or b"")[-200:]
         print(f"[video] ffmpeg 抽帧超时: {video_path} stderr={err!r}", flush=True)
@@ -333,10 +341,54 @@ def describe_frames(frame_paths, max_frames=N_KEYFRAMES):
     return descs
 
 
+# ---------------- 关键词提取（jieba TF-IDF，源自 smart-summarize 思路；jieba 缺失时返回空，由模型标签兜底） ----------------
+_ZH_STOP_WORDS = {'可以', '这个', '这样', '因为', '所以', '但是', '而且', '我们', '你们', '他们',
+                  '没有', '就是', '什么', '如何', '怎么', '一个', '一种', '通过', '进行', '实现',
+                  '以及', '并且', '因此', '如果', '已经', '这些', '那些', '目前', '同时'}
+
+def extract_tags(text, n=8):
+    """基于全量转写的确定性关键词提取（不依赖 LLM、不吃上下文窗口）。"""
+    if not text or not text.strip():
+        return []
+    try:
+        import logging
+        import jieba
+        import jieba.analyse
+        jieba.setLogLevel(logging.ERROR)
+        tags = jieba.analyse.extract_tags(
+            text, topK=n,
+            allowPOS=('n', 'ns', 'nr', 'nt', 'nz', 'vn', 'v', 'a', 'an', 'i', 'j', 'l', 'eng'))
+        return [t.strip() for t in tags if t.strip() not in _ZH_STOP_WORDS and len(t.strip()) >= 2]
+    except Exception:
+        return []
+
 # ---------------- 结构化总结 ----------------
-def summarize(transcript, frame_descs, source_meta):
-    descs_text = "\n".join(f"- {d}" for d in frame_descs) if frame_descs else "（无关键帧描述）"
-    transcript_text = (transcript[:12000] if transcript else "（无转写文本）")
+# 单段蒸馏的转写字符上限（留余量防超 qwen3:14b 上下文）
+DISTILL_CHUNK_CHARS = 11000
+
+
+def _split_transcript(transcript, size=DISTILL_CHUNK_CHARS):
+    """把长转写按段落边界切成 n 段（每段≈size 字符），保证句子完整。
+
+    返回列表；len==1 表示无需分段（单段直蒸）。
+    """
+    if len(transcript) <= size:
+        return [transcript]
+    paras = transcript.split("\n")
+    chunks, cur = [], ""
+    for p in paras:
+        if cur and len(cur) + len(p) + 1 > size:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = f"{cur}\n{p}" if cur else p
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _summarize_single(transcript_text, descs_text, source_meta):
+    """单段直蒸（转写 ≤ DISTILL_CHUNK_CHARS 时走这里）。返回 JSON dict。"""
     prompt = (
         "你是知识库整理助手。基于一段视频的【语音转写】与【关键帧画面描述】，"
         "产出结构化笔记。请只输出一个 JSON 对象，字段如下（不要输出任何多余文字、不要 Markdown 代码块标记）：\n"
@@ -354,7 +406,8 @@ def summarize(transcript, frame_descs, source_meta):
         "   人物、机构、金额、时间、数量、比例、因果关系等细节，缺一不可。\n"
         "2. **严禁空泛概括**。不要写「讲了资本运作」「介绍了一个案例」这种话；\n"
         "   要写成「随天立注册20家壳公司控制上下游，虚构交易闭环」这种带细节、可独立成立的表述。\n"
-        "3. 按视频叙事顺序排列；转写中的口语错误请自行纠正为规范书面语（如同音字、人名机构名）。\n\n"
+        "3. 按视频叙事顺序排列；转写中的口语错误请自行纠正为规范书面语（如同音字、人名机构名）；\n"
+        "   转写来自语音识别，可能存在同音字/错别字（人名、书名、专有名词尤甚），请依据上下文纠正。\n\n"
         "【制作流程】填写规则（极重要）：\n"
         "1. 若视频是制作方法/教程/工艺/实验类，请务必填写『制作流程』——按视频出现顺序，"
         "逐步还原每一步的具体操作、所用原料与工具、关键参数（温度/时间/配比/火候）、以及成败要点。\n"
@@ -365,15 +418,167 @@ def summarize(transcript, frame_descs, source_meta):
         f"【语音转写】\n{transcript_text}\n"
     )
     raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1800, keep_alive="10m")
-    # 解析 JSON（容错：去掉代码块标记）
+    return _parse_summary_json(raw, source_meta)
+
+
+def _parse_summary_json(raw, source_meta):
+    """容错解析 Ollama 输出的 JSON；先抽取 {...} 块再解析，失败退化为原始文本摘要。"""
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    if m:
+        raw = m.group(0)
     raw = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.M).strip()
     try:
-        data = json.loads(raw)
+        return json.loads(raw)
     except Exception:
-        # 退化：把原始输出当摘要
-        data = {"标题": source_meta.get("title") or "未命名视频",
+        return {"标题": source_meta.get("title") or "未命名视频",
                 "摘要": raw[:200], "要点": [], "章节": [],
                 "标签": [], "关键结论": ""}
+
+
+def _parse_map_output(raw):
+    """解析 map 阶段纯文本输出 -> (主题, [要点...], 关键结论)。容错：接受 - · • * 或数字编号。"""
+    theme, concl, pts = "", "", []
+    for ln in (raw or "").splitlines():
+        ln = ln.strip().strip('`')
+        if not ln or ln.startswith("```"):
+            continue
+        m = re.match(r"^(?:本段)?主题\s*[:：]\s*(.+)$", ln)
+        if m:
+            if not theme:
+                theme = m.group(1).strip()
+            continue
+        m = re.match(r"^(?:关键结论|结论)\s*[:：]\s*(.+)$", ln)
+        if m:
+            concl = m.group(1).strip()
+            continue
+        m = re.match(r"^(?:[-·•*]|\d{1,2}[.、:：)）])\s*(.+)$", ln)
+        if m:
+            t = m.group(1).strip()
+            if len(t) >= 6 and not t.startswith(("要点", "主题")):
+                pts.append(t)
+    return theme, pts, concl
+
+
+def _parse_reduce_output(raw):
+    """解析 reduce 阶段纯文本输出 -> dict（标题/摘要/要点/关键结论/标签）。"""
+    data = {"标题": "", "摘要": "", "要点": [], "章节": [], "标签": [], "关键结论": ""}
+    mode = None
+    for ln in (raw or "").splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("```"):
+            continue
+        m = re.match(r"^标题\s*[:：]\s*(.+)$", ln)
+        if m:
+            data["标题"] = m.group(1).strip(); mode = None; continue
+        m = re.match(r"^摘要\s*[:：]\s*(.+)$", ln)
+        if m:
+            data["摘要"] = m.group(1).strip(); mode = None; continue
+        m = re.match(r"^(?:关键结论|结论)\s*[:：]\s*(.+)$", ln)
+        if m:
+            data["关键结论"] = m.group(1).strip(); mode = None; continue
+        m = re.match(r"^(要点|标签)\s*[:：]?\s*$", ln)
+        if m:
+            mode = m.group(1); continue
+        m = re.match(r"^(?:[-·•*]|\d{1,2}[.、:：)）])\s*(.+)$", ln)
+        if m and mode in ("要点", "标签"):
+            data[mode].append(m.group(1).strip())
+            continue
+        if mode == "要点" and len(ln) >= 6:
+            data["要点"].append(ln)
+    return data
+
+
+def _deterministic_summary(map_items, source_meta):
+    """reduce 失败时的无模型兜底：直接用分段要点拼最终结构，绝不把原文塞进摘要。"""
+    pts = []
+    for (_, p, _) in map_items:
+        pts.extend(p)
+    concl = next((c for (_, _, c) in map_items if c), "")
+    chapters = [{"时间": f"第{i+1}段", "主题": th or "未命名"}
+                for i, (th, _, _) in enumerate(map_items) if th]
+    return {
+        "标题": source_meta.get("title") or "未命名视频",
+        "摘要": ("；".join(pts[:3])[:150] if pts else "（蒸馏失败，请查看全文转写）"),
+        "制作流程": [],
+        "章节": chapters,
+        "要点": pts[:15],
+        "标签": [],
+        "关键结论": concl,
+    }
+
+
+def summarize(transcript, frame_descs, source_meta):
+    """结构化总结。长转写**自动分段蒸馏**（map-reduce），对使用者无感。
+
+    - 转写 ≤ DISTILL_CHUNK_CHARS：单段直蒸（与原行为一致）
+    - 更长：先逐段提取要点（map），再合并去重产出最终结构（reduce）
+    返回 JSON dict，附加 "_distill_chunks"=实际分段数（1=未分段）。
+    """
+    descs_text = "\n".join(f"- {d}" for d in frame_descs) if frame_descs else "（无关键帧描述）"
+    chunks = _split_transcript(transcript or "")
+    n = len(chunks)
+
+    if n == 1:
+        data = _summarize_single(transcript[:12000], descs_text, source_meta)
+        data["_distill_chunks"] = 1
+        return data
+
+    # ---- map：逐段蒸馏要点（纯文本协议，容错解析；不强迫模型吐 JSON） ----
+    map_items = []   # [(主题, [要点...], 关键结论), ...]
+    for i, ch in enumerate(chunks):
+        prompt = (
+            f"你是知识库整理助手。下面是一段长视频语音转写的第 {i+1}/{n} 段（共 {n} 段）。\n"
+            "转写来自语音识别，可能存在同音字/错别字（人名、书名、专有名词尤甚），"
+            "请依据上下文自行纠正后再提炼；无法确定的按原样保留。\n"
+            "请输出纯文本（不要 JSON、不要代码块、不要任何解释），格式严格如下：\n"
+            "主题：<本段主题，10字内>\n"
+            "- <要点1，必须是信息完整的句子，含人物/机构/金额/时间/数量/因果等具体细节>\n"
+            "- <要点2>\n"
+            "（最多 12 条要点，按本段叙事顺序，严禁空泛概括）\n"
+            "关键结论：<本段最重要的结论或金句，无则写「无」>\n\n"
+            f"【语音转写 第{i+1}/{n}段】\n{ch}\n"
+        )
+        raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1200, keep_alive="10m")
+        theme, pts, concl = _parse_map_output(raw)
+        if pts:
+            map_items.append((theme, pts, concl))
+
+    # 全部分段都没提出要点：退化单段直蒸（截断兜底）
+    if not map_items:
+        data = _summarize_single(transcript[:12000], descs_text, source_meta)
+        data["_distill_chunks"] = n
+        return data
+
+    # ---- reduce：合并为最终结构（纯文本协议；失败则用分段要点直接拼装，绝不用原文） ----
+    seg_text = "\n\n".join(
+        (f"【第{i+1}段「{th}」】\n" if th else f"【第{i+1}段】\n")
+        + "\n".join(f"- {p}" for p in pts)
+        + (f"\n关键结论：{c}" if c and c != "无" else "")
+        for i, (th, pts, c) in enumerate(map_items))
+    prompt = (
+        "你是知识库整理助手。下面是对一段长视频**分段蒸馏**后汇总的全部分段要点。"
+        "请合并去重、按视频叙事顺序整理，输出纯文本（不要 JSON、不要代码块），格式严格如下：\n"
+        "标题：<全片标题，15字内>\n"
+        "摘要：<120字内的整体摘要>\n"
+        "要点：\n"
+        "- <要点1，保留具体细节>\n"
+        "- <要点2>\n"
+        "（8~15 条；合并重复，保留全部具体事实细节，严禁空泛概括）\n"
+        "关键结论：<全片最核心的可执行结论或金句>\n\n"
+        f"【分段要点汇总（共{n}段）】\n{seg_text}\n"
+    )
+    raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1800, keep_alive="10m")
+    data = _parse_reduce_output(raw)
+    if data["要点"]:
+        data["标题"] = data["标题"] or (source_meta.get("title") or "未命名视频")
+        data["摘要"] = data["摘要"] or "；".join(data["要点"][:3])[:150]
+        data["章节"] = [{"时间": f"第{i+1}段", "主题": th or "未命名"}
+                        for i, (th, _, _) in enumerate(map_items) if th]
+        data["标签"] = data.get("标签") or []
+    else:
+        # reduce 失败：用分段要点确定性拼装，不再依赖模型
+        data = _deterministic_summary(map_items, source_meta)
+    data["_distill_chunks"] = n
     return data
 
 
@@ -410,6 +615,8 @@ def build_markdown(meta, transcript, frame_descs, summary, frames, bilingual_blo
     lines.append(f"> 来源：{meta.get('source','')}  ")
     lines.append(f"> 原始链接：{meta.get('url','')}  ")
     lines.append(f"> 整理时间：{now}  ")
+    if (summary.get("_distill_chunks") or 1) > 1:
+        lines.append(f"> 🧠 分段蒸馏：全文较长，自动分 **{summary['_distill_chunks']}** 段蒸馏后合并（要点已覆盖全片）")
     tags = summary.get("标签") or []
     if tags:
         lines.append("")
@@ -526,11 +733,19 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
     else:
         # 1) 转写
         transcript, terr = transcribe(video_path, model_size)
-    # 2) 关键帧（首页模式只取一帧）
-    frames = extract_keyframes(video_path, frames_dir, n=N_KEYFRAMES,
-                               first_only=first_frame_only)
-    # 3) 视觉理解
-    frame_descs = describe_frames(frames)
+    # 1.5) 纯音频文件（mp3/wav/m4a 等）：无画面可抽，跳过关键帧与视觉理解
+    AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
+    is_audio = Path(video_path).suffix.lower() in AUDIO_EXTS
+    if is_audio:
+        frames, frame_descs = [], []
+        meta["source"] = source or "音频文件"
+        meta["media"] = "audio"
+    else:
+        # 2) 关键帧（首页模式只取一帧）
+        frames = extract_keyframes(video_path, frames_dir, n=N_KEYFRAMES,
+                                   first_only=first_frame_only)
+        # 3) 视觉理解
+        frame_descs = describe_frames(frames)
     # 4) 结构化总结（双语模式喂中文翻译，总结质量更好）
     summarize_text = transcript
     if bilingual_blocks:
@@ -538,6 +753,15 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
         if len(zh_join) > 50:
             summarize_text = zh_join
     summary = summarize(summarize_text, frame_descs, meta)
+    # 4.5) 标签补强：jieba 基于【全量】转写提取关键词，与模型标签合并去重——
+    #      模型标签可能空/质量不稳，关键词提取不受上下文窗口限制，覆盖全片
+    try:
+        kw = extract_tags(transcript, n=8)
+        merged = list(dict.fromkeys((summary.get("标签") or []) + kw))[:10]
+        if merged:
+            summary["标签"] = merged
+    except Exception:
+        pass
     # 5) 拼装
     md = build_markdown(meta, transcript, frame_descs, summary, frames,
                         bilingual_blocks=bilingual_blocks)
@@ -553,6 +777,7 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
         "tags": summary.get("标签", []),
         "lang": meta.get("lang", ""),
         "bilingual": bool(bilingual_blocks),
+        "distill_chunks": summary.get("_distill_chunks", 1),
         "markdown": md,
     }
 
