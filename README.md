@@ -1,12 +1,13 @@
-# video_distill —— 微信视频号/抖音 下载 → 整理 → 知识库
+# video_distill —— 视频号/抖音/YouTube 下载 → 整理 → 知识库
 
-把短视频（**抖音 / 抖音视频号 / 微信视频号直链 / 本地 mp4**）自动整理成 Markdown 笔记，写入 **Obsidian 知识库**。
+把视频/音频（**抖音 / 微信视频号 / YouTube / 直链 / 本地文件（含纯音频 mp3/wav/m4a 等）**）自动整理成 Markdown 笔记，写入 **Obsidian 知识库**。
 整条链路**本地优先、零外部 API 费用**：
 
-- 视频下载：`yt-dlp`（抖音）/ `ffmpeg`（直链、抓包所得 m3u8）
+- 视频下载：`yt-dlp`（抖音 / YouTube nightly + cookie）/ `ffmpeg`（直链、抓包所得 m3u8）
 - 关键帧抽取：`ffmpeg`（由 `imageio-ffmpeg` 提供，无需系统安装）
 - 画面理解 / 结构化总结：本机 **Ollama** `qwen3-vl:8b` + `qwen3:14b`
-- 语音转写（可选）：本地 `faster-whisper`（装不上 / 模型拉不到时自动降级）
+- 语音转写：本地 `faster-whisper`（ModelScope 镜像模型，全量转写）
+- 关键词：`jieba` TF-IDF 抽取，与模型标签合并去重
 
 > 合并自 `crawl4ai-app`（网页采集器），复用其 Web UI / 历史库 / Ollama 抽取能力。
 
@@ -62,6 +63,9 @@
 |---|---|
 | 网页抓取 | 输入网址 → crawl4ai 抓正文 → Markdown（crawl4ai-app 原功能） |
 | 🎬 视频号/抖音 | 抖音链接批量 / 本地视频上传 → 抽帧 + 视觉理解 + AI 总结 → 入库 |
+| ▶️ YouTube | 独立工作台（与抖音互不干扰），功能一致：nightly yt-dlp + cookie + 代理链下载 |
+
+「已入库记录」支持：**分类 + 来源（抖音视频 / YouTube视频，可自定义）双维度筛选**、搜索、查看笔记全文、编辑、删除；记录卡片显示红色分类/来源标签与「⛓ 分X段蒸馏」标记。
 
 视频标签页顶部有 **工具状态指示灯**（🟢yt-dlp 🟢ffmpeg 🟡转写），切到该页会自动探测依赖是否齐全。
 
@@ -123,8 +127,9 @@ venv/bin/python app.py              # Linux/Mac
 | 平台 | 获取方式 | 说明 |
 |---|---|---|
 | **抖音 / 抖音视频号** | App/网页 → 视频「分享」→「复制链接」→ 粘贴到工具 | 支持 `v.douyin.com/xxx` 短链、直链 `douyin.com/video/<id>`、以及**搜索页/分享页链接（含 `modal_id`）自动改写** |
+| **YouTube** | 粘贴 `youtube.com/watch?v=xxx` / `youtu.be/xxx` → 「YouTube」页签 | 需代理（按 `VIDEO_PROXY` → 系统代理 → 项目内 `proxy.txt` → 直连 依次尝试）+ 根目录 `yt_cookies.txt`（Netscape 格式，扩展导出）；自带 nightly `yt-dlp.exe` |
 | **视频号直链** | 抓包（Charles/mitmproxy）拿 `.m3u8/.mp4` → 粘贴 | 需绕过微信 SSL Pinning，微信更新可能失效 |
-| **本地文件** | 微信「保存到手机」/ 抖音「保存本地」→ 上传 | 最稳，立即可用，零 cookie 依赖 |
+| **本地文件** | 微信「保存到手机」/ 抖音「保存本地」→ 上传 | 最稳，立即可用，零 cookie 依赖；**纯音频（mp3/wav/m4a/aac/flac/ogg/opus/wma）也可直接蒸馏**，自动跳过抽帧 |
 
 > ⚠️ **抖音反爬**：现多数视频需浏览器 cookie。工具按以下顺序**自动三级兜底**：
 > 1. **`cookies.txt` 文件 + UA/Referer 指纹（最稳，推荐）**——见下方「导出 cookie」；
@@ -196,12 +201,25 @@ export VIDEO_VAULT_DIR=/path/to/vault           # Linux/Mac
 
 ---
 
-## 7. 接口（便于二次开发 / 自动化）
+## 8. 分段蒸馏（长视频自动 map-reduce）
+
+转写超过 **11000 字**（`DISTILL_CHUNK_CHARS`）时自动分段：
+
+1. **map**：逐段产出纯文本要点（「主题：/- 要点/关键结论：」行协议，不依赖 JSON，避免格式崩坏）
+2. **reduce**：合并各段要点为全片摘要 + 要点；解析失败时用**确定性拼装兜底**——
+   绝不让原文整段复读进摘要（v3.3 修复的荀子笔记问题）
+3. 结果卡片与入库笔记标注「⛓ 分X段蒸馏」，使用者无感
+
+同音错字纠正指令内置（如「青油小说」→ 言情小说类）。
+
+---
+
+## 9. 接口（便于二次开发 / 自动化）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/video` | body: `{"urls":[...], "write_vault":true}`，批量下载+整理 |
-| POST | `/api/video/upload` | multipart 上传本地视频文件 |
+| POST | `/api/video` | body: `{"urls":[...], "write_vault":true, "source_hint":"YouTube视频"}`，批量下载+整理 |
+| POST | `/api/video/upload` | multipart 上传本地视频/音频文件 |
 | GET  | `/api/video/history` | 视频整理历史 |
 | GET  | `/api/video/records/<id>` | 单条记录详情（含笔记全文） |
 | DELETE | `/api/video/<id>` | 删除记录（DB 记录 + 知识库笔记 + 服务端副本） |
@@ -216,14 +234,11 @@ venv\Scripts\python.exe video_pipeline.py videos_inbox/xxxxx.mp4
 
 ---
 
-## 8. 已知边界 & 排错
+## 10. 已知边界 & 排错
 
-- **语音转写（faster-whisper）当前在本机环境不可用**：模型权重（`tiny` 的 `model.bin`，约 75 MB）
-  首次需联网从 HuggingFace CDN 下载，而本机网络对该 CDN 返回空响应体，拉到的文件为 0 字节。
-  → 已自动降级：即使无转写，笔记仍含「关键帧 + 视觉描述 + AI 总结」，完整可用。
-  → **启用转写的两种办法**：① 在能正常访问 HF 的机器上把 `model.bin` 放到
-  `~/.cache/huggingface/hub/models--Systran--faster-whisper-tiny/snapshots/<hash>/model.bin`；
-  ② 改用 Ollama 的 `whisper` 系列模型替代（需改 `video_pipeline.py` 的转写实现）。
+- **语音转写已可用**：faster-whisper 通过 ModelScope 镜像模型解决 HuggingFace CDN 拉不到的问题，
+  全量转写（不分段截断），语言自动检测（不强制中文）。普通/YouTube 页签共用同一转写实现，
+  长视频转写超时默认 1800s（`WHISPER_TIMEOUT`）。
 - **视觉理解必须逐张发图**：`qwen3-vl` 单次请求超过 3 张图会返回 HTTP 400。代码已改为逐张单图请求，
   若你换用其它视觉模型，可重新评估是否批量发送。
 - **制作流程还原依赖帧密度 + 画面字幕**：无转写时，步骤还原来自 10 帧画面及其字幕文字
@@ -237,25 +252,40 @@ venv\Scripts\python.exe video_pipeline.py videos_inbox/xxxxx.mp4
 
 ---
 
-## 9. 项目结构
+## 11. 项目结构
 
 ```
-app.py                # Web 服务（标准库 http.server，零额外依赖）
-index.html            # 前端（网页抓取 + 视频号/抖音 两个标签页）
-video_downloader.py   # 获取层：抖音三级兜底(yt-dlp+UA/Referer → 浏览器cookie → playwright直链) / 直链(ffmpeg) / 本地文件
+app.py                # Web 服务（标准库 http.server，零额外依赖）+ 来源/分类管理 API
+index.html            # 前端（网页抓取 + 视频号/抖音 + YouTube 三个标签页）
+video_downloader.py   # 获取层：抖音三级兜底 / YouTube(nightly yt-dlp+cookie+代理链) / 直链(ffmpeg) / 本地文件
 douyin_auto.py        # playwright 拦截抖音 aweme/detail 拿无水印直链 + ffmpeg 下载（可导入复用，也可独立 CLI）
-video_pipeline.py     # 整理流水线：抽帧→逐帧视觉理解→AI总结→Markdown→入库
+douyin_profile.py     # playwright 采集抖音用户主页视频清单（先过目再批量入库）
+video_pipeline.py     # 整理流水线：抽帧→逐帧视觉理解→全量转写→分段蒸馏(map-reduce)→Markdown→入库
 wechat_dat.py         # 微信 .dat 缓存解密（图片类，可选工具）
+yt-dlp.exe            # nightly 独立版（本地放置，不入库，见 README 首页下载地址）
 vendor/               # 前端依赖（marked / dompurify）
 docs/设计方案.md       # 原实施方案
 ```
 
 ---
 
-## 10. 已验证环境
+## 12. 已验证环境
 
 - Windows 11 + Python 3.13 venv + 本机 Ollama（`qwen3:14b` / `qwen3-vl:8b`）
 - 实测通过：抖音搜索页链接（含 `modal_id`）→ 自动改写 → 下载 → 抽帧 → 视觉理解 → 总结 → 入库 Obsidian
 - 实测样例：古法香皂教学视频自动产出 **9 步完整制作流程**（含皂化反应、香料融合等细节），
   10 帧关键帧 base64 内嵌，Obsidian / IMA 均可显示图片
-- 当前状态：下载 ✅ / 抽帧 ✅ / 视觉理解 ✅ / 制作流程还原 ✅ / 总结 ✅ / **语音转写 ✅（ModelScope 本地模型，small）** / 记录管理（查看/删除）✅
+- **v3.4 端到端实测**：38 分钟 YouTube 视频 → 合并成品（196MB，有音轨）→ 全量转写 →
+  自动 2 段蒸馏（要点覆盖全片脉络，非原文复读）→ 入库 235KB 笔记（含 10 帧关键帧），
+  来源自动标记「YouTube视频」
+- 当前状态：下载 ✅ / 抽帧 ✅ / 视觉理解 ✅ / 制作流程还原 ✅ / 总结 ✅ / **语音转写 ✅（ModelScope 本地模型）** /
+  **分段蒸馏 ✅** / **纯音频蒸馏 ✅** / **YouTube ✅** / 来源分类 ✅ / 记录管理（查看/编辑/删除）✅
+
+---
+
+## 版本线
+
+- **v3.4**：YouTube 独立工作台、分段蒸馏、来源分类、记录查看容器路由修复、来源行透传修复
+- **v3.3**：双语字幕模式、首页单帧
+- **v3.2**：批量完成自动刷新已入库记录、左栏清空重置
+- **v3.1**：记录管理——分类体系、改名、拖拽分栏、双计时
