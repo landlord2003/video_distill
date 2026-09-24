@@ -261,6 +261,7 @@ video_downloader.py   # 获取层：抖音三级兜底 / YouTube(nightly yt-dlp+
 douyin_auto.py        # playwright 拦截抖音 aweme/detail 拿无水印直链 + ffmpeg 下载（可导入复用，也可独立 CLI）
 douyin_profile.py     # playwright 采集抖音用户主页视频清单（先过目再批量入库）
 video_pipeline.py     # 整理流水线：抽帧→逐帧视觉理解→全量转写→分段蒸馏(map-reduce)→Markdown→入库
+voice_tts.py          # 本地 TTS 桥接：对接 VoiceStudio(localhost:3900) OpenAI 兼容 API，长文自动分段
 wechat_dat.py         # 微信 .dat 缓存解密（图片类，可选工具）
 yt-dlp.exe            # nightly 独立版（本地放置，不入库，见 README 首页下载地址）
 vendor/               # 前端依赖（marked / dompurify）
@@ -285,6 +286,8 @@ docs/设计方案.md       # 原实施方案
 
 ## 版本线
 
+- **v3.6**：新增「🔊 配音 TTS」页签——嵌入本地 VoiceStudio（OpenAI 兼容 API，localhost:3900），长文本自动分段合成、在线播放/下载、合成记录管理
+- **v3.5**：新增「📰 公众号·笔记」采集页——公众号文章 / 小红书笔记 / B站视频（走视频流水线）
 - **v3.4**：YouTube 独立工作台、分段蒸馏、来源分类、记录查看容器路由修复、来源行透传修复
 - **v3.3**：双语字幕模式、首页单帧
 - **v3.2**：批量完成自动刷新已入库记录、左栏清空重置
