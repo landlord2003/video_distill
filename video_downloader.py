@@ -118,13 +118,115 @@ def get_cookies_arg():
     return []
 
 
+# ---------- 免 cookie 抖音下载（借鉴 chubbyskills/douyin-transcribe，MIT 参考） ----------
+# 原理：iesdouyin.com/share/video/<id> 分享页内嵌 window._ROUTER_DATA，
+# 其中 item_list[0].video.play_addr.url_list[0] 即去水印直链（playwm->play）。
+# 无需登录态/yt-dlp/playwright——cookies.txt 过期时这条仍可用。
+
+_DOUYIN_MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) EdgiOS/121.0.2277.107 "
+    "Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+
+def _direct_opener():
+    """直连 opener：忽略环境代理。抖音是国内站，走外部代理反而可能被拦/超时。"""
+    import urllib.request as _ur
+    return _ur.build_opener(_ur.ProxyHandler({}))
+
+
+def _extract_douyin_id(url: str) -> str:
+    """从各类抖音链接提取视频 id：modal_id= / /video/<id> / v.douyin.com 短链(跟随重定向)。"""
+    u = (url or "").strip()
+    m = re.search(r"modal_id=(\d+)", u)
+    if m:
+        return m.group(1)
+    m = re.search(r"/video/(\d+)", u)
+    if m:
+        return m.group(1)
+    if "v.douyin.com" in u or "iesdouyin.com" in u:
+        import urllib.request as _ur
+        opener = _direct_opener()
+        for method in ("HEAD", "GET"):
+            try:
+                req = _ur.Request(u, headers={"User-Agent": _DOUYIN_MOBILE_UA}, method=method)
+                with opener.open(req, timeout=15) as resp:
+                    final = resp.geturl()
+                    if method == "GET":
+                        resp.read(65536)
+                m = re.search(r"/video/(\d+)", final)
+                if m:
+                    return m.group(1)
+            except Exception:
+                continue
+    return ""
+
+
+def download_douyin_nocookie(url: str, out_dir: str):
+    """免 cookie 抖音下载。返回 (本地文件路径, 视频标题)；失败抛异常，
+    由 download_douyin 回落到 cookie 链路（本路径零外部依赖，优先级最高）。"""
+    import json as _json
+    import urllib.request as _ur
+    vid = _extract_douyin_id(url)
+    if not vid:
+        raise ValueError("无法从链接提取抖音视频 id")
+    share = f"https://www.iesdouyin.com/share/video/{vid}"
+    opener = _direct_opener()
+    req = _ur.Request(share, headers={"User-Agent": _DOUYIN_MOBILE_UA})
+    with opener.open(req, timeout=30) as resp:
+        html = resp.read().decode("utf-8", "ignore")
+    m = re.search(r"window\._ROUTER_DATA\s*=\s*(.*?)</script>", html, re.DOTALL)
+    if not m:
+        raise RuntimeError("分享页未找到 _ROUTER_DATA（抖音接口可能已变更）")
+    data = _json.loads(m.group(1).strip())
+    # loaderData 的 key 形如 "video_(id)/page"，做宽容匹配防 key 变体
+    item = None
+    for v in (data.get("loaderData") or {}).values():
+        if isinstance(v, dict) and isinstance(v.get("videoInfoRes"), dict):
+            lst = v["videoInfoRes"].get("item_list") or []
+            if lst:
+                item = lst[0]
+                break
+    if not item or not isinstance(item.get("video"), dict):
+        raise RuntimeError("分享页数据中没有视频项（可能是图文笔记/已下架）")
+    urls = (item["video"].get("play_addr") or {}).get("url_list") or []
+    if not urls:
+        raise RuntimeError("未取到播放直链")
+    vurl = urls[0].replace("playwm", "play")
+    title = (item.get("desc") or "").strip() or f"抖音视频{vid}"
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"dy_{vid}.mp4"
+    dreq = _ur.Request(vurl, headers={
+        "User-Agent": _DOUYIN_MOBILE_UA,
+        "Referer": "https://www.douyin.com/",
+    })
+    with opener.open(dreq, timeout=120) as resp, open(out, "wb") as f:
+        while True:
+            chunk = resp.read(1 << 16)
+            if not chunk:
+                break
+            f.write(chunk)
+    size = out.stat().st_size
+    if size < 100 * 1024:
+        try:
+            out.unlink()
+        except Exception:
+            pass
+        raise RuntimeError(f"下载内容过小({size}B)，疑似被风控拦截")
+    return str(out), title
+
+
 def download_douyin(url: str, out_dir: str) -> str:
     """抖音/抖音视频号分享链接 -> 本地 mp4。返回文件路径，失败抛异常。
     抖音 App/网页 -> 视频'分享' -> '复制链接' 得到 v.douyin.com/xxxx 传入；
     或把搜索页/分享页链接（含 modal_id）直接传入，本函数会自动改写。
-    抖音反爬需登录态 cookie，按优先级尝试：
-      1. cookies.txt 文件（VIDEO_COOKIES 环境变量 或 项目内 cookies.txt）——最稳
+    抖音反爬按优先级尝试：
+      0. 免cookie分享页直链（iesdouyin _ROUTER_DATA，零依赖，优先）
+      1. cookies.txt 文件（VIDEO_COOKIES 环境变量 或 项目内 cookies.txt）
       2. 浏览器实时 cookie（chrome/edge/chromium/brave，需该浏览器已登录抖音）
+      3. playwright 拦截直链（douyin_auto.py，终极兜底）
     若都失败，抛出带明确指引的异常。
     """
     url = normalize_douyin_url(url)
@@ -149,7 +251,15 @@ def download_douyin(url: str, out_dir: str) -> str:
         ] + base_extra + [url]
 
     last_err = None
-    # 1) 优先用 cookies.txt（不需要 Chrome 在跑，最稳）
+    # 0) 免 cookie 快速通道（借鉴 chubbyskills）：iesdouyin 分享页直取去水印直链，
+    #    零登录态依赖——cookies.txt 过期/浏览器没登录时这条仍然能用
+    try:
+        tried.append("免cookie分享页直链")
+        p, _t = download_douyin_nocookie(url, str(out_dir))
+        return p
+    except Exception as e:
+        last_err = f"免cookie直链失败：{e}"
+    # 1) 退化到 cookies.txt（不需要 Chrome 在跑，最稳）
     if cookie_file:
         tried.append("cookies.txt(项目内)")
         try:
