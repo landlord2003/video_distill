@@ -37,6 +37,20 @@ os.makedirs(CRAWLS_DIR, exist_ok=True)
 import video_downloader as vdl
 import video_pipeline as vp
 
+# ---------- 文章/笔记采集（公众号 / 小红书） ----------
+try:
+    import article_ingest as ai
+except Exception as _aie:
+    ai = None
+    print("[warn] article_ingest 加载失败:", _aie, file=sys.stderr)
+
+# 文章落库目录（Obsidian）：可用环境变量 ARTICLE_VAULT_DIR 覆盖
+_ART_VAULT_DEFAULT = r"E:\Workbuddy\Claw\08-文章笔记"
+ART_VAULT = (os.environ.get("ARTICLE_VAULT_DIR")
+             or (_ART_VAULT_DEFAULT if os.path.isdir(os.path.dirname(_ART_VAULT_DEFAULT))
+                 else os.path.join(BASE, "articles_vault")))
+os.makedirs(ART_VAULT, exist_ok=True)
+
 # ---------- 抖音主页采集 ----------
 try:
     import douyin_profile as dp
@@ -84,6 +98,18 @@ def init_db():
             c.execute("ALTER TABLE videos ADD COLUMN source TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 列已存在
+        # 文章/笔记采集（公众号 / 小红书）
+        c.execute("""CREATE TABLE IF NOT EXISTS articles (
+            id TEXT PRIMARY KEY,
+            url TEXT,
+            platform TEXT,
+            title TEXT,
+            created_at TEXT,
+            status TEXT,
+            md_len INTEGER,
+            vault_path TEXT,
+            error TEXT
+        )""")
         c.commit()
 
 
@@ -174,6 +200,8 @@ def detect_source_name(url):
         return "YouTube视频"
     if s == "douyin":
         return "抖音视频"
+    if s == "bilibili":
+        return "B站视频"
     return ""
 
 
@@ -304,6 +332,56 @@ def save_video(rec):
     return vid, path
 
 
+def save_article(url, platform, title, md, vault_path="", error=""):
+    """文章采集结果写 DB（同 URL 成功记录覆盖更新，失败记 error 行）。"""
+    with _lock:
+        aid = ""
+        status = "done" if md else "error"
+        if url:
+            with db() as c:
+                row = c.execute("SELECT id FROM articles WHERE url=? AND status=?",
+                                (url, status)).fetchone()
+            if row:
+                aid = row[0]
+        if not aid:
+            aid = short_id(url or title or "article")
+        path = os.path.join(CRAWLS_DIR, "article_" + aid + ".md")
+        with io.open(path, "w", encoding="utf-8") as f:
+            f.write(md or "")
+        with db() as c:
+            c.execute(
+                "INSERT OR REPLACE INTO articles "
+                "(id,url,platform,title,created_at,status,md_len,vault_path,error) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (aid, url, platform, (title or "")[:120],
+                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 status, len(md or ""), vault_path, str(error)[:500]))
+            c.commit()
+    return aid, path
+
+
+def do_article_ingest(url, write_vault=True):
+    """公众号/小红书 采集 -> Markdown -> 可选写 Obsidian 库。"""
+    out = ai.ingest(url)
+    vpath = ""
+    if write_vault and out.get("md"):
+        os.makedirs(ART_VAULT, exist_ok=True)
+        vpath = os.path.join(ART_VAULT, out["filename"])
+        # 同名文件加序号，避免覆盖历史
+        base, ext = os.path.splitext(vpath)
+        n = 1
+        while os.path.exists(vpath):
+            vpath = f"{base}-{n}{ext}"
+            n += 1
+        with io.open(vpath, "w", encoding="utf-8") as f:
+            f.write(out["md"])
+    aid, _ = save_article(url, out.get("platform", ""), out.get("title", ""),
+                          out.get("md", ""), vault_path=vpath)
+    return {"id": aid, "ok": True, "platform": out.get("platform", ""),
+            "title": out.get("title", ""), "md": out.get("md", ""),
+            "vault_path": vpath}
+
+
 # ---------- HTTP ----------
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -411,6 +489,51 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, "not found")
             return
+        if p == "/api/articles":
+            q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+            rows = []
+            with db() as c:
+                if q:
+                    like = f"%{q}%"
+                    cur = c.execute(
+                        "SELECT id,url,platform,title,created_at,md_len,status,vault_path "
+                        "FROM articles WHERE url LIKE ? OR title LIKE ? "
+                        "ORDER BY created_at DESC LIMIT 200", (like, like))
+                else:
+                    cur = c.execute(
+                        "SELECT id,url,platform,title,created_at,md_len,status,vault_path "
+                        "FROM articles ORDER BY created_at DESC LIMIT 200")
+                for r in cur.fetchall():
+                    rows.append(dict(zip(
+                        ["id", "url", "platform", "title", "created_at",
+                         "md_len", "status", "vault_path"], r)))
+            self._send(200, rows)
+            return
+        m = re.match(r"^/api/articles/([^/]+)$", p)
+        if m:
+            aid = m.group(1)
+            with db() as c:
+                row = c.execute(
+                    "SELECT id,url,platform,title,created_at,md_len,status,vault_path,error "
+                    "FROM articles WHERE id=?", (aid,)).fetchone()
+            if not row:
+                self._send(404, {"error": "not found"})
+                return
+            rec = dict(zip(["id", "url", "platform", "title", "created_at",
+                            "md_len", "status", "vault_path", "error"], row))
+            md = ""
+            vpath = rec.get("vault_path") or ""
+            if vpath and os.path.isfile(vpath):
+                with io.open(vpath, "r", encoding="utf-8") as f:
+                    md = f.read()
+            else:
+                cp = os.path.join(CRAWLS_DIR, "article_" + aid + ".md")
+                if os.path.exists(cp):
+                    with io.open(cp, "r", encoding="utf-8") as f:
+                        md = f.read()
+            rec["markdown"] = md
+            self._send(200, rec)
+            return
         if p == "/api/video/history":
             rows = []
             with db() as c:
@@ -496,6 +619,31 @@ class Handler(BaseHTTPRequestHandler):
                                   (cat,)).rowcount
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
+            return
+        m = re.match(r"^/api/articles/([^/]+)$", self.path)
+        if m:
+            aid = m.group(1)
+            removed = []
+            with _lock:
+                with db() as c:
+                    row = c.execute(
+                        "SELECT vault_path FROM articles WHERE id=?", (aid,)).fetchone()
+                    c.execute("DELETE FROM articles WHERE id=?", (aid,))
+                    c.commit()
+            if row and row[0] and os.path.isfile(row[0]):
+                try:
+                    os.remove(row[0])
+                    removed.append(row[0])
+                except Exception:
+                    pass
+            fp = os.path.join(CRAWLS_DIR, "article_" + aid + ".md")
+            if os.path.exists(fp):
+                try:
+                    os.remove(fp)
+                    removed.append(fp)
+                except Exception:
+                    pass
+            self._send(200, {"ok": True, "removed": removed})
             return
         m = re.match(r"^/api/crawls/([^/]+)$", self.path)
         if m:
@@ -642,6 +790,29 @@ class Handler(BaseHTTPRequestHandler):
                     save_crawl(rec, "", "", None)
                     self._send(500, rec)
             except Exception as e:
+                self._send(500, {"error": str(e)[:500]})
+            return
+        # ---------------- 文章/笔记采集（公众号/小红书） ----------------
+        if self.path == "/api/article":
+            try:
+                if ai is None:
+                    self._send(500, {"error": "article_ingest 模块未加载（看服务日志）"})
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                url = (data.get("url") or "").strip()
+                write_vault = bool(data.get("write_vault", True))
+                platform = (data.get("platform") or "").strip()
+                if not url:
+                    self._send(400, {"error": "url required"})
+                    return
+                self._send(200, do_article_ingest(url, write_vault))
+            except Exception as e:
+                # 失败也落一条 error 记录，便于前端历史里看到原因
+                try:
+                    save_article(url, platform, "", "", error=str(e)[:500])
+                except Exception:
+                    pass
                 self._send(500, {"error": str(e)[:500]})
             return
         # ---------------- 视频号/抖音 整理 ----------------

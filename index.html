@@ -105,6 +105,7 @@
   /* ===== 方案A：视频工作台 左右分栏 ===== */
   #video-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   #yt-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
+  #art-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   .layoutA{flex:1;display:flex;min-height:0}
   #vsplit{width:6px;cursor:col-resize;flex-shrink:0;border-left:1px solid var(--line)}
   #vsplit:hover,#vsplit.dragging{background:var(--acc)}
@@ -190,7 +191,8 @@
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
       <button class="tab" onclick="switchTab('yt',this)">▶ YouTube</button>
-      <span class="ver">v3.3 · 工作台布局 · 双语字幕✓ · 记录管理✓</span>
+      <button class="tab" onclick="switchTab('art',this)">📰 公众号·笔记</button>
+      <span class="ver">v3.5 · 公众号/小红书/B站采集 · 分段蒸馏✓ · 来源分类✓</span>
     </div>
     <!-- 网页抓取（保持原有结构） -->
     <div id="bar">
@@ -361,6 +363,79 @@
               <input type="text" id="ythq" placeholder="🔍 搜索已入库记录（标题 / 来源）…" style="margin-bottom:10px" oninput="renderYtHistList()">
               <div id="ytvh-detail"></div>
               <div id="ytrec"><div class="empty" style="padding:14px">加载中…</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 公众号/笔记采集工作台：公众号文章 / 小红书笔记 / B站视频 -->
+    <div id="art-panel">
+      <div class="layoutA">
+        <div class="flow" id="artflow">
+          <div class="step" id="artst1">
+            <div class="step-h" onclick="fold('artst1')"><span class="no">1</span><span class="tt">公众号文章</span>
+              <span class="sub">mp.weixin.qq.com</span></div>
+            <div class="step-b">
+              <div style="display:flex;gap:6px">
+                <input id="wxurl" placeholder="粘贴文章链接 https://mp.weixin.qq.com/s/…" onkeydown="if(event.key==='Enter')ingestArticle('wechat')">
+                <button id="wxgo" class="btn pri" onclick="ingestArticle('wechat')" style="flex-shrink:0">抓取</button>
+              </div>
+              <label class="toggle" style="margin-top:6px"><input type="checkbox" id="wxvault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
+            </div>
+          </div>
+          <div class="step" id="artst2">
+            <div class="step-h" onclick="fold('artst2')"><span class="no">2</span><span class="tt">小红书笔记</span>
+              <span class="sub">xiaohongshu.com / xhslink.com</span></div>
+            <div class="step-b">
+              <div style="display:flex;gap:6px">
+                <input id="xhsurl" placeholder="粘贴小红书笔记链接（图文笔记）" onkeydown="if(event.key==='Enter')ingestArticle('xhs')">
+                <button id="xhsgo" class="btn pri" onclick="ingestArticle('xhs')" style="flex-shrink:0">抓取</button>
+              </div>
+              <div class="mut" style="margin-top:6px">⚠ 建议先设环境变量 XHS_COOKIE（浏览器登录小红书后复制），否则常被风控拦截；视频笔记仅保留视频链接</div>
+            </div>
+          </div>
+          <div class="step" id="artst3">
+            <div class="step-h" onclick="fold('artst3')"><span class="no">3</span><span class="tt">B站视频</span>
+              <span class="sub">bilibili.com / b23.tv</span></div>
+            <div class="step-b">
+              <textarea id="biliurls" placeholder="粘贴 B站 视频链接，每行一个&#10;例：https://www.bilibili.com/video/BVxxxx&#10;https://b23.tv/xxxx"></textarea>
+              <div class="segbtns" style="margin-top:8px">
+                <span style="flex:1"></span>
+                <button id="biligo" class="btn pri" onclick="runBili()" style="padding:8px 22px">▶ 运行整理</button>
+              </div>
+              <div class="mut" style="margin-top:6px">走完整视频流水线（下载→抽帧→转写→蒸馏），记录同步到「视频号/抖音」页签的已入库记录，来源标为「B站视频」</div>
+            </div>
+          </div>
+          <div class="step" id="artst4">
+            <div class="step-h" onclick="fold('artst4')"><span class="no">4</span><span class="tt">处理进度</span>
+              <span class="sub" id="artsub">就绪</span></div>
+            <div class="step-b">
+              <div id="artstatus" class="mut" style="line-height:1.9;min-height:20px">等待提交…</div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:6px">
+            <button class="btn" onclick="clearArtAll()" title="清空链接与进度（不影响已入库记录）">🧹 清空重置</button>
+          </div>
+        </div>
+        <div class="work">
+          <div class="work-tabs">
+            <div class="wtab active" id="awt-res" onclick="wtab('artresult',this)">✨ 采集结果 <span class="chip run" id="artres-count" style="display:none"></span></div>
+            <div class="wtab" id="awt-hist" onclick="wtab('arthist',this)">📚 已入库记录 <span class="chip" id="arthist-status"></span></div>
+          </div>
+          <div class="work-body">
+            <div id="artresult" class="wpane active">
+              <div id="art-result-list"><div class="empty" style="padding:40px">公众号 / 小红书采集结果会显示在这里（B站走视频流水线，结果在视频页签）。</div></div>
+            </div>
+            <div id="arthist" class="wpane">
+              <div class="kpi">
+                <div><div class="k">累计</div><div class="v" id="artk-total">–</div></div>
+                <div><div class="k">完成</div><div class="v ok" id="artk-done">–</div></div>
+                <div><div class="k">失败</div><div class="v err" id="artk-err">–</div></div>
+                <div><div class="k">总字数</div><div class="v" id="artk-chars">–</div></div>
+              </div>
+              <input type="text" id="arthq" placeholder="🔍 搜索已入库文章（标题 / 链接）…" style="margin-bottom:10px" oninput="renderArtHistList()">
+              <div id="artvh-detail"></div>
+              <div id="artrec"><div class="empty" style="padding:14px">加载中…</div></div>
             </div>
           </div>
         </div>
@@ -549,13 +624,129 @@ async function del(id){
 function switchTab(t, btn){
   document.querySelectorAll('#tabs .tab').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  const web = (t==='web'), yt = (t==='yt');
+  const web = (t==='web'), yt = (t==='yt'), art = (t==='art');
   $('#bar').style.display = web?'flex':'none';
   $('#status').style.display = web?'block':'none';
   $('#result').style.display = web?'block':'none';
-  $('#video-panel').style.display = (!web && !yt)?'flex':'none';
+  $('#video-panel').style.display = (!web && !yt && !art)?'flex':'none';
   $('#yt-panel').style.display = yt?'flex':'none';
+  $('#art-panel').style.display = art?'flex':'none';
   if(!web){ checkVideoHealth(); loadVideoHist(); }
+  if(art){ loadArtHist(); }
+}
+// ---------- 文章/笔记采集（公众号 / 小红书 / B站） ----------
+let _artHistRows = [];
+async function ingestArticle(plat){
+  const url = (plat==='wechat' ? $('#wxurl') : $('#xhsurl')).value.trim();
+  const st = $('#artstatus');
+  if(!url){ st.textContent = '⚠ 请先粘贴链接'; return; }
+  const vault = plat==='wechat' ? $('#wxvault').checked : true;
+  const go = plat==='wechat' ? $('#wxgo') : $('#xhsgo');
+  go.disabled = true; st.textContent = '⏳ 采集中…'; $('#artsub').textContent = '采集中';
+  try{
+    const r = await fetch('/api/article',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url, platform:plat, write_vault:vault})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+    st.textContent = '✅ 完成：'+(d.title||'')+(d.vault_path?(' · 已入库 '+d.vault_path.replace(/\\/g,'/')):'');
+    $('#artsub').textContent = '完成';
+    addArtResult(d);
+    (plat==='wechat' ? $('#wxurl') : $('#xhsurl')).value='';
+    loadArtHist();
+  }catch(e){ st.textContent='❌ '+e.message; $('#artsub').textContent='失败'; }
+  finally{ go.disabled=false; }
+}
+function addArtResult(d){
+  const box = $('#art-result-list');
+  if(box.querySelector('.empty')) box.innerHTML='';
+  const el = document.createElement('div');
+  el.className='step'; el.style.marginBottom='12px';
+  el.innerHTML = `<div class="step-h" style="cursor:default"><span class="no" style="background:var(--acc2)">✓</span>
+      <span class="tt">${esc(d.title||'(无标题)')}</span>
+      <span class="sub">${esc(d.platform||'')}</span></div>
+    <div class="step-b"><div class="mut" style="margin-bottom:8px">${d.vault_path?('已入库: '+esc(d.vault_path.replace(/\\/g,'/'))):'未入库'}</div>
+    <div class="md-body">${DOMPurify.sanitize(marked.parse(d.md||''))}</div></div>`;
+  box.prepend(el);
+  const cnt = $('#artres-count'); cnt.style.display=''; cnt.textContent=(parseInt(cnt.textContent)||0)+1;
+}
+async function loadArtHist(){
+  const st = $('#arthist-status');
+  st.textContent = '…';
+  try{
+    const r = await fetch('/api/articles');
+    const rows = await r.json();
+    _artHistRows = rows || [];
+    const done = _artHistRows.filter(x=>x.status==='done').length;
+    const err  = _artHistRows.filter(x=>x.status==='error').length;
+    const chars= _artHistRows.reduce((a,x)=>a+(x.md_len||0),0);
+    $('#artk-total').textContent = _artHistRows.length;
+    $('#artk-done').textContent  = done;
+    $('#artk-err').textContent   = err;
+    $('#artk-chars').textContent = chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars;
+    st.textContent = _artHistRows.length ? _artHistRows.length+' 条' : '';
+    renderArtHistList();
+  }catch(e){ st.textContent='!'; }
+}
+function renderArtHistList(){
+  const box = $('#artrec');
+  if(!box) return;
+  const q = ($('#arthq')?.value||'').trim().toLowerCase();
+  const rows = _artHistRows.filter(x=>
+    !q || ((x.title||'')+' '+(x.url||'')).toLowerCase().includes(q));
+  if(!rows.length){ box.innerHTML='<div class="empty" style="padding:14px">暂无记录</div>'; return; }
+  box.innerHTML = rows.map(x=>`
+    <div class="item" onclick="viewArt('${x.id}')">
+      <div class="t">${esc(x.title||x.url)}</div>
+      <div class="u">${esc(x.url||'')} ${x.platform?('· '+esc(x.platform)):''}</div>
+      <div class="m"><span class="st ${x.status}">${stxt(x.status)}</span>
+        <span>${x.created_at||''} · ${x.md_len||0}字</span></div>
+      <div class="delwrap"><button class="btn del" onclick="event.stopPropagation();delArt('${x.id}')">删除</button></div>
+    </div>`).join('');
+}
+async function viewArt(id){
+  const det = $('#artvh-detail');
+  det.innerHTML = '<div class="empty" style="padding:14px">加载中…</div>';
+  try{
+    const r = await fetch('/api/articles/'+id);
+    const d = await r.json();
+    det.innerHTML = `<div class="step" style="margin-bottom:12px">
+      <div class="step-h" style="cursor:default"><span class="no" style="background:var(--acc2)">✓</span>
+        <span class="tt">${esc(d.title||'(无标题)')}</span><span class="sub">${esc(d.platform||'')}</span></div>
+      <div class="step-b"><div class="mut" style="margin-bottom:8px">${esc(d.url||'')}
+        ${d.vault_path?('· 已入库 '+esc(d.vault_path.replace(/\\/g,'/'))):''}</div>
+      <div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||'(内容为空)'))}</div></div></div>`;
+  }catch(e){ det.innerHTML='<div class="empty" style="padding:14px">加载失败</div>'; }
+}
+async function delArt(id){
+  if(!confirm('删除该记录？若已写入 Obsidian 库，笔记文件也会一并删除。')) return;
+  const r = await fetch('/api/articles/'+id, {method:'DELETE'});
+  const d = await r.json().catch(()=>({}));
+  $('#artvh-detail').innerHTML = `<div class="empty" style="padding:10px">✓ 已删除${(d.removed&&d.removed.length)?'（含笔记 '+d.removed.length+' 个文件）':''}</div>`;
+  loadArtHist();
+}
+function clearArtAll(){
+  $('#wxurl').value=''; $('#xhsurl').value=''; $('#biliurls').value='';
+  $('#artstatus').textContent='等待提交…'; $('#artsub').textContent='就绪';
+  $('#art-result-list').innerHTML='<div class="empty" style="padding:40px">公众号 / 小红书采集结果会显示在这里。</div>';
+  $('#artres-count').style.display='none';
+}
+async function runBili(){
+  const urls = $('#biliurls').value.split('\n').map(s=>s.trim()).filter(s=>s && !s.startsWith('#'));
+  const st = $('#artstatus');
+  if(!urls.length){ st.textContent='⚠ 请先粘贴 B站 链接'; return; }
+  $('#biligo').disabled=true; $('#artsub').textContent='处理中';
+  st.innerHTML = `⏳ 共 ${urls.length} 条，走完整视频流水线（下载→抽帧→转写→蒸馏），请耐心等待…`;
+  try{
+    const r = await fetch('/api/video',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({urls, write_vault:true, source_hint:'B站视频'})});
+    const d = await r.json();
+    const rs = d.results||[];
+    const ok = rs.filter(x=>x.ok).length;
+    st.innerHTML = rs.map((x,i)=>`${x.ok?'✅':'❌'} ${esc(x.title||urls[i]||'')} ${x.ok?'':('— '+esc((x.error||'').slice(0,120)))}`).join('<br>');
+    $('#artsub').textContent = `完成 ${ok}/${rs.length}`;
+    loadVideoHist();
+  }catch(e){ st.textContent='❌ '+e.message; $('#artsub').textContent='失败'; }
+  finally{ $('#biligo').disabled=false; }
 }
 // ---------- 已入库记录：统计 / 分类 / 搜索 / 查看 / 编辑 / 删除 ----------
 let _vhistRows = [];

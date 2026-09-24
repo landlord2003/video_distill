@@ -428,6 +428,38 @@ def download_direct(url: str, out_dir: str) -> str:
     return out
 
 
+def download_bilibili(url: str, out_dir: str) -> str:
+    """B站链接 -> 本地 mp4（yt-dlp 原生支持，国内站不走代理）。
+
+    - b23.tv 短链由 yt-dlp 自动跟随跳转
+    - bilibili_cookies.txt 存在时自动带上（未登录也能下多数公开视频，
+      登录 cookie 可解锁更高清晰度与官方字幕）
+    """
+    url = (url or "").strip()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmpl = str(out_dir / "bili_%(id)s.%(ext)s")
+    extra = []
+    # ffmpeg 指定：否则静默跳过 bestvideo+bestaudio 合并（同 YouTube 的坑）
+    try:
+        from video_pipeline import get_ffmpeg
+        extra += ["--ffmpeg-location", get_ffmpeg()]
+    except Exception:
+        pass
+    ck = os.path.join(BASE, "bilibili_cookies.txt")
+    if os.path.isfile(ck):
+        extra += ["--cookies", ck]
+    # B站为国内站，直连即可；环境代理已由 app.py 清空
+    cmd = get_yt_dlp_cmd() + [
+        "-f", "bestvideo+bestaudio/best",
+        "--no-playlist", "--merge-output-format", "mp4",
+        "--no-warnings", "--socket-timeout", "30",
+        "-o", tmpl,
+    ] + extra + [url]
+    subprocess.run(cmd, check=True, timeout=1800, env=dict(os.environ))
+    return _pick(out_dir, None)
+
+
 def detect_source(url: str) -> str:
     u = (url or "").lower().strip()
     if not u:
@@ -436,6 +468,8 @@ def detect_source(url: str) -> str:
         return "douyin"
     if "youtube.com" in u or "youtu.be" in u:
         return "youtube"
+    if "bilibili.com" in u or "b23.tv" in u:
+        return "bilibili"
     if u.endswith(".m3u8") or "m3u8" in u or u.endswith(".mp4") or u.endswith(".mov") or "mp4" in u or "video" in u:
         return "direct"
     return "unknown"
@@ -449,9 +483,11 @@ def download_one(url: str, out_dir: str):
             return download_douyin(url, out_dir), None
         if src == "youtube":
             return download_youtube(url, out_dir), None
+        if src == "bilibili":
+            return download_bilibili(url, out_dir), None
         if src == "direct":
             return download_direct(url, out_dir), None
-        return None, "无法识别来源（支持：抖音链接 / YouTube链接 / m3u8·mp4直链 / 本地文件）：" + url
+        return None, "无法识别来源（支持：抖音链接 / YouTube链接 / B站链接 / m3u8·mp4直链 / 本地文件）：" + url
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
