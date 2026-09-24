@@ -106,6 +106,7 @@
   #video-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   #yt-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   #art-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
+  #tts-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   .layoutA{flex:1;display:flex;min-height:0}
   #vsplit{width:6px;cursor:col-resize;flex-shrink:0;border-left:1px solid var(--line)}
   #vsplit:hover,#vsplit.dragging{background:var(--acc)}
@@ -192,6 +193,7 @@
       <button class="tab" onclick="switchTab('video',this)">🎬 视频号/抖音</button>
       <button class="tab" onclick="switchTab('yt',this)">▶ YouTube</button>
       <button class="tab" onclick="switchTab('art',this)">📰 公众号·笔记</button>
+      <button class="tab" onclick="switchTab('tts',this)">🔊 配音 TTS</button>
       <span class="ver">v3.5 · 公众号/小红书/B站采集 · 分段蒸馏✓ · 来源分类✓</span>
     </div>
     <!-- 网页抓取（保持原有结构） -->
@@ -441,6 +443,69 @@
         </div>
       </div>
     </div>
+    <div id="tts-panel">
+      <div class="layoutA">
+        <div class="flow" id="ttsflow">
+          <div class="step" id="ttsst1">
+            <div class="step-h" onclick="fold('ttsst1')"><span class="no">1</span><span class="tt">合成设置</span>
+              <span class="sub" id="ttsengsub">检测后端…</span></div>
+            <div class="step-b">
+              <div style="display:flex;gap:6px;align-items:center">
+                <label class="mut" style="flex-shrink:0">音色</label>
+                <select id="ttsvoice" style="flex:1"><option value="demo0001">加载中…</option></select>
+                <button class="btn" onclick="ttsLoadVoices()" title="重新拉取音色列表">↻</button>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;margin-top:8px">
+                <label class="mut" style="flex-shrink:0">质量</label>
+                <select id="ttssteps" style="flex:1">
+                  <option value="8">草稿（8步·快）</option>
+                  <option value="16" selected>均衡（16步·默认）</option>
+                  <option value="32">高质量（32步·慢）</option>
+                </select>
+                <select id="ttsfmt" style="flex:1">
+                  <option value="mp3" selected>MP3（小体积）</option>
+                  <option value="wav">WAV（无损）</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="step" id="ttsst2">
+            <div class="step-h" onclick="fold('ttsst2')"><span class="no">2</span><span class="tt">文本</span>
+              <span class="sub" id="ttscnt">0 / 20000 字</span></div>
+            <div class="step-b">
+              <textarea id="ttstext" rows="10" placeholder="输入要合成的文本…&#10;长文本（>2000字）自动按句切分多段合成、顺序拼接；单次上限 20000 字" oninput="ttsCount()"></textarea>
+              <div class="segbtns" style="margin-top:8px">
+                <span style="flex:1"></span>
+                <button id="ttsgo" class="btn pri" onclick="doTts()" style="padding:8px 22px">🔊 合成语音</button>
+              </div>
+            </div>
+          </div>
+          <div class="step" id="ttsst3">
+            <div class="step-h" onclick="fold('ttsst3')"><span class="no">3</span><span class="tt">处理进度</span>
+              <span class="sub" id="ttssub">就绪</span></div>
+            <div class="step-b">
+              <div id="ttsstatus" class="mut" style="line-height:1.9;min-height:20px">等待合成…</div>
+              <audio id="ttsaudio" controls style="width:100%;margin-top:10px;display:none"></audio>
+            </div>
+          </div>
+        </div>
+        <div class="work">
+          <div class="work-tabs">
+            <div class="wtab active" onclick="wtab('ttsres',this)">✨ 产出</div>
+            <div class="wtab" onclick="wtab('ttshist',this)">🗒 合成记录 <span class="chip" id="ttshist-status"></span></div>
+          </div>
+          <div class="work-body">
+            <div class="wpane active" id="ttsres">
+              <div id="tts-result-list"><div class="empty" style="padding:14px">还没有产出。左侧输入文本后点「合成语音」。</div></div>
+            </div>
+            <div class="wpane" id="ttshist">
+              <input type="text" id="ttshq" placeholder="🔍 搜索合成记录…" style="margin-bottom:10px" oninput="renderTtsHist()">
+              <div id="ttshist-list"><div class="empty" style="padding:14px">加载中…</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </main>
 </div>
 <!-- 通用模态弹窗 -->
@@ -624,15 +689,17 @@ async function del(id){
 function switchTab(t, btn){
   document.querySelectorAll('#tabs .tab').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  const web = (t==='web'), yt = (t==='yt'), art = (t==='art');
+  const web = (t==='web'), yt = (t==='yt'), art = (t==='art'), tts = (t==='tts');
   $('#bar').style.display = web?'flex':'none';
   $('#status').style.display = web?'block':'none';
   $('#result').style.display = web?'block':'none';
-  $('#video-panel').style.display = (!web && !yt && !art)?'flex':'none';
+  $('#video-panel').style.display = (!web && !yt && !art && !tts)?'flex':'none';
   $('#yt-panel').style.display = yt?'flex':'none';
   $('#art-panel').style.display = art?'flex':'none';
+  $('#tts-panel').style.display = tts?'flex':'none';
   if(!web){ checkVideoHealth(); loadVideoHist(); }
   if(art){ loadArtHist(); }
+  if(tts){ ttsCheck(); ttsLoadVoices(); loadTtsHist(); }
 }
 // ---------- 文章/笔记采集（公众号 / 小红书 / B站） ----------
 let _artHistRows = [];
@@ -747,6 +814,115 @@ async function runBili(){
     loadVideoHist();
   }catch(e){ st.textContent='❌ '+e.message; $('#artsub').textContent='失败'; }
   finally{ $('#biligo').disabled=false; }
+}
+// ---------- VoiceStudio 本地 TTS 配音 ----------
+let _ttsHistRows = [];
+async function ttsCheck(){
+  const sub = $('#ttsengsub');
+  try{
+    const r = await fetch('/api/tts/status');
+    const d = await r.json();
+    if(d.up){
+      sub.textContent = 'VoiceStudio · ' + (d.device||'').replace(' (', '(');
+      sub.style.color = 'var(--ok, #2a9d5c)';
+    } else {
+      sub.textContent = '后端未启动（3900）';
+      sub.style.color = 'var(--red, #c0392b)';
+    }
+  }catch(e){ sub.textContent='状态获取失败'; sub.style.color='var(--red)'; }
+}
+async function ttsLoadVoices(){
+  const sel = $('#ttsvoice');
+  try{
+    const r = await fetch('/api/tts/voices');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const vs = await r.json();
+    if(!vs.length) throw new Error('后端无音色 profile');
+    const cur = sel.value;
+    sel.innerHTML = vs.map(v=>`<option value="${escAttr(v.id)}">${esc(v.name)}${v.language?(' · '+esc(v.language)):''}</option>`).join('')
+      + `<option value="default">默认音色（引擎自带）</option>`;
+    if(cur && [...sel.options].some(o=>o.value===cur)) sel.value = cur;
+  }catch(e){
+    sel.innerHTML = '<option value="demo0001">demo 音色（后端离线）</option>';
+  }
+}
+function ttsCount(){
+  const t = $('#ttstext').value;
+  $('#ttscnt').textContent = `${t.length} / 20000 字` + (t.length>2000?'（将分段合成）':'');
+}
+async function doTts(){
+  const text = $('#ttstext').value.trim();
+  const st = $('#ttsstatus'), go = $('#ttsgo');
+  if(!text){ st.textContent='⚠ 请先输入文本'; return; }
+  if(text.length>20000){ st.textContent='⚠ 文本超过 20000 字上限，请分段'; return; }
+  go.disabled = true; $('#ttssub').textContent='合成中';
+  st.innerHTML = '<span class="spinner"></span> 正在合成…（首次/长文较慢，GPU 约 2 倍速）';
+  $('#ttsaudio').style.display='none';
+  try{
+    const r = await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text, voice:$('#ttsvoice').value, fmt:$('#ttsfmt').value,
+                           steps:parseInt($('#ttssteps').value)||16})});
+    const d = await r.json();
+    if(!r.ok || !d.ok) throw new Error(d.error||('HTTP '+r.status));
+    const seg = d.chunks>1?`（${d.chunks} 段拼接）`:'';
+    st.innerHTML = `✅ 完成：${d.seconds||'?'}s 音频 ${seg} · <a href="/api/tts/files/${encodeURIComponent(d.file)}" download="${escAttr(d.file)}">下载 ${esc(d.file)}</a>`;
+    $('#ttssub').textContent='完成';
+    const au = $('#ttsaudio');
+    au.src = '/api/tts/files/'+encodeURIComponent(d.file)+'?t='+Date.now();
+    au.style.display='block'; au.play().catch(()=>{});
+    addTtsResult(d);
+    loadTtsHist();
+  }catch(e){ st.textContent='❌ '+e.message; $('#ttssub').textContent='失败'; ttsCheck(); }
+  finally{ go.disabled=false; }
+}
+function addTtsResult(d){
+  const box = $('#tts-result-list');
+  if(box.querySelector('.empty')) box.innerHTML='';
+  const el = document.createElement('div');
+  el.className='step'; el.style.marginBottom='12px';
+  el.innerHTML = `<div class="step-h" style="cursor:default"><span class="no" style="background:var(--acc2)">🔊</span>
+      <span class="tt">${esc(d.created_at||'')} · ${d.seconds||'?'}s · ${esc(d.voice||'')}</span>
+      <span class="sub">${d.chunks>1?(d.chunks+' 段'):''}</span></div>
+    <div class="step-b">
+      <div class="mut" style="margin-bottom:8px;max-height:60px;overflow:hidden">${esc((d.text||'').slice(0,180))}${(d.text||'').length>180?'…':''}</div>
+      <audio controls style="width:100%" src="/api/tts/files/${encodeURIComponent(d.file||'')}"></audio>
+      <div style="margin-top:6px"><a href="/api/tts/files/${encodeURIComponent(d.file||'')}" download="${escAttr(d.file||'tts.'+(d.fmt||'mp3'))}">⬇ 下载 ${esc(d.file||'')}</a></div>
+    </div>`;
+  box.prepend(el);
+}
+async function loadTtsHist(){
+  try{
+    const r = await fetch('/api/tts/history');
+    _ttsHistRows = await r.json();
+  }catch(e){ _ttsHistRows = []; }
+  renderTtsHist();
+}
+function renderTtsHist(){
+  const box = $('#ttshist-list'); if(!box) return;
+  const q = ($('#ttshq')?.value||'').toLowerCase();
+  const rows = _ttsHistRows.filter(x=>!q || (x.text||'').toLowerCase().includes(q) || (x.voice||'').toLowerCase().includes(q));
+  if(!rows.length){ box.innerHTML='<div class="empty">暂无记录</div>'; return; }
+  box.innerHTML = rows.map(x=>{
+    const stc = x.error ? 'error' : 'done';
+    return `<div class="item" ${x.error?'':`onclick="playTts('${escAttr(x.id)}','${escAttr(x.file||'')}')"`} style="cursor:${x.error?'default':'pointer'}">
+      <div class="t">${esc((x.text||'').slice(0,60))||'(空)'}</div>
+      <div class="u">${x.error?esc(x.error.slice(0,120)):esc(x.voice||'')} · ${x.chars||0}字${x.chunks>1?(' · '+x.chunks+'段'):''}${x.seconds?(' · '+x.seconds+'s'):''}</div>
+      <div class="m"><span class="st ${stc}">${x.error?'✗ 失败':'✓ 完成'}</span>
+        <span>${x.created_at||''}</span></div>
+      <div class="delwrap"><button class="btn del" onclick="event.stopPropagation();delTts('${escAttr(x.id)}')">删除</button></div>
+    </div>`;}).join('');
+}
+function playTts(id, file){
+  if(!file) return;
+  const au = $('#ttsaudio');
+  au.src = '/api/tts/files/'+encodeURIComponent(file)+'?t='+Date.now();
+  au.style.display='block';
+  au.play().catch(()=>{});
+  wtab('ttsres', document.querySelector('#tts-panel .wtab'));
+}
+async function delTts(id){
+  try{ await fetch('/api/tts/history/'+encodeURIComponent(id), {method:'DELETE'}); }catch(e){}
+  loadTtsHist();
 }
 // ---------- 已入库记录：统计 / 分类 / 搜索 / 查看 / 编辑 / 删除 ----------
 let _vhistRows = [];

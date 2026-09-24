@@ -51,6 +51,16 @@ ART_VAULT = (os.environ.get("ARTICLE_VAULT_DIR")
                  else os.path.join(BASE, "articles_vault")))
 os.makedirs(ART_VAULT, exist_ok=True)
 
+# ---------- VoiceStudio 本地 TTS 桥接 ----------
+try:
+    import voice_tts as vt
+except Exception as _vte:
+    vt = None
+    print("[warn] voice_tts 加载失败:", _vte, file=sys.stderr)
+
+TTS_OUT = os.path.join(BASE, "tts_out")
+os.makedirs(TTS_OUT, exist_ok=True)
+
 # ---------- 抖音主页采集 ----------
 try:
     import douyin_profile as dp
@@ -108,6 +118,19 @@ def init_db():
             status TEXT,
             md_len INTEGER,
             vault_path TEXT,
+            error TEXT
+        )""")
+        # TTS 配音记录（VoiceStudio 本地合成）
+        c.execute("""CREATE TABLE IF NOT EXISTS tts (
+            id TEXT PRIMARY KEY,
+            created_at TEXT,
+            text TEXT,
+            voice TEXT,
+            fmt TEXT,
+            chars INTEGER,
+            chunks INTEGER,
+            seconds REAL,
+            file TEXT,
             error TEXT
         )""")
         c.commit()
@@ -402,14 +425,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_file(self, path, ctype, fname):
+    def _send_file(self, path, ctype, fname, inline=False):
         with io.open(path, "rb") as f:
             data = f.read()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Content-Disposition",
-                         f'attachment; filename="{fname}"')
+                         f'{"inline" if inline else "attachment"}; filename="{fname}"')
         self.end_headers()
         self.wfile.write(data)
 
@@ -534,6 +557,45 @@ class Handler(BaseHTTPRequestHandler):
             rec["markdown"] = md
             self._send(200, rec)
             return
+        # ---------------- VoiceStudio TTS ----------------
+        if p == "/api/tts/status":
+            if vt is None:
+                self._send(200, {"up": False, "error": "voice_tts 模块未加载"})
+                return
+            up, info = vt.health()
+            self._send(200, {"up": up, **info})
+            return
+        if p == "/api/tts/voices":
+            if vt is None:
+                self._send(500, {"error": "voice_tts 模块未加载"})
+                return
+            voices, err = vt.list_voices()
+            if err:
+                self._send(502, {"error": f"VoiceStudio 后端不可达: {err}"})
+                return
+            self._send(200, voices)
+            return
+        if p == "/api/tts/history":
+            rows = []
+            with db() as c:
+                cur = c.execute(
+                    "SELECT id,created_at,text,voice,fmt,chars,chunks,seconds,file,error "
+                    "FROM tts ORDER BY created_at DESC LIMIT 200")
+                for r in cur.fetchall():
+                    rows.append(dict(zip(
+                        ["id", "created_at", "text", "voice", "fmt", "chars",
+                         "chunks", "seconds", "file", "error"], r)))
+            self._send(200, rows)
+            return
+        m = re.match(r"^/api/tts/files/([A-Za-z0-9_.\-]+)$", p)
+        if m:
+            fp = os.path.join(TTS_OUT, m.group(1))
+            if not os.path.isfile(fp):
+                self._send(404, {"error": "not found"})
+                return
+            ctype = "audio/mpeg" if fp.endswith(".mp3") else "audio/wav"
+            self._send_file(fp, ctype, m.group(1), inline=True)
+            return
         if p == "/api/video/history":
             rows = []
             with db() as c:
@@ -604,6 +666,26 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_DELETE(self):
+        # 删除 TTS 记录（连同音频文件）
+        m = re.match(r"^/api/tts/history/([^/]+)$", self.path)
+        if m:
+            tid = m.group(1)
+            with _lock, db() as c:
+                row = c.execute("SELECT file FROM tts WHERE id=?", (tid,)).fetchone()
+                if not row:
+                    self._send(404, {"error": "not found"})
+                    return
+                c.execute("DELETE FROM tts WHERE id=?", (tid,))
+                c.commit()
+            if row[0]:
+                fp = os.path.join(TTS_OUT, os.path.basename(row[0]))
+                if os.path.isfile(fp):
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        pass
+            self._send(200, {"ok": True})
+            return
         # 删除分类/来源：该值下的记录回落（记录本身不动）；?dim=source 表示操作来源列
         _path_only, _, _query = self.path.partition("?")
         _dim_col = "source" if "dim=source" in _query else "category"
@@ -811,6 +893,81 @@ class Handler(BaseHTTPRequestHandler):
                 # 失败也落一条 error 记录，便于前端历史里看到原因
                 try:
                     save_article(url, platform, "", "", error=str(e)[:500])
+                except Exception:
+                    pass
+                self._send(500, {"error": str(e)[:500]})
+            return
+        # ---------------- VoiceStudio TTS 合成 ----------------
+        if self.path == "/api/tts":
+            rec = {"id": "", "created_at": "", "text": "", "voice": "",
+                   "fmt": "", "chars": 0, "chunks": 0, "seconds": 0,
+                   "file": "", "error": ""}
+            try:
+                if vt is None:
+                    self._send(500, {"error": "voice_tts 模块未加载（看服务日志）"})
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                text = (data.get("text") or "").strip()
+                voice = (data.get("voice") or "demo0001").strip()[:64]
+                fmt = (data.get("fmt") or "mp3").strip().lower()
+                steps = int(data.get("steps") or 16)
+                if fmt not in ("mp3", "wav"):
+                    fmt = "mp3"
+                if not text:
+                    self._send(400, {"error": "text 不能为空"})
+                    return
+                # 健康预检：给用户明确提示而不是干等超时
+                up, hinfo = vt.health()
+                if not up:
+                    self._send(502, {"error": "VoiceStudio 后端未启动（需先运行 VoiceStudio，端口 3900）"})
+                    return
+                rid = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                rec.update(id=rid, created_at=rid, text=text[:2000],
+                           voice=voice, fmt=fmt, chars=len(text))
+                audio, ext, nchunks, err = vt.synthesize(text, voice, fmt, steps=steps)
+                if err or not audio:
+                    rec["error"] = (err or "合成失败")[:500]
+                    with _lock, db() as c:
+                        c.execute("INSERT OR REPLACE INTO tts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                  tuple(rec[k] for k in ["id", "created_at", "text", "voice",
+                                                         "fmt", "chars", "chunks", "seconds",
+                                                         "file", "error"]))
+                        c.commit()
+                    self._send(502, rec)
+                    return
+                fname = f"tts_{rid}.{ext}"
+                with open(os.path.join(TTS_OUT, fname), "wb") as f:
+                    f.write(audio)
+                # 估算时长：wav 用 wave 模块精确读，mp3 按 ~128kbps 估算
+                secs = 0.0
+                if ext == "wav":
+                    import wave as _wave
+                    try:
+                        w = _wave.open(os.path.join(TTS_OUT, fname), "rb")
+                        secs = w.getnframes() / max(w.getframerate(), 1)
+                        w.close()
+                    except Exception:
+                        pass
+                else:
+                    secs = len(audio) * 8.0 / 128000.0
+                rec.update(file=fname, chunks=nchunks, seconds=round(secs, 1))
+                with _lock, db() as c:
+                    c.execute("INSERT OR REPLACE INTO tts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                              tuple(rec[k] for k in ["id", "created_at", "text", "voice",
+                                                     "fmt", "chars", "chunks", "seconds",
+                                                     "file", "error"]))
+                    c.commit()
+                self._send(200, {"ok": True, **rec})
+            except Exception as e:
+                rec["error"] = str(e)[:500]
+                try:
+                    with _lock, db() as c:
+                        c.execute("INSERT OR REPLACE INTO tts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                  tuple(rec[k] for k in ["id", "created_at", "text", "voice",
+                                                         "fmt", "chars", "chunks", "seconds",
+                                                         "file", "error"]))
+                        c.commit()
                 except Exception:
                     pass
                 self._send(500, {"error": str(e)[:500]})

@@ -34,3 +34,4 @@ _*
 tmp*.tmp*
 _superseded_notes/
 .workbuddy/
+tts_out/
