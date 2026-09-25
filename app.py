@@ -182,7 +182,7 @@ def save_crawl(rec: dict, markdown: str, fit: str, extracted):
 
 
 # ---------- crawl ----------
-def do_crawl(url: str, use_llm: bool):
+def do_crawl(url: str, use_llm: bool, proxy: str = ""):
     from crawl4ai import (AsyncWebCrawler, BrowserConfig, CrawlerRunConfig,
                           CacheMode, LLMConfig)
     from crawl4ai.extraction_strategy import LLMExtractionStrategy
@@ -191,7 +191,8 @@ def do_crawl(url: str, use_llm: bool):
         browser_type="chromium",
         headless=True,
         extra_args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu",
-                    "--disable-dev-shm-usage", "--no-proxy-server"],
+                    "--disable-dev-shm-usage"]
+                    + (["--no-proxy-server"] if not proxy else ["--proxy-server=" + proxy]),
     )
     run_conf = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
@@ -397,14 +398,106 @@ def save_article(url, platform, title, md, vault_path="", error=""):
     return aid, path
 
 
-def do_article_ingest(url, write_vault=True, platform="", analyze=False):
-    """公众号/小红书/Twitter 采集 -> Markdown -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
+def _fetch_article_body(link: str, proxy: str = "", timeout: int = 45) -> str:
+    """轻量抓外链正文：urllib 拉页面 -> 剥脚本/样式 -> 提取 <p> / article-paragraph 段落。
+    不走 crawl4ai/chromium（Windows 上 async 清理偶发挂起会卡死请求线程）。
+    支持简单分页（?page=N，如纽约时报中文网）。"""
+    import urllib.request as _ur
+
+    def _extract(html: str) -> list:
+        html = re.sub(r"<(script|style|nav|header|footer|aside|form)[^>]*>.*?</\1\s*>",
+                      "", html, flags=re.S | re.I)
+        m = re.search(r"<article[^>]*>(.*?)</article\s*>", html, flags=re.S | re.I)
+        seg = m.group(1) if m else html
+        paras = []
+        for a, b in re.findall(r"<p[^>]*>(.*?)</p\s*>"
+                               r"|<div[^>]*class=\"[^\"]*article-paragraph[^\"]*\"[^>]*>(.*?)</div\s*>",
+                               seg, flags=re.S | re.I):
+            txt = re.sub(r"<[^>]+>", "", a or b)
+            txt = re.sub(r"\s+", " ", txt).strip()
+            if len(txt) >= 40:
+                paras.append(txt)
+        return paras
+
+    def _get(u: str) -> str:
+        req = _ur.Request(u, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "identity",
+        })
+        op = _ur.build_opener(_ur.ProxyHandler(
+            {"http": proxy, "https": proxy} if proxy else {}))
+        with op.open(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "ignore")
+
+    paras = _extract(_get(link))
+    # 简单分页跟进（NYT 中文网等 ?page=N），最多 5 页
+    if paras and "?" not in link.split("#")[0]:
+        base = link.split("#")[0]
+        for pg in range(2, 6):
+            try:
+                more = _extract(_get(f"{base}?page={pg}"))
+            except Exception:
+                break
+            if not more:
+                break
+            paras.extend(more)
+    return "\n\n".join(paras)
+
+
+def _tweet_follow_link(tweet):
+    """从推文正文提取第一条外部原文链接（推文常是长文的'指针'）。"""
+    import re as _re
+    if not tweet:
+        return None
+    skip = ("x.com", "twitter.com", "pbs.twimg.com", "video.twimg.com")
+    best = None
+    for u in _re.findall(r"https?://\S+", tweet.get("text") or ""):
+        u = u.rstrip(").，。；、\\]}>\"'")
+        host = u.split("/")[2].lower() if "://" in u else ""
+        if any(s in host for s in skip):
+            continue
+        if "t.co" in host:          # Twitter 官方短链：备选（302 到真实地址）
+            best = best or u
+            continue
+        return u                    # 明确的原文链接优先
+    return best
+
+
+def do_article_ingest(url, write_vault=True, platform="", analyze=False,
+                      follow=False):
+    """公众号/小红书/Twitter 采集 -> Markdown -> 推文外链跟进(可选) -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
     plat = (platform or "").strip() or ai.detect_platform(url) or ""
     img_dir = None
     if write_vault and plat in ("xhs", "twitter"):
         # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token，会过期）
         img_dir = os.path.join(ART_VAULT, "images", plat)
     out = ai.ingest(url, img_dir=img_dir if img_dir else None)
+    follow_info = ""
+    if follow and out.get("platform") == "twitter":
+        link = _tweet_follow_link(out.get("tweet"))
+        if link:
+            try:
+                proxy = ""
+                try:
+                    if twi is not None:
+                        proxy = next((p for p in twi._proxy_candidates() if p), "")
+                except Exception:
+                    proxy = ""
+                body = _fetch_article_body(link, proxy=proxy).strip()
+                if len(body) > 300:
+                    out["md"] = (out["md"].rstrip()
+                                 + "\n\n## 📄 原文全文（跟进自推文链接）\n\n"
+                                 + f"> 链接：{link}\n\n" + body[:30000] + "\n")
+                    follow_info = f"已跟进外链并抓取全文（{min(len(body),30000)} 字）"
+                else:
+                    follow_info = "外链抓取内容过短，未合并"
+            except Exception as _fe:
+                follow_info = f"外链跟进失败：{str(_fe)[:120]}"
+        else:
+            follow_info = "推文内无外部原文链接"
     ares = None
     if analyze and out.get("md"):
         try:
@@ -429,7 +522,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False):
                           out.get("md", ""), vault_path=vpath)
     return {"id": aid, "ok": True, "platform": out.get("platform", ""),
             "title": out.get("title", ""), "md": out.get("md", ""),
-            "vault_path": vpath, "analyze": ares}
+            "vault_path": vpath, "analyze": ares, "follow": follow_info}
 
 
 # ---------- HTTP ----------
@@ -913,11 +1006,13 @@ class Handler(BaseHTTPRequestHandler):
                 write_vault = bool(data.get("write_vault", True))
                 platform = (data.get("platform") or "").strip()
                 do_analyze = bool(data.get("analyze", False))
+                do_follow = bool(data.get("follow", False))
                 if not url:
                     self._send(400, {"error": "url required"})
                     return
                 self._send(200, do_article_ingest(url, write_vault, platform,
-                                                  analyze=do_analyze))
+                                                  analyze=do_analyze,
+                                                  follow=do_follow))
             except Exception as e:
                 # 失败也落一条 error 记录，便于前端历史里看到原因
                 try:

@@ -410,6 +410,7 @@ function renderSrc(){
     <div class="mut" style="font-size:12px;margin-top:4px">🧠 第三步解析为<b>标配</b>：转录后自动分段蒸馏（标题/摘要/要点/章节/标签，本机 qwen3:14b）</div>`;
   else if(s.kind==='article') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
+    ${SRC==='twitter'?`<label class="toggle" title="推文常是长文的'指针'：自动跟进推文内的原文链接，抓取全文合并进笔记（约需 30~90 秒，需代理）"><input type="checkbox" id="ofollow" checked> 📎 跟进推文外链抓全文</label>`:''}
     <label class="toggle" title="入库前调本机 qwen3:14b 生成：一句话摘要 + 6~10条要点 + 标签，注入笔记开头（约需 1~3 分钟）"><input type="checkbox" id="oanalyze"> 🧠 要点解析（本地 Ollama · 第三步）</label>`;
   else opts = `
     <label class="toggle" title="用本地 Ollama 抽取主体/业务/产品/地区等字段"><input type="checkbox" id="ollm"> 结构化抽取（本地 Ollama）</label>`;
@@ -510,7 +511,8 @@ function _pipeOpts(){
           bilingual: !!($('#obilingual') && $('#obilingual').checked),
           firstFrame: !!($('#o1frame') && $('#o1frame').checked),
           llm: !!($('#ollm') && $('#ollm').checked),
-          analyze: !!($('#oanalyze') && $('#oanalyze').checked)};
+          analyze: !!($('#oanalyze') && $('#oanalyze').checked),
+          follow: !!($('#ofollow') && $('#ofollow').checked)};
 }
 
 // --- 视频类来源（抖音/YouTube/B站）：逐条 下载→转写→蒸馏→入库 ---
@@ -609,13 +611,14 @@ async function runArticlePipe(){
       try{
         const r = await fetch('/api/article',{method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({url:urls[i], platform:SRC, write_vault:o.vault, analyze:o.analyze})});
+          body:JSON.stringify({url:urls[i], platform:SRC, write_vault:o.vault, analyze:o.analyze, follow:o.follow})});
         const d = await r.json();
         if(!r.ok)
           results.push({source_url:urls[i], ok:false, error:d.error||('HTTP '+r.status), markdown:'', _icon:s.icon});
         else{
           results.push({source_url:urls[i], ok:true, title:d.title, markdown:d.md,
                         vault_path:d.vault_path, _icon:s.icon});
+          if(o.follow && d.follow) doneMsgs.unshift(`📎 第 ${i+1} 条外链跟进：${esc(d.follow.slice(0,50))}`);
           if(o.analyze && d.analyze && d.analyze.ok)
             doneMsgs.unshift(`🧠 第 ${i+1} 条要点解析完成（${(d.analyze.points||[]).length} 条要点）`);
           else if(o.analyze && d.analyze && !d.analyze.ok)
