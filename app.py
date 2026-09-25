@@ -488,15 +488,97 @@ def _tweet_follow_link(tweet):
     return best
 
 
+# ---------------- 文章 md 远程图片本地化（微信防盗链：无 Referer 才放行） ----------------
+_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^)\s]+)\)")
+
+
+def _localize_md_images(md, img_dir, base_dir):
+    """把 md 里的远程图片下载到 img_dir，替换为相对 base_dir 的路径；失败保留外链。
+
+    微信 mmbiz.qpic.cn 有 Referer 防盗链（Obsidian/记录中心加载会被拒），必须本地化；
+    返回 (新md, 成功本地化张数)。
+    """
+    if not md or not img_dir:
+        return md, 0
+    os.makedirs(img_dir, exist_ok=True)
+    import hashlib
+    import urllib.request
+    n = 0
+
+    def _dl(m):
+        nonlocal n
+        alt, url = m.group(1), m.group(2)
+        # 仅处理公众号/微信系 CDN（其余源各自已处理或无明显防盗链）
+        if "qpic.cn" not in url and "mmbiz" not in url and "wx.qlogo.cn" not in url:
+            return m.group(0)
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                # 故意不带 Referer：微信 CDN 靠 Referer 防盗链
+            })
+            data = urllib.request.urlopen(req, timeout=30).read()
+            if len(data) < 1000:      # 防盗链会返回很小的占位图
+                return m.group(0)
+            ext = ".png" if data[:8].startswith(b"\x89PNG") else (".gif" if data[:3] == b"GIF" else ".jpg")
+            name = hashlib.md5(url.encode("utf-8")).hexdigest()[:16] + ext
+            dest = os.path.join(img_dir, name)
+            if not os.path.exists(dest):
+                with open(dest, "wb") as f:
+                    f.write(data)
+            rel = os.path.relpath(dest, base_dir).replace("\\", "/")
+            n += 1
+            return f"![{alt}]({rel})"
+        except Exception:
+            return m.group(0)
+
+    return _MD_IMG_RE.sub(_dl, md), n
+
+
+def _backfill_wechat_images():
+    """存量公众号记录一次性回填：vault 与 crawls 两份 md 都本地化图片（幂等）。"""
+    try:
+        with db() as c:
+            rows = c.execute(
+                "SELECT id, vault_path FROM articles "
+                "WHERE platform='wechat' AND status='done'").fetchall()
+    except Exception:
+        return
+    done = 0
+    for aid, vpath in rows:
+        targets = [p for p in (vpath, os.path.join(CRAWLS_DIR, f"article_{aid}.md"))
+                   if p and os.path.isfile(p)]
+        if not targets:
+            continue
+        img_dir = os.path.join(ART_VAULT, "images", "wechat")
+        for p in targets:
+            try:
+                with io.open(p, "r", encoding="utf-8") as f:
+                    md = f.read()
+                new_md, n = _localize_md_images(md, img_dir, os.path.dirname(p) or ".")
+                if n and new_md != md:
+                    with io.open(p, "w", encoding="utf-8") as f:
+                        f.write(new_md)
+                    done += n
+            except Exception:
+                pass
+    if done:
+        print(f"[backfill] 公众号存量图片本地化 {done} 张")
+
+
 def do_article_ingest(url, write_vault=True, platform="", analyze=False,
                       follow=False):
     """公众号/小红书/Twitter 采集 -> Markdown -> 推文外链跟进(可选) -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
     plat = (platform or "").strip() or ai.detect_platform(url) or ""
     img_dir = None
-    if write_vault and plat in ("xhs", "twitter"):
-        # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token，会过期）
+    if write_vault and plat in ("xhs", "twitter", "wechat"):
+        # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token/防盗链，会失效）
         img_dir = os.path.join(ART_VAULT, "images", plat)
     out = ai.ingest(url, img_dir=img_dir if img_dir else None)
+    # 公众号 md 里的远程图不落地（wechat_fetch 不支持 img_dir），入库前统一本地化
+    if write_vault and plat == "wechat" and out.get("md"):
+        out["md"], _n_img = _localize_md_images(
+            out["md"], img_dir, ART_VAULT)
     follow_info = ""
     if follow and out.get("platform") == "twitter":
         if (out.get("tweet") or {}).get("article", {}).get("blocks"):
@@ -1292,6 +1374,7 @@ def main():
         print(f"[abort] 端口 {PORT} 已有实例在运行，拒绝重复启动（这是防双实例死锁的守卫）")
         sys.exit(1)
     init_db()
+    _backfill_wechat_images()   # 存量公众号记录图片本地化（幂等）
     srv = NoReuseServer(("127.0.0.1", PORT), Handler)
     print(f"crawl4ai app running at http://127.0.0.1:{PORT} (pid={os.getpid()})")
     sys.stdout.flush()

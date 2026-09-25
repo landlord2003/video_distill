@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crawl4ai 本地采集器</title>
 <style>
@@ -1079,9 +1080,9 @@ function editRec(id, type){
   type = type || 'video';
   const x = _recRows.find(r=>r.type===type && r.id===id);
   if(!x) return;
-  const {cats} = catCountsAll();
+  const {keys: cats} = catCountsAll();
   if(type==='article'){
-    const {srcs} = srcCountsAll();
+    const {keys: srcs} = srcCountsAll();
     const cat = (x.category||'').trim(), src = (x.source||'').trim();
     showModal(`<h3>✏️ 编辑文章记录</h3>
       <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
@@ -1109,7 +1110,7 @@ function editRec(id, type){
       </div>`);
     return;
   }
-  const {srcs} = srcCountsAll();
+  const {keys: srcs} = srcCountsAll();
   const cat = (x.category||'').trim();
   const src = (x.source||'').trim();
   showModal(`<h3>✏️ 编辑记录</h3>
@@ -1190,7 +1191,7 @@ function manageCats(dim){
   const isSrc = _mgDim === 'source';
   let counts, keys;
   if(isSrc){ const s = srcCountsAll(); counts = s.counts; keys = s.keys; }
-  else { const c = catCountsAll(); counts = c.counts; keys = c.cats; }
+  else { const c = catCountsAll(); counts = c.counts; keys = c.keys; }
   _mgKeys = keys;
   const label = isSrc ? '来源' : '分类';
   const fallback = isSrc ? '「未标来源」' : '「未分类」';
