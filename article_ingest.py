@@ -5,6 +5,7 @@
 - 公众号文章：wechat_fetch.py（vendor 自 chubbyskills/wechat-article-ingest，MIT）
 - 小红书笔记：xhs_fetch.py（vendor 自 chubbyskills/xiaohongshu-ingest，MIT）
   视频笔记不转录（转写走本工具视频流水线，faster-whisper），只保留视频链接。
+- Twitter/X 推文：twitter_ingest.py（fxtwitter 等免 cookie 通道，正文+图片本地化）
 """
 import os
 import re
@@ -14,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def detect_platform(url: str):
-    """按 URL 推断平台：wechat / xhs / None。"""
+    """按 URL 推断平台：wechat / xhs / twitter / None。"""
     u = (url or "").lower().strip()
     if not u:
         return None
@@ -22,6 +23,9 @@ def detect_platform(url: str):
         return "wechat"
     if "xiaohongshu.com" in u or "xhslink.com" in u:
         return "xhs"
+    # Twitter/X 推文（含 t.co 不在此列——t.co 短链无法本地判断）
+    if ("twitter.com" in u or "x.com" in u) and "/status" in u:
+        return "twitter"
     return None
 
 
@@ -147,8 +151,12 @@ def ingest(url: str, platform: str = "", img_dir: str = None) -> dict:
         out = ingest_wechat(url)
     elif plat == "xhs":
         out = ingest_xhs(url, img_dir=img_dir)
+    elif plat == "twitter":
+        import twitter_ingest as twi
+        out = twi.ingest_tweet(url, img_dir=img_dir)
     else:
-        raise RuntimeError("无法识别平台（支持：mp.weixin.qq.com 公众号文章 / xiaohongshu.com·xhslink.com 小红书笔记）")
+        raise RuntimeError("无法识别平台（支持：公众号 mp.weixin.qq.com / 小红书 xiaohongshu.com"
+                           " / Twitter 推文 x.com/*/status/*）")
     out["platform"] = plat
     out["filename"] = _sanitize(out["title"]) + ".md"
     return out

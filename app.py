@@ -68,6 +68,13 @@ except Exception as _dpe:  # 依赖缺失不让整个服务挂掉
     dp = None
     print("[warn] douyin_profile 加载失败:", _dpe, file=sys.stderr)
 
+# ---------- Twitter/X 采集（单条推文 + 账号推文清单） ----------
+try:
+    import twitter_ingest as twi
+except Exception as _twe:
+    twi = None
+    print("[warn] twitter_ingest 加载失败:", _twe, file=sys.stderr)
+
 _profile_lock = threading.Lock()   # 主页采集互斥：playwright 实例只跑一个
 
 # ---------- DB ----------
@@ -383,13 +390,13 @@ def save_article(url, platform, title, md, vault_path="", error=""):
     return aid, path
 
 
-def do_article_ingest(url, write_vault=True):
-    """公众号/小红书 采集 -> Markdown -> 可选写 Obsidian 库。"""
-    plat = ai.detect_platform(url) or ""
+def do_article_ingest(url, write_vault=True, platform=""):
+    """公众号/小红书/Twitter 采集 -> Markdown -> 可选写 Obsidian 库。"""
+    plat = (platform or "").strip() or ai.detect_platform(url) or ""
     img_dir = None
-    if write_vault and plat == "xhs":
-        # 小红书图片本地化目录：<vault>/images/<slug>/
-        img_dir = os.path.join(ART_VAULT, "images", "xhs")
+    if write_vault and plat in ("xhs", "twitter"):
+        # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token，会过期）
+        img_dir = os.path.join(ART_VAULT, "images", plat)
     out = ai.ingest(url, img_dir=img_dir if img_dir else None)
     vpath = ""
     if write_vault and out.get("md"):
@@ -893,7 +900,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not url:
                     self._send(400, {"error": "url required"})
                     return
-                self._send(200, do_article_ingest(url, write_vault))
+                self._send(200, do_article_ingest(url, write_vault, platform))
             except Exception as e:
                 # 失败也落一条 error 记录，便于前端历史里看到原因
                 try:
@@ -1018,6 +1025,24 @@ class Handler(BaseHTTPRequestHandler):
                     out = dp.fetch_profile_videos(url, verbose=False,
                                                   max_count=max_count)
                 self._send(200, out)
+            except Exception as e:
+                self._send(500, {"error": str(e)[:500]})
+            return
+        if self.path == "/api/twitter/profile":
+            try:
+                if twi is None:
+                    self._send(500, {"error": "twitter_ingest 模块未加载（看服务日志）"})
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                url = (data.get("url") or "").strip()
+                mc = data.get("max_count", None)
+                max_count = 50 if mc is None else max(0, int(mc))
+                if not url:
+                    self._send(400, {"error": "url required（Twitter 主页链接或 @handle）"})
+                    return
+                # 纯网络抓取（syndication/guest 通道 + fxtwitter 补文本），不占 playwright
+                self._send(200, twi.list_user_tweets(url, max_count))
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
             return
