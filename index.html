@@ -855,8 +855,8 @@ function recRowsFiltered(){
   const q = ($('#vhq')?.value||'').toLowerCase();
   return _recRows.filter(x=>{
     if(_recType && x.type!==_recType) return false;
-    // 分类/来源筛选是视频专用：仅视频类型下生效，避免文章/配音被误算进"未分类"
-    if(_recType==='video'){
+    // 分类/来源筛选：视频/文章页签生效（共用一套池），其他页签不应用
+    if(_recType==='video' || _recType==='article'){
       if(_vcatFilter){
         const c = (x.category||'').trim();
         if(_vcatFilter==='__uncat__' ? c!=='' : c!==_vcatFilter) return false;
@@ -913,7 +913,8 @@ function renderRecords(){
       <div class="sp">
         ${x.type==='video'&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
         ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
-        ${x.type==='article'?`<span class="chip run" style="cursor:default">${_platLabel[x.platform]||esc(x.platform||'文章')}</span>`:''}
+        ${x.type==='article'&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
+        ${x.type==='article'?`<span class="chip run" style="cursor:default">${esc(x.source||_platLabel[x.platform]||x.platform||'文章')}</span>`:''}
         ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>`:''}
         ${x.type==='web'?`<button class="btn" onclick="event.stopPropagation();recView('web','${escAttr(x.id)}')">查看</button>`:''}
         ${x.type==='article'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','article')">编辑</button>
@@ -997,23 +998,41 @@ async function recDel(type, id){
     else { const e=await r.json().catch(()=>({})); alert('删除失败：'+(e.error||r.status)); }
   }catch(e){ alert('删除异常：'+e.message); }
 }
-// ---------- 记录中心：视频分类/来源 chips ----------
+// ---------- 记录中心：分类/来源 chips（视频+文章共用一套池） ----------
 let _vcatFilter = '';      // ''=全部 '__uncat__'=未分类 其他=分类名
 let _catKeys = [];
 function _videoRows(){ return _recRows.filter(x=>x.type==='video'); }
-function catCounts(){
-  const rows = _videoRows();
-  const counts = {}; let uncat = 0;
+function _articleRows(){ return _recRows.filter(x=>x.type==='article'); }
+function _managedRows(){ return _recRows.filter(x=>x.type==='video'||x.type==='article'); }
+// chips 计数口径：当前页签类型下的记录（保证 chip 数字与列表一致）
+function _chipRows(){
+  if(_recType==='video') return _videoRows();
+  if(_recType==='article') return _articleRows();
+  return _managedRows();
+}
+// 全量并集口径：编辑弹窗分类/来源下拉、管理弹窗（重命名/删除作用于视频+文章）
+function catCountsAll(){ return _countDim(_managedRows(), 'category'); }
+function srcCountsAll(){ return _countDim(_managedRows(), 'source'); }
+function _countDim(rows, dim){
+  const counts = {}; let none = 0;
   rows.forEach(x=>{
-    const c = (x.category||'').trim();
-    if(c) counts[c] = (counts[c]||0)+1; else uncat++;
+    const c = (x[dim]||'').trim();
+    if(c) counts[c] = (counts[c]||0)+1; else none++;
   });
-  return {counts, uncat, cats: Object.keys(counts).sort()};
+  return {counts, none, keys: Object.keys(counts).sort()};
+}
+function catCounts(){
+  const {counts, none} = _countDim(_chipRows(), 'category');
+  return {counts, uncat: none, cats: Object.keys(counts).sort()};
+}
+function srcCounts(){
+  const r = _countDim(_chipRows(), 'source');
+  return {counts: r.counts, none: r.none, srcs: r.keys};
 }
 function renderCatChips(){
   const el = $('#vcats'); if(!el) return;
-  // 分类筛选是视频专用：仅视频页签显示，避免计数口径与列表不一致
-  if(_recType!=='video'){ el.style.display='none'; return; }
+  // 分类筛选：视频/文章页签显示（共用一套分类池），其他页签隐藏
+  if(_recType!=='video' && _recType!=='article'){ el.style.display='none'; return; }
   el.style.display='flex';
   const {counts, uncat, cats} = catCounts();
   _catKeys = cats;
@@ -1029,15 +1048,6 @@ function renderCatChips(){
 }
 // ---------- 来源分类（抖音视频/YouTube视频…可增可管理） ----------
 let _vSrcFilter = '', _srcKeys = [];
-function srcCounts(){
-  const rows = _videoRows();
-  const counts = {}; let none = 0;
-  rows.forEach(x=>{
-    const c = (x.source||'').trim();
-    if(c) counts[c] = (counts[c]||0)+1; else none++;
-  });
-  return {counts, none, srcs: Object.keys(counts).sort()};
-}
 function _srcChips(filter, setter){
   const {counts, none, srcs} = srcCounts();
   _srcKeys = srcs;
@@ -1052,31 +1062,54 @@ function _srcChips(filter, setter){
 function renderSrcChips(){
   const el = document.getElementById('vsrcs');
   if(!el) return;
-  if(_recType!=='video'){ el.style.display='none'; return; }
+  if(_recType!=='video' && _recType!=='article'){ el.style.display='none'; return; }
   el.style.display='flex';
   el.innerHTML = _srcChips(_vSrcFilter, '_setSrc');
 }
 function _setSrc(k){ _vSrcFilter = k; renderSrcChips(); renderRecords(); }
 function _setCat(k){ _vcatFilter = k; renderCatChips(); renderRecords(); }
-// 编辑记录：改名（同步重命名库内笔记文件）+ 归类（分类/来源仅视频）
+// 编辑记录：改名（同步重命名库内笔记文件）+ 归类（分类/来源：视频+文章共用一套池）
+function _mgLinks(){
+  return `<div style="display:flex;gap:8px;margin-top:6px">
+    <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('category')">⚙ 管理分类</button>
+    <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('source')">⚙ 管理来源</button>
+  </div>`;
+}
 function editRec(id, type){
   type = type || 'video';
   const x = _recRows.find(r=>r.type===type && r.id===id);
   if(!x) return;
+  const {cats} = catCountsAll();
   if(type==='article'){
+    const {srcs} = srcCountsAll();
+    const cat = (x.category||'').trim(), src = (x.source||'').trim();
     showModal(`<h3>✏️ 编辑文章记录</h3>
       <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
       <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
-      <label>来源（平台，抓取时自动识别）</label>
-      <input type="text" value="${escAttr(_platLabel[x.platform]||x.platform||'')}" disabled>
+      <label>分类</label>
+      <select id="me-cat" onchange="document.getElementById('me-newcat').style.display=this.value==='__new__'?'block':'none'">
+        <option value="">未分类</option>
+        ${cats.map(c=>`<option value="${escAttr(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
+        <option value="__new__">➕ 新建分类…</option>
+      </select>
+      <input type="text" id="me-newcat" placeholder="输入新分类名（填写则优先使用）" maxlength="30"
+             style="display:none;margin-top:6px">
+      <label>来源</label>
+      <select id="me-src" onchange="document.getElementById('me-newsrc').style.display=this.value==='__newsrc__'?'block':'none'">
+        <option value="">未标来源</option>
+        ${srcs.map(s=>`<option value="${escAttr(s)}" ${s===src?'selected':''}>${esc(s)}</option>`).join('')}
+        <option value="__newsrc__">➕ 新建来源…</option>
+      </select>
+      <input type="text" id="me-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
+             style="display:none;margin-top:6px">
+      ${_mgLinks()}
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
         <button class="btn" onclick="hideModal()">取消</button>
         <button class="btn pri" onclick="saveRec('${escAttr(id)}','article')">保存</button>
       </div>`);
     return;
   }
-  const {cats} = catCounts();
-  const {srcs} = srcCounts();
+  const {srcs} = srcCountsAll();
   const cat = (x.category||'').trim();
   const src = (x.source||'').trim();
   showModal(`<h3>✏️ 编辑记录</h3>
@@ -1098,6 +1131,7 @@ function editRec(id, type){
     </select>
     <input type="text" id="me-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
+    ${_mgLinks()}
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn" onclick="hideModal()">取消</button>
       <button class="btn pri" onclick="saveRec('${id}')">保存</button>
@@ -1108,12 +1142,24 @@ async function saveRec(id, type){
   const title = $('#me-title').value.trim();
   if(!title){ $('#me-title').focus(); return; }
   if(type==='article'){
+    const newCatInput = $('#me-newcat');
+    const cat = (newCatInput && newCatInput.style.display!=='none' && newCatInput.value.trim())
+      ? newCatInput.value.trim() : ($('#me-cat')?.value || '');
+    const newSrcInput = $('#me-newsrc');
+    const src = (newSrcInput && newSrcInput.style.display!=='none' && newSrcInput.value.trim())
+      ? newSrcInput.value.trim() : ($('#me-src')?.value || '');
     try{
       const r = await fetch('/api/articles/'+encodeURIComponent(id), {method:'PATCH',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({title})});
+        body:JSON.stringify({title, category:cat, source:src})});
       const d = await r.json();
-      if(r.ok && d.ok){ hideModal(); loadRecords(); }
+      if(r.ok && d.ok){
+        hideModal();
+        if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
+        if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
+        renderCatChips(); renderSrcChips();
+        loadRecords();
+      }
       else { alert('保存失败：'+(d.error||r.status)); }
     }catch(e){ alert('保存异常：'+e.message); }
     return;
@@ -1143,8 +1189,8 @@ function manageCats(dim){
   _mgDim = dim || 'category';
   const isSrc = _mgDim === 'source';
   let counts, keys;
-  if(isSrc){ const s = srcCounts(); counts = s.counts; keys = s.srcs; }
-  else { const c = catCounts(); counts = c.counts; keys = c.cats; }
+  if(isSrc){ const s = srcCountsAll(); counts = s.counts; keys = s.keys; }
+  else { const c = catCountsAll(); counts = c.counts; keys = c.cats; }
   _mgKeys = keys;
   const label = isSrc ? '来源' : '分类';
   const fallback = isSrc ? '「未标来源」' : '「未分类」';
@@ -1183,7 +1229,7 @@ async function renCat(i){
 async function delCat(i){
   const old = _mgKeys[i];
   const isSrc = _mgDim === 'source';
-  const n = (_videoRows().filter(x=>((isSrc?x.source:x.category)||'').trim()===old)).length;
+  const n = (_managedRows().filter(x=>((isSrc?x.source:x.category)||'').trim()===old)).length;
   const fb = isSrc ? '未标来源' : '未分类';
   if(!confirm(`删除${isSrc?'来源':'分类'}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`)) return;
   try{

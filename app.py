@@ -134,6 +134,16 @@ def init_db():
             vault_path TEXT,
             error TEXT
         )""")
+        # 迁移：articles 增加 category/source 列（与 videos 同一套分类/来源池，''=未分类/未标来源）
+        for _col in ("category", "source"):
+            try:
+                c.execute(f"ALTER TABLE articles ADD COLUMN {_col} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+        # 存量文章按平台一次性回填来源（只填空值，幂等）
+        for _p, _s in (("twitter", "Twitter"), ("wechat", "公众号"), ("xhs", "小红书")):
+            c.execute("UPDATE articles SET source=? WHERE source='' AND platform=?",
+                      (_s, _p))
         # TTS 配音记录（VoiceStudio 本地合成）
         c.execute("""CREATE TABLE IF NOT EXISTS tts (
             id TEXT PRIMARY KEY,
@@ -371,29 +381,41 @@ def save_video(rec):
 
 
 def save_article(url, platform, title, md, vault_path="", error=""):
-    """文章采集结果写 DB（同 URL 成功记录覆盖更新，失败记 error 行）。"""
+    """文章采集结果写 DB（同 URL 成功记录覆盖更新，失败记 error 行）。
+
+    重复抓取保留用户已编辑的 category/source；首次入库 source 按平台自动标注。"""
     with _lock:
         aid = ""
         status = "done" if md else "error"
+        prev_cat, prev_src = "", ""
         if url:
             with db() as c:
                 row = c.execute("SELECT id FROM articles WHERE url=? AND status=?",
                                 (url, status)).fetchone()
             if row:
                 aid = row[0]
+        if aid:
+            with db() as c:
+                row = c.execute("SELECT category, source FROM articles WHERE id=?",
+                                (aid,)).fetchone()
+                if row:
+                    prev_cat, prev_src = row[0] or "", row[1] or ""
         if not aid:
             aid = short_id(url or title or "article")
+        _PLAT_SRC = {"twitter": "Twitter", "wechat": "公众号", "xhs": "小红书"}
+        def_src = prev_src or _PLAT_SRC.get((platform or "").lower(), "")
         path = os.path.join(CRAWLS_DIR, "article_" + aid + ".md")
         with io.open(path, "w", encoding="utf-8") as f:
             f.write(md or "")
         with db() as c:
             c.execute(
                 "INSERT OR REPLACE INTO articles "
-                "(id,url,platform,title,created_at,status,md_len,vault_path,error) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "(id,url,platform,title,created_at,status,md_len,vault_path,error,category,source) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (aid, url, platform, (title or "")[:120],
                  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                 status, len(md or ""), vault_path, str(error)[:500]))
+                 status, len(md or ""), vault_path, str(error)[:500],
+                 prev_cat, def_src))
             c.commit()
     return aid, path
 
@@ -642,17 +664,19 @@ class Handler(BaseHTTPRequestHandler):
                 if q:
                     like = f"%{q}%"
                     cur = c.execute(
-                        "SELECT id,url,platform,title,created_at,md_len,status,vault_path "
+                        "SELECT id,url,platform,title,created_at,md_len,status,vault_path,"
+                        "category,source "
                         "FROM articles WHERE url LIKE ? OR title LIKE ? "
                         "ORDER BY created_at DESC LIMIT 200", (like, like))
                 else:
                     cur = c.execute(
-                        "SELECT id,url,platform,title,created_at,md_len,status,vault_path "
+                        "SELECT id,url,platform,title,created_at,md_len,status,vault_path,"
+                        "category,source "
                         "FROM articles ORDER BY created_at DESC LIMIT 200")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "url", "platform", "title", "created_at",
-                         "md_len", "status", "vault_path"], r)))
+                         "md_len", "status", "vault_path", "category", "source"], r)))
             self._send(200, rows)
             return
         m = re.match(r"^/api/articles/([^/]+)$", p)
@@ -660,13 +684,15 @@ class Handler(BaseHTTPRequestHandler):
             aid = m.group(1)
             with db() as c:
                 row = c.execute(
-                    "SELECT id,url,platform,title,created_at,md_len,status,vault_path,error "
+                    "SELECT id,url,platform,title,created_at,md_len,status,vault_path,error,"
+                    "category,source "
                     "FROM articles WHERE id=?", (aid,)).fetchone()
             if not row:
                 self._send(404, {"error": "not found"})
                 return
             rec = dict(zip(["id", "url", "platform", "title", "created_at",
-                            "md_len", "status", "vault_path", "error"], row))
+                            "md_len", "status", "vault_path", "error",
+                            "category", "source"], row))
             md = ""
             vpath = rec.get("vault_path") or ""
             if vpath and os.path.isfile(vpath):
@@ -822,6 +848,9 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as c:
                     n = c.execute(f"UPDATE videos SET {_dim_col}='' WHERE {_dim_col}=?",
                                   (cat,)).rowcount
+                    # 文章记录共用同一套分类/来源池，联动清空
+                    n += c.execute(f"UPDATE articles SET {_dim_col}='' WHERE {_dim_col}=?",
+                                   (cat,)).rowcount
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return
@@ -940,7 +969,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
             return
-        # 编辑文章记录：改名（同步重命名 Obsidian 笔记文件）
+        # 编辑文章记录：改名（同步重命名 Obsidian 笔记文件）+ 归类/标来源
         m = re.match(r"^/api/articles/([^/]+)$", self.path)
         if m:
             aid = m.group(1)
@@ -976,7 +1005,15 @@ class Handler(BaseHTTPRequestHandler):
                                     pass  # 文件被占用等：只改数据库
                         c.execute("UPDATE articles SET title=?, vault_path=? WHERE id=?",
                                   (new_title[:120], vpath, aid))
-                        c.commit()
+                    new_cat = data.get("category")
+                    if new_cat is not None:
+                        c.execute("UPDATE articles SET category=? WHERE id=?",
+                                  ((str(new_cat) or "").strip()[:30], aid))
+                    new_src = data.get("source")
+                    if new_src is not None:
+                        c.execute("UPDATE articles SET source=? WHERE id=?",
+                                  ((str(new_src) or "").strip()[:30], aid))
+                    c.commit()
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
             return
@@ -1000,6 +1037,9 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as c:
                     n = c.execute(f"UPDATE videos SET {_col}=? WHERE {_col}=?",
                                   (new, old)).rowcount
+                    # 文章记录共用同一套分类/来源池，联动更新
+                    n += c.execute(f"UPDATE articles SET {_col}=? WHERE {_col}=?",
+                                   (new, old)).rowcount
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return
