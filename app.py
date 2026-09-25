@@ -477,27 +477,30 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
     out = ai.ingest(url, img_dir=img_dir if img_dir else None)
     follow_info = ""
     if follow and out.get("platform") == "twitter":
-        link = _tweet_follow_link(out.get("tweet"))
-        if link:
-            try:
-                proxy = ""
-                try:
-                    if twi is not None:
-                        proxy = next((p for p in twi._proxy_candidates() if p), "")
-                except Exception:
-                    proxy = ""
-                body = _fetch_article_body(link, proxy=proxy).strip()
-                if len(body) > 300:
-                    out["md"] = (out["md"].rstrip()
-                                 + "\n\n## 📄 原文全文（跟进自推文链接）\n\n"
-                                 + f"> 链接：{link}\n\n" + body[:30000] + "\n")
-                    follow_info = f"已跟进外链并抓取全文（{min(len(body),30000)} 字）"
-                else:
-                    follow_info = "外链抓取内容过短，未合并"
-            except Exception as _fe:
-                follow_info = f"外链跟进失败：{str(_fe)[:120]}"
+        if (out.get("tweet") or {}).get("article", {}).get("blocks"):
+            follow_info = "X 原生长文（Article），全文已随推文抓取"
         else:
-            follow_info = "推文内无外部原文链接"
+            link = _tweet_follow_link(out.get("tweet"))
+            if link:
+                try:
+                    proxy = ""
+                    try:
+                        if twi is not None:
+                            proxy = next((p for p in twi._proxy_candidates() if p), "")
+                    except Exception:
+                        proxy = ""
+                    body = _fetch_article_body(link, proxy=proxy).strip()
+                    if len(body) > 300:
+                        out["md"] = (out["md"].rstrip()
+                                     + "\n\n## 📄 原文全文（跟进自推文链接）\n\n"
+                                     + f"> 链接：{link}\n\n" + body[:30000] + "\n")
+                        follow_info = f"已跟进外链并抓取全文（{min(len(body),30000)} 字）"
+                    else:
+                        follow_info = "外链抓取内容过短，未合并"
+                except Exception as _fe:
+                    follow_info = f"外链跟进失败：{str(_fe)[:120]}"
+            else:
+                follow_info = "推文内无外部原文链接"
     ares = None
     if analyze and out.get("md"):
         try:

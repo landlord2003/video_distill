@@ -133,6 +133,35 @@ def tweet_url(handle: str, tid: str) -> str:
 
 
 # ---------------- 单条推文：三通道归一化 ----------------
+def _norm_article(a):
+    """fxtwitter 的 X 原生长文（Article）对象 -> 精简 dict（blocks 渲染在 tweet_to_md）。
+    Article 推文的 text 本身只是 x.com/i/article/<id> 指针链接，全文在 content.blocks（draft-js）。"""
+    if not isinstance(a, dict) or not a.get("id"):
+        return None
+    content = a.get("content") or {}
+    emap = content.get("entityMap") or {}
+    blocks = []
+    for b in content.get("blocks") or []:
+        typ = b.get("type") or "unstyled"
+        img = ""
+        if typ == "atomic":
+            # draft-js：atomic 块经 entityRanges[0].key -> entityMap[key] 找图片
+            er = (b.get("entityRanges") or [{}])[0]
+            ent = emap.get(str(er.get("key", ""))) or emap.get(er.get("key")) or {}
+            ed = ent.get("data") or {}
+            if (ent.get("type") or "").upper() in ("IMAGE", "MEDIA", "PHOTO"):
+                img = ed.get("url") or ed.get("src") or ed.get("image") or ""
+        blocks.append({"type": typ, "text": (b.get("text") or "").strip(), "img": img})
+    return {
+        "id": str(a.get("id") or ""),
+        "title": (a.get("title") or "").strip(),
+        "preview": (a.get("preview_text") or "").strip(),
+        "cover": ((a.get("cover_media") or {}).get("media_info") or {}).get(
+            "original_img_url") or "",
+        "blocks": blocks,
+    }
+
+
 def _norm_fxtwitter(d):
     t = d.get("tweet") or d or {}
     text = (t.get("text") or "").strip()
@@ -156,6 +185,7 @@ def _norm_fxtwitter(d):
         "images": imgs,
         "video_url": video,
         "tweet_url": t.get("url") or "",
+        "article": _norm_article(t.get("article")),
     }
 
 
@@ -314,8 +344,70 @@ def _localize_images(images, title: str, img_dir):
     return refs
 
 
+_ART_HEAD = {"header-one": "# ", "header-two": "## ", "header-three": "### ",
+             "header-four": "#### ", "header-five": "##### ", "header-six": "###### "}
+
+
+def _render_article_md(art):
+    """X Article 的 draft-js blocks -> Markdown 正文。"""
+    out = []
+    for b in art.get("blocks") or []:
+        typ, text, img = b.get("type") or "unstyled", b.get("text") or "", b.get("img") or ""
+        if typ == "atomic":
+            if img:
+                out += [f"![图]({img})", ""]
+            continue
+        if typ.startswith("header-"):
+            out += [_ART_HEAD.get(typ, "## ") + text, ""]
+        elif typ == "unordered-list-item":
+            out.append("- " + text)
+        elif typ == "ordered-list-item":
+            out.append("1. " + text)
+        elif typ == "blockquote":
+            out += ["> " + text, ""]
+        elif typ == "code-block":
+            out += ["```", text, "```", ""]
+        elif typ in ("separator", "horizontal-rule"):
+            out += ["---", ""]
+        else:
+            out += [text, ""]
+    md = "\n".join(out)
+    # 压掉 3 个以上连续空行
+    return re.sub(r"\n{3,}", "\n\n", md).strip()
+
+
 def tweet_to_md(tw: dict, img_dir=None) -> str:
-    """归一化推文 -> Obsidian Markdown（图片本地化）。"""
+    """归一化推文 -> Obsidian Markdown（图片本地化）。
+    X 原生长文（Article）优先用文章标题与全文正文渲染。"""
+    art = tw.get("article") or {}
+    blocks = art.get("blocks") or []
+    if blocks:
+        title = _sanitize(art.get("title") or _title_of(tw.get("text") or ""))
+        lines = [
+            "---",
+            "source: Twitter",
+            f"author: {tw.get('author') or ''}".rstrip(),
+            f"handle: '@{tw.get('handle')}'" if tw.get("handle") else None,
+            f"date: {tw.get('date') or ''}".rstrip(),
+            f"url: {tw.get('tweet_url') or ''}".rstrip(),
+            "kind: article",
+            "---",
+            "",
+            f"# {title}",
+            "",
+        ]
+        lines = [l for l in lines if l is not None]
+        cover = art.get("cover") or ""
+        if cover:
+            for _kind, v in _localize_images([cover], title, img_dir):
+                lines += [f"![封面]({v})", ""]
+        body = _render_article_md(art)
+        if body:
+            lines += [body, ""]
+        else:
+            lines += [art.get("preview") or "", ""]
+        lines += [f"原文：{tw.get('tweet_url') or ''}", ""]
+        return "\n".join(lines)
     title = _sanitize(_title_of(tw.get("text") or ""))
     imgs = _localize_images(tw.get("images") or [], title, img_dir)
     lines = [
@@ -344,13 +436,15 @@ def tweet_to_md(tw: dict, img_dir=None) -> str:
 
 
 def ingest_tweet(url: str, img_dir=None) -> dict:
-    """推文链接 -> {platform:'twitter', title, md}。"""
+    """推文链接 -> {platform:'twitter', title, md}。X Article 用文章标题。"""
     tid = extract_tweet_id(url)
     if not tid:
         raise RuntimeError("无法从链接识别推文 ID（支持 x.com/twitter.com 的 /status/ 链接）")
     tw = fetch_tweet(tid)
     md = tweet_to_md(tw, img_dir)
-    return {"platform": "twitter", "title": _sanitize(_title_of(tw.get("text") or "")),
+    art = tw.get("article") or {}
+    title = art.get("title") if art.get("blocks") else None
+    return {"platform": "twitter", "title": _sanitize(title or _title_of(tw.get("text") or "")),
             "md": md, "tweet": tw}
 
 
