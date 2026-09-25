@@ -61,6 +61,13 @@ except Exception as _vte:
 TTS_OUT = os.path.join(BASE, "tts_out")
 os.makedirs(TTS_OUT, exist_ok=True)
 
+# ---------- 第三步：要点解析（文字类，复用 video_pipeline 的 Ollama） ----------
+try:
+    import content_analyze as ca
+except Exception as _cae:
+    ca = None
+    print("[warn] content_analyze 加载失败:", _cae, file=sys.stderr)
+
 # ---------- 抖音主页采集 ----------
 try:
     import douyin_profile as dp
@@ -390,14 +397,22 @@ def save_article(url, platform, title, md, vault_path="", error=""):
     return aid, path
 
 
-def do_article_ingest(url, write_vault=True, platform=""):
-    """公众号/小红书/Twitter 采集 -> Markdown -> 可选写 Obsidian 库。"""
+def do_article_ingest(url, write_vault=True, platform="", analyze=False):
+    """公众号/小红书/Twitter 采集 -> Markdown -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
     plat = (platform or "").strip() or ai.detect_platform(url) or ""
     img_dir = None
     if write_vault and plat in ("xhs", "twitter"):
         # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token，会过期）
         img_dir = os.path.join(ART_VAULT, "images", plat)
     out = ai.ingest(url, img_dir=img_dir if img_dir else None)
+    ares = None
+    if analyze and out.get("md"):
+        try:
+            dec = ca.analyze_and_decorate(out["md"])
+            out["md"] = dec["md"]
+            ares = dec["analyze"]
+        except Exception as _ae:  # 第三步失败不阻断入库
+            ares = {"ok": False, "error": str(_ae)[:200]}
     vpath = ""
     if write_vault and out.get("md"):
         os.makedirs(ART_VAULT, exist_ok=True)
@@ -414,7 +429,7 @@ def do_article_ingest(url, write_vault=True, platform=""):
                           out.get("md", ""), vault_path=vpath)
     return {"id": aid, "ok": True, "platform": out.get("platform", ""),
             "title": out.get("title", ""), "md": out.get("md", ""),
-            "vault_path": vpath}
+            "vault_path": vpath, "analyze": ares}
 
 
 # ---------- HTTP ----------
@@ -897,10 +912,12 @@ class Handler(BaseHTTPRequestHandler):
                 url = (data.get("url") or "").strip()
                 write_vault = bool(data.get("write_vault", True))
                 platform = (data.get("platform") or "").strip()
+                do_analyze = bool(data.get("analyze", False))
                 if not url:
                     self._send(400, {"error": "url required"})
                     return
-                self._send(200, do_article_ingest(url, write_vault, platform))
+                self._send(200, do_article_ingest(url, write_vault, platform,
+                                                  analyze=do_analyze))
             except Exception as e:
                 # 失败也落一条 error 记录，便于前端历史里看到原因
                 try:
