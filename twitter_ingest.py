@@ -17,6 +17,7 @@ VIDEO_PROXY > HTTPS_PROXY/HTTP_PROXY > 项目内 proxy.txt > 直连）：
 import os
 import re
 import json
+import asyncio
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -61,19 +62,40 @@ _RESERVED = {"i", "home", "explore", "search", "notifications", "messages",
 
 
 # ---------------- 基础 HTTP ----------------
-def _opener():
-    p = vdl._get_proxy()
-    return urllib.request.build_opener(
-        urllib.request.ProxyHandler({"http": p, "https": p} if p else {}))
+def _proxy_candidates():
+    """代理候选顺序：项目 proxy.txt（人工维护）> 环境变量（WorkBuddy 注入，重启后端口易陈旧）> 直连。"""
+    cands = []
+    pf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy.txt")
+    try:
+        with open(pf, "r", encoding="utf-8") as f:
+            line = (f.read().strip().splitlines() or [""])[0].strip()
+        if line:
+            cands.append(line)
+    except OSError:
+        pass
+    for k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+        v = (os.environ.get(k) or "").strip()
+        if v and v not in cands:
+            cands.append(v)
+    cands.append("")  # 直连兜底
+    return cands
 
 
 def _get(url, headers=None, timeout=30):
     h = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9"}
     if headers:
         h.update(headers)
-    req = urllib.request.Request(url, headers=h)
-    with _opener().open(req, timeout=timeout) as r:
-        return r.read()
+    errs = []
+    for p in _proxy_candidates():
+        req = urllib.request.Request(url, headers=h)
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": p, "https": p} if p else {}))
+        try:
+            with opener.open(req, timeout=timeout) as r:
+                return r.read()
+        except Exception as e:
+            errs.append(f"{p or 'direct'}:{type(e).__name__}")
+    raise RuntimeError("网络不可达（" + "; ".join(errs) + "）")
 
 
 def _get_json(url, headers=None, timeout=30):
@@ -333,9 +355,24 @@ def ingest_tweet(url: str, img_dir=None) -> dict:
 
 
 # ---------------- 账号推文清单 ----------------
+_COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "twitter_cookie.txt")
+
+
+def _cookie_source():
+    """cookie 串来源：环境变量 TWITTER_COOKIE 优先，其次 twitter_cookie.txt 文件。"""
+    ck = (os.environ.get("TWITTER_COOKIE") or "").strip()
+    if ck:
+        return ck
+    try:
+        with open(_COOKIE_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def _cookie_auth():
-    """从 TWITTER_COOKIE 环境变量解析 auth_token / ct0（浏览器登录 x.com 后复制）。"""
-    ck = os.environ.get("TWITTER_COOKIE") or ""
+    """解析 auth_token / ct0（浏览器登录 x.com 后复制）。"""
+    ck = _cookie_source()
     def gv(name):
         m = re.search(r"(?:^|;\s*)" + name + r"=([^;]+)", ck)
         return m.group(1) if m else ""
@@ -438,8 +475,8 @@ def _graphql_user_tweets(handle: str, max_count: int):
 
 
 def _twitter_cookies():
-    """从环境变量 TWITTER_COOKIE 取 auth_token / ct0（浏览器登录 x.com 后复制 Cookie 串）。"""
-    ck = (os.environ.get("TWITTER_COOKIE") or "").strip()
+    """取 auth_token / ct0（环境变量 TWITTER_COOKIE 或 twitter_cookie.txt 文件）。"""
+    ck = _cookie_source()
     def gv(name):
         m = re.search(r"(?:^|;\s*)" + name + r"=([^;\s]+)", ck)
         return m.group(1) if m else ""
@@ -450,9 +487,105 @@ _COOKIE_HINT = ("需要登录凭据：环境变量 TWITTER_COOKIE 设为浏览�
                 "Cookie 串（须含 auth_token 与 ct0）")
 
 
+# ---------------- twikit 通道（cookie + GraphQL，最可靠） ----------------
+def _patch_twikit():
+    """适配 X 新构建格式：webpack 把 chunk 名与文件哈希拆成两张映射表，
+    旧版 twikit 的正则（"ondemand.s":"<hash>"）已失效。"""
+    from twikit.x_client_transaction import transaction as _tx
+    if getattr(_tx.ClientTransaction.get_indices, "_patched", False):
+        return
+    _orig = _tx.ClientTransaction.get_indices
+    _CID_RE = re.compile(r'(\d+):"ondemand\.s"')
+
+    async def get_indices(self, home_page_response, session, headers):
+        html = str(home_page_response)
+        m = _CID_RE.search(html)                      # 新格式：59924:"ondemand.s"
+        if m:
+            hm = re.search(m.group(1) + r':"([0-9a-f]{16})"', html)
+            if hm:
+                url = ("https://abs.twimg.com/responsive-web/client-web/"
+                       "ondemand.s." + hm.group(1) + "a.js")
+                resp = await session.request(method="GET", url=url, headers=headers)
+                ids = [x.group(2) for x in _tx.INDICES_REGEX.finditer(resp.text)]
+                if ids:
+                    return int(ids[0]), list(map(int, ids[1:]))
+        return await _orig(self, home_page_response, session, headers)  # 旧格式回退
+
+    get_indices._patched = True
+    _tx.ClientTransaction.get_indices = get_indices
+
+    # X 新响应的 legacy 里不再保证有 pinned_tweet_ids_str / withheld_in_countries
+    # 等字段，User 解析整体容错：缺失键给空列表默认值
+    import twikit.user as _tu
+    if not getattr(_tu.User.__init__, "_patched", False):
+        _uorig = _tu.User.__init__
+        _TOLERANT_KEYS = ("pinned_tweet_ids_str", "withheld_in_countries")
+
+        def _uinit(self, client, data, *a, **kw):
+            legacy = data.get("legacy") if isinstance(data, dict) else None
+            if isinstance(legacy, dict):
+                for k in _TOLERANT_KEYS:
+                    legacy.setdefault(k, [])
+            return _uorig(self, client, data, *a, **kw)
+
+        _uinit._patched = True
+        _tu.User.__init__ = _uinit
+
+
+_TW_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+# twikit 清单通道拿到的推文全文缓存 {tid: (date, text, handle)}
+_TWIKIT_CACHE = {}
+
+
+async def _twikit_fetch(handle, max_count, proxy):
+    """twikit：auth_token+ct0 cookie 全自动（含 X-Client-Transaction-Id 生成）。"""
+    import httpx
+    from twikit import Client
+    _patch_twikit()
+    auth, ct0 = _twitter_cookies()
+    if not auth or not ct0:
+        raise RuntimeError(_COOKIE_HINT)
+    c = Client("en-US", user_agent=_TW_UA)
+    old = c.http
+    c.http = httpx.AsyncClient(proxy=proxy or None, trust_env=False, timeout=30,
+                               headers=dict(old.headers), follow_redirects=True)
+    try:
+        c.set_cookies({"auth_token": auth, "ct0": ct0})
+        u = await c.get_user_by_screen_name(handle)
+        res = await c.get_user_tweets(u.id, "Tweets", count=min(max(1, max_count), 40))
+        return [{"id": str(t.id), "date": str(t.created_at)[:19],
+                 "text": t.text or "",
+                 "handle": (getattr(t.user, "screen_name", None) or handle)}
+                for t in res]
+    finally:
+        await c.http.aclose()
+
+
 def _cookie_user_tweets(handle: str, max_count: int):
-    """登录 cookie + GraphQL UserTweets（最可靠）。
-    queryId 不写死：运行时从 x.com 主页入口 JS bundle 里提取，抗版本变更。"""
+    """登录 cookie 通道：优先 twikit（自带事务 ID），失败回落裸 GraphQL。
+    返回推文 ID 列表；twikit 拿到的全文进 _TWIKIT_CACHE 供清单直接复用。"""
+    errs = []
+    for p in _proxy_candidates():
+        try:
+            rows = asyncio.run(_twikit_fetch(handle, max_count, p or None))
+            for r in rows:
+                _TWIKIT_CACHE[r["id"]] = (r["date"], r["text"], r["handle"])
+            return [r["id"] for r in rows]
+        except RuntimeError:
+            raise                                    # cookie 缺失：不换代理也没用
+        except Exception as e:
+            errs.append(f"{p or 'direct'}:{type(e).__name__}:{str(e)[:60]}")
+    try:
+        return _bare_graphql_user_tweets(handle, max_count, errs)
+    except Exception as e:
+        raise RuntimeError("twikit 通道失败（" + "; ".join(errs) + "）；"
+                           "裸 GraphQL 回落亦失败：" + str(e))
+
+
+def _bare_graphql_user_tweets(handle: str, max_count: int, errs):
+    """裸 GraphQL UserTweets（无事务 ID，部分场景可用）。"""
     auth, ct0 = _twitter_cookies()
     if not auth or not ct0:
         raise RuntimeError(_COOKIE_HINT)
@@ -465,7 +598,8 @@ def _cookie_user_tweets(handle: str, max_count: int):
     page = _get(f"https://x.com/{handle}", h, 30).decode("utf-8", "ignore")
     m = re.search(r'"rest_id":"(\d+)"', page)
     if not m:
-        raise RuntimeError("主页未解析到用户 ID（cookie 可能已失效，请重新复制 TWITTER_COOKIE）")
+        raise RuntimeError(
+            "主页未解析到用户 ID（cookie 可能已失效，请重新导出 twitter_cookie.txt）")
     uid = m.group(1)
     mb = re.search(r'https://abs\.twimg\.com/responsive-web/client-web/main[^"\\]+?\.js',
                    page)
@@ -594,6 +728,10 @@ def list_user_tweets(handle_or_url: str, max_count: int = 50) -> dict:
     ids = ids[:max_count]
 
     def _one(tid):
+        if tid in _TWIKIT_CACHE:
+            d, txt, h_ = _TWIKIT_CACHE[tid]
+            return {"id": tid, "url": tweet_url(h_ or handle, tid),
+                    "text": (txt or "")[:120], "date": d or ""}
         try:
             tw = fetch_tweet(tid)
             return {"id": tid, "url": tw.get("tweet_url") or tweet_url(handle, tid),

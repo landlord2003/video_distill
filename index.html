@@ -353,7 +353,7 @@ const SOURCES = {
     ph:'粘贴 YouTube 链接，每行一个\n例：https://www.youtube.com/watch?v=xxxx\nhttps://youtu.be/xxxx',
     files:true},
   twitter: {icon:'🐦', name:'Twitter / X', kind:'article', kindName:'文章管线', srcName:'Twitter',
-    hint:'<b>单条推文免 cookie</b>（fxtwitter 通道，需代理）。👤 账号采集优先免 cookie 通道（易限流）；设环境变量 <b>TWITTER_COOKIE</b>（含 auth_token/ct0）后走登录通道最稳。视频推文只保留直链，要转录请改走视频类来源。',
+    hint:'<b>单条推文免 cookie</b>（fxtwitter 通道，需代理）。👤 账号采集走登录 cookie 通道（twitter_cookie.txt 已配置，自动降级免 cookie 通道）。视频推文只保留直链，要转录请改走视频类来源。',
     ph:'粘贴推文链接，每行一个\n例：https://x.com/elonmusk/status/1234…',
     account:{label:'Twitter 主页链接或 @handle', ph:'x.com/elonmusk 或 @elonmusk',
              api:'/api/twitter/profile', idKey:'tweets', nickKey:'handle', slow:'免 cookie 通道采集清单并补全文本，约需 10~30 秒'}},
