@@ -161,7 +161,7 @@
       <button class="tab active" onclick="switchTab('pipe',this)">🚚 采集流水线</button>
       <button class="tab" onclick="switchTab('tts',this)">🔊 配音 TTS</button>
       <button class="tab" onclick="switchTab('rec',this)">📚 记录中心</button>
-      <span class="ver">v3.9 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · 账号清单采集</span>
+      <span class="ver">v4.2 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · X长文全文抓取 · 三步要点解析</span>
     </div>
 
     <!-- ================= 采集流水线：所有来源共用同一套 流程 ================= -->
@@ -855,7 +855,8 @@ function recRowsFiltered(){
   const q = ($('#vhq')?.value||'').toLowerCase();
   return _recRows.filter(x=>{
     if(_recType && x.type!==_recType) return false;
-    if((_recType===''||_recType==='video')){
+    // 分类/来源筛选是视频专用：仅视频类型下生效，避免文章/配音被误算进"未分类"
+    if(_recType==='video'){
       if(_vcatFilter){
         const c = (x.category||'').trim();
         if(_vcatFilter==='__uncat__' ? c!=='' : c!==_vcatFilter) return false;
@@ -914,6 +915,9 @@ function renderRecords(){
         ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
         ${x.type==='article'?`<span class="chip run" style="cursor:default">${_platLabel[x.platform]||esc(x.platform||'文章')}</span>`:''}
         ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>`:''}
+        ${x.type==='web'?`<button class="btn" onclick="event.stopPropagation();recView('web','${escAttr(x.id)}')">查看</button>`:''}
+        ${x.type==='article'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','article')">编辑</button>
+        <button class="btn" onclick="event.stopPropagation();recView('article','${escAttr(x.id)}')">查看</button>`:''}
         ${x.type==='video'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}')">编辑</button>
         <button class="btn" onclick="event.stopPropagation();recView('video','${escAttr(x.id)}')">查看</button>`:''}
         <button class="btn del" onclick="event.stopPropagation();recDel('${x.type}','${escAttr(x.id)}')">删除</button>
@@ -1008,6 +1012,9 @@ function catCounts(){
 }
 function renderCatChips(){
   const el = $('#vcats'); if(!el) return;
+  // 分类筛选是视频专用：仅视频页签显示，避免计数口径与列表不一致
+  if(_recType!=='video'){ el.style.display='none'; return; }
+  el.style.display='flex';
   const {counts, uncat, cats} = catCounts();
   _catKeys = cats;
   const chips = [
@@ -1044,14 +1051,30 @@ function _srcChips(filter, setter){
 }
 function renderSrcChips(){
   const el = document.getElementById('vsrcs');
-  if(el) el.innerHTML = _srcChips(_vSrcFilter, '_setSrc');
+  if(!el) return;
+  if(_recType!=='video'){ el.style.display='none'; return; }
+  el.style.display='flex';
+  el.innerHTML = _srcChips(_vSrcFilter, '_setSrc');
 }
 function _setSrc(k){ _vSrcFilter = k; renderSrcChips(); renderRecords(); }
 function _setCat(k){ _vcatFilter = k; renderCatChips(); renderRecords(); }
-// 编辑记录：改名（同步重命名库内笔记文件）+ 归类
-function editRec(id){
-  const x = _videoRows().find(r=>r.id===id);
+// 编辑记录：改名（同步重命名库内笔记文件）+ 归类（分类/来源仅视频）
+function editRec(id, type){
+  type = type || 'video';
+  const x = _recRows.find(r=>r.type===type && r.id===id);
   if(!x) return;
+  if(type==='article'){
+    showModal(`<h3>✏️ 编辑文章记录</h3>
+      <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
+      <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
+      <label>来源（平台，抓取时自动识别）</label>
+      <input type="text" value="${escAttr(_platLabel[x.platform]||x.platform||'')}" disabled>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+        <button class="btn" onclick="hideModal()">取消</button>
+        <button class="btn pri" onclick="saveRec('${escAttr(id)}','article')">保存</button>
+      </div>`);
+    return;
+  }
   const {cats} = catCounts();
   const {srcs} = srcCounts();
   const cat = (x.category||'').trim();
@@ -1080,9 +1103,21 @@ function editRec(id){
       <button class="btn pri" onclick="saveRec('${id}')">保存</button>
     </div>`);
 }
-async function saveRec(id){
+async function saveRec(id, type){
+  type = type || 'video';
   const title = $('#me-title').value.trim();
   if(!title){ $('#me-title').focus(); return; }
+  if(type==='article'){
+    try{
+      const r = await fetch('/api/articles/'+encodeURIComponent(id), {method:'PATCH',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title})});
+      const d = await r.json();
+      if(r.ok && d.ok){ hideModal(); loadRecords(); }
+      else { alert('保存失败：'+(d.error||r.status)); }
+    }catch(e){ alert('保存异常：'+e.message); }
+    return;
+  }
   const newCatInput = $('#me-newcat');
   const cat = (newCatInput.style.display!=='none' && newCatInput.value.trim())
     ? newCatInput.value.trim() : $('#me-cat').value;

@@ -940,6 +940,46 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
             return
+        # 编辑文章记录：改名（同步重命名 Obsidian 笔记文件）
+        m = re.match(r"^/api/articles/([^/]+)$", self.path)
+        if m:
+            aid = m.group(1)
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            new_title = (data.get("title") or "").strip()
+            if not new_title:
+                self._send(400, {"error": "title required"})
+                return
+            with _lock:
+                with db() as c:
+                    row = c.execute("SELECT title, vault_path FROM articles WHERE id=?",
+                                    (aid,)).fetchone()
+                    if not row:
+                        self._send(404, {"error": "not found"})
+                        return
+                    old_title, vpath = row
+                    vault_renamed = False
+                    if new_title != old_title:
+                        if vpath and os.path.isfile(vpath):
+                            safe = re.sub(r'[\\/:*?"<>|\r\n]', "_", new_title)[:120]
+                            nv = os.path.join(os.path.dirname(vpath), safe + ".md")
+                            if not os.path.exists(nv):
+                                try:
+                                    os.rename(vpath, nv)
+                                    vpath = nv
+                                    vault_renamed = True
+                                except Exception:
+                                    pass  # 文件被占用等：只改数据库
+                        c.execute("UPDATE articles SET title=?, vault_path=? WHERE id=?",
+                                  (new_title[:120], vpath, aid))
+                        c.commit()
+            self._send(200, {"ok": True, "vault_renamed": vault_renamed,
+                             "vault_path": vpath})
+            return
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
