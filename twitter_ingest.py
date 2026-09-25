@@ -608,18 +608,45 @@ def _patch_twikit():
     get_indices._patched = True
     _tx.ClientTransaction.get_indices = get_indices
 
-    # X 新响应的 legacy 里不再保证有 pinned_tweet_ids_str / withheld_in_countries
-    # 等字段，User 解析整体容错：缺失键给空列表默认值
+    # X 新响应的 legacy 不断瘦身（缺 pinned_tweet_ids_str / entities.*.urls /
+    # withheld_in_countries 等），User.__init__ 全是硬取 → 深度兜底：缺什么补什么
     import twikit.user as _tu
     if not getattr(_tu.User.__init__, "_patched", False):
         _uorig = _tu.User.__init__
-        _TOLERANT_KEYS = ("pinned_tweet_ids_str", "withheld_in_countries")
+        _LEGACY_DEFAULTS = {
+            "created_at": "", "name": "", "screen_name": "",
+            "profile_image_url_https": "", "location": "", "description": "",
+            "verified": False, "possibly_sensitive": False, "can_dm": False,
+            "can_media_tag": False, "want_retweets": False,
+            "default_profile": False, "default_profile_image": False,
+            "has_custom_timelines": False, "followers_count": 0,
+            "fast_followers_count": 0, "normal_followers_count": 0,
+            "friends_count": 0, "favourites_count": 0, "listed_count": 0,
+            "media_count": 0, "statuses_count": 0, "is_translator": False,
+            "translator_type": "none", "pinned_tweet_ids_str": [],
+            "withheld_in_countries": [],
+        }
 
         def _uinit(self, client, data, *a, **kw):
-            legacy = data.get("legacy") if isinstance(data, dict) else None
-            if isinstance(legacy, dict):
-                for k in _TOLERANT_KEYS:
-                    legacy.setdefault(k, [])
+            if isinstance(data, dict):
+                legacy = data.get("legacy")
+                if isinstance(legacy, dict):
+                    for k, v in _LEGACY_DEFAULTS.items():
+                        legacy.setdefault(k, v)
+                    ents = legacy.get("entities")
+                    if not isinstance(ents, dict):
+                        ents = {}
+                        legacy["entities"] = ents
+                    ents.setdefault("description", {"urls": []})
+                    ents.setdefault("url", {"urls": []})
+                    for ek in ("description", "url"):
+                        if not isinstance(ents[ek], dict):
+                            ents[ek] = {"urls": []}
+                        elif not isinstance(ents[ek].get("urls"), list):
+                            ents[ek]["urls"] = []
+                data.setdefault("is_blue_verified", False)
+                if not data.get("rest_id"):
+                    data["rest_id"] = "0"
             return _uorig(self, client, data, *a, **kw)
 
         _uinit._patched = True
@@ -649,10 +676,25 @@ async def _twikit_fetch(handle, max_count, proxy):
         c.set_cookies({"auth_token": auth, "ct0": ct0})
         u = await c.get_user_by_screen_name(handle)
         res = await c.get_user_tweets(u.id, "Tweets", count=min(max(1, max_count), 40))
-        return [{"id": str(t.id), "date": str(t.created_at)[:19],
-                 "text": t.text or "",
-                 "handle": (getattr(t.user, "screen_name", None) or handle)}
-                for t in res]
+        out = []
+        for t in res:
+            # 长文 note tweet 用 full_text；t.co 短链展开成真实链接
+            try:
+                txt = t.full_text or t.text or ""
+            except Exception:
+                txt = t.text or ""
+            try:
+                for e in (t.urls or []):
+                    su, eu = (e.get("url") or "", e.get("expanded_url") or "") \
+                        if isinstance(e, dict) else ("", "")
+                    if su and eu:
+                        txt = txt.replace(su, eu)
+            except Exception:
+                pass
+            out.append({"id": str(t.id), "date": str(t.created_at)[:19],
+                        "text": txt,
+                        "handle": (getattr(t.user, "screen_name", None) or handle)})
+        return out
     finally:
         await c.http.aclose()
 
