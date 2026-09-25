@@ -460,12 +460,53 @@ def download_bilibili(url: str, out_dir: str) -> str:
     return _pick(out_dir, None)
 
 
+def download_twitter(url: str, out_dir: str) -> str:
+    """Twitter/X 链接 -> 本地 mp4（yt-dlp 原生支持 x.com）。
+
+    - 国外站走代理（同 YouTube 的 _get_proxy 链）
+    - twitter_cookie.txt（Netscape 格式）存在时自动带上，解锁需登录视频
+    - 供视频流水线转录视频推文；文章管线只保留视频直链
+    """
+    url = (url or "").strip()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmpl = str(out_dir / "tw_%(id)s.%(ext)s")
+    extra = []
+    proxy = _get_proxy()
+    if proxy:
+        extra += ["--proxy", proxy]
+    try:
+        from video_pipeline import get_ffmpeg
+        extra += ["--ffmpeg-location", get_ffmpeg()]
+    except Exception:
+        pass
+    ck = os.path.join(BASE, "twitter_cookie.txt")
+    if os.path.isfile(ck):
+        extra += ["--cookies", ck]
+    try:
+        subprocess.run(["deno", "--version"], capture_output=True, timeout=10)
+    except Exception:
+        _node = r"C:\Users\Lenovo\.workbuddy\binaries\node\versions\v24.19.0\node.exe"
+        if os.path.isfile(_node):
+            extra += ["--js-runtimes", "node:" + _node]
+    cmd = get_yt_dlp_cmd() + [
+        "-f", "bestvideo+bestaudio/best",
+        "--no-playlist", "--merge-output-format", "mp4",
+        "--no-warnings", "--socket-timeout", "30",
+        "-o", tmpl,
+    ] + extra + [url]
+    subprocess.run(cmd, check=True, timeout=1800, env=dict(os.environ))
+    return _pick(out_dir, None)
+
+
 def detect_source(url: str) -> str:
     u = (url or "").lower().strip()
     if not u:
         return "unknown"
     if "douyin.com" in u or "v.douyin" in u or "iesdouyin" in u:
         return "douyin"
+    if "x.com/" in u or "twitter.com/" in u:
+        return "twitter"
     if "youtube.com" in u or "youtu.be" in u:
         return "youtube"
     if "bilibili.com" in u or "b23.tv" in u:
@@ -481,13 +522,15 @@ def download_one(url: str, out_dir: str):
     try:
         if src == "douyin":
             return download_douyin(url, out_dir), None
+        if src == "twitter":
+            return download_twitter(url, out_dir), None
         if src == "youtube":
             return download_youtube(url, out_dir), None
         if src == "bilibili":
             return download_bilibili(url, out_dir), None
         if src == "direct":
             return download_direct(url, out_dir), None
-        return None, "无法识别来源（支持：抖音链接 / YouTube链接 / B站链接 / m3u8·mp4直链 / 本地文件）：" + url
+        return None, "无法识别来源（支持：抖音链接 / YouTube链接 / B站链接 / Twitter·X链接 / m3u8·mp4直链 / 本地文件）：" + url
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
