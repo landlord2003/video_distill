@@ -845,8 +845,14 @@ function recRowsFiltered(){
   return _recRows.filter(x=>{
     if(_recType && x.type!==_recType) return false;
     if((_recType===''||_recType==='video')){
-      if(_vcatFilter && (x.category||'')!==_vcatFilter) return false;
-      if(_vSrcFilter && (x.source||'')!==_vSrcFilter) return false;
+      if(_vcatFilter){
+        const c = (x.category||'').trim();
+        if(_vcatFilter==='__uncat__' ? c!=='' : c!==_vcatFilter) return false;
+      }
+      if(_vSrcFilter){
+        const s = (x.source||'').trim();
+        if(_vSrcFilter==='__nosrc__' ? s!=='' : s!==_vSrcFilter) return false;
+      }
     }
     if(!q) return true;
     return [x.title,x.url,x.source_url,x.text,x.voice].some(v=>String(v||'').toLowerCase().includes(q));
@@ -904,9 +910,15 @@ function renderRecords(){
       <div class="m" style="flex-direction:column;align-items:flex-end;flex-shrink:0">${recMeta(x)}</div>
     </div>`).join('');
 }
+function recClose(){
+  const det = $('#rec-detail');
+  det.innerHTML = '';
+  det.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
 function recPlay(file){
   const det = $('#rec-detail');
-  det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🔊 试听 ${esc(file)}</div></div>
+  det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🔊 试听 ${esc(file)}</div>
+    <div><button class="btn" onclick="recClose()">✕ 收起</button></div></div>
     <div class="vcard-b"><audio controls autoplay style="width:100%" src="/api/tts/files/${encodeURIComponent(file)}"></audio></div></div>`;
   det.scrollIntoView({behavior:'smooth'});
 }
@@ -920,7 +932,8 @@ async function recView(type, id){
       _currentMd = d.markdown||'';
       det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🌐 ${esc(d.title||d.url||id)}</div>
           <div><a class="btn" href="/api/crawls/${d.id}/download">下载 .md</a>
-          <button class="btn" onclick="recToggleRaw(this)">源码</button></div></div>
+          <button class="btn" onclick="recToggleRaw(this)">源码</button>
+          <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
         <div class="vcard-b"><div id="recmd" class="md-body"></div>
         ${d.extracted?`<div class="row" style="margin-top:12px"><b>结构化抽取</b></div><pre class="json">${esc(typeof d.extracted==='string'?d.extracted:JSON.stringify(d.extracted,null,2))}</pre>`:''}</div></div>`;
       const box=$('#recmd');
@@ -931,14 +944,16 @@ async function recView(type, id){
       const md = d.markdown||'';
       det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🎬 ${esc(d.title||id)}
           ${d.category?`<span class="chip">${esc(d.category)}</span>`:''}${d.source?`<span class="chip" style="color:var(--red)">${esc(d.source)}</span>`:''}</div>
-          <div>${d.vault_path?`<a class="btn" href="file:///${encodeURIComponent(d.vault_path.replace(/\\\\/g,'/'))}" title="${escAttr(d.vault_path)}">Obsidian 笔记</a>`:''}</div></div>
+          <div>${d.vault_path?`<a class="btn" href="file:///${encodeURIComponent(d.vault_path.replace(/\\\\/g,'/'))}" title="${escAttr(d.vault_path)}">Obsidian 笔记</a>`:''}
+          <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
         <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div></div></div>`;
     } else if(type==='article'){
       const r = await fetch('/api/articles/'+id); const d = await r.json();
       if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
       det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>📰 ${esc(d.title||id)}
           <span class="chip">${_platLabel[d.platform]||esc(d.platform||'')}</span></div>
-          <div>${d.vault_path?`<span class="mut" style="font-size:11px">${esc(d.vault_path.replace(/\\\\/g,'/'))}</span>`:''}</div></div>
+          <div>${d.vault_path?`<span class="mut" style="font-size:11px">${esc(d.vault_path.replace(/\\\\/g,'/'))}</span>`:''}
+          <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
         <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||''))}</div></div></div>`;
     } else if(type==='tts'){
       const x = _recRows.find(r=>r.type==='tts'&&r.id===id)||{};
