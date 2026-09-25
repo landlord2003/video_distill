@@ -127,7 +127,8 @@ def fetch_from_url(url: str) -> tuple:
         ["curl", "-sL", "--max-time", "30",
          "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
          url],
-        capture_output=True, text=True, timeout=35
+        capture_output=True, text=True, timeout=35,
+        encoding="utf-8", errors="replace"   # 显式 UTF-8：默认 GBK 会解码崩溃导致 stdout=None
     )
 
     if result.returncode != 0:

@@ -40,8 +40,14 @@ def ingest_wechat(url: str) -> dict:
     return {"title": (title or "公众号文章").strip(), "md": md}
 
 
-def ingest_xhs(url: str, cookie: str = None) -> dict:
-    """小红书笔记 → Markdown（图文优先；视频笔记保留视频链接不转录）。"""
+def ingest_xhs(url: str, cookie: str = None, img_dir: str = None) -> dict:
+    """小红书笔记 → Markdown（图文优先；视频笔记保留视频链接不转录）。
+
+    内容加工：
+      - 清理正文里的 #话题[话题]# 标记（标签已在 frontmatter，不重复）
+      - 图片下载到本地 img_dir（小红书 CDN 外链带时效 token，会过期），
+        Markdown 内嵌本地相对路径，失败自动回落为外链
+    """
     import xhs_fetch
     cookie = cookie or os.environ.get("XHS_COOKIE") or ""
     try:
@@ -61,13 +67,77 @@ def ingest_xhs(url: str, cookie: str = None) -> dict:
     if not data or not (data.get("desc") or data.get("title")):
         raise RuntimeError("无法解析笔记内容（页面结构变化或被拦截）。建议设置 XHS_COOKIE 后重试")
     title = xhs_fetch.compute_title(data)
-    # 图片保留外链（不落盘），避免 vault 体积膨胀
-    image_refs = [("url", u) for u in data.get("images") or []]
+    data["desc"] = _clean_xhs_desc(data.get("desc") or "")
+    # 图片：优先下载到本地，失败回落外链
+    images = data.get("images") or []
+    image_refs = _localize_xhs_images(images, title, img_dir)
     md = xhs_fetch.build_markdown(data, final_url or url, title, image_refs, None)
+    # 兜底：外链图片也渲染成 markdown 图片（而非裸 URL 列表）
+    md = re.sub(r"^- (https?://\S+)$", r"![图](\1)", md, flags=re.M)
     return {"title": title, "md": md, "note_type": data.get("note_type", "image")}
 
 
-def ingest(url: str, platform: str = "") -> dict:
+def _clean_xhs_desc(desc: str) -> str:
+    """正文清洗：去话题标记/零宽字符/多余空行/营销尾部。"""
+    s = desc or ""
+    s = re.sub(r"#[^#\n]{1,40}?\[话题\]#", "", s)          # #xxx[话题]#
+    s = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", s)        # 零宽字符
+    s = re.sub(r"\n{3,}", "\n\n", s)                        # 压缩空行
+    s = re.sub(r"[ \t]+\n", "\n", s)                        # 行尾空白
+    return s.strip()
+
+
+def _localize_xhs_images(images, title: str, img_dir: str):
+    """下载图片到 img_dir，返回 [(kind, value)]：本地成功用 ('local', 相对路径)，
+    失败回落 ('url', 原始外链)。img_dir 为空时全部保留外链。"""
+    import urllib.request
+    refs = []
+    if not images:
+        return refs
+    slug = _sanitize(title)[:40] or "note"
+    folder = None
+    if img_dir:
+        try:
+            os.makedirs(img_dir, exist_ok=True)
+            folder = img_dir
+        except OSError:
+            folder = None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for i, u in enumerate(images, 1):
+        ok_local = False
+        if folder and u:
+            ext = ".jpg"
+            m = re.search(r"\.(jpe?g|png|webp|gif)(?:[?!]|$)", u, re.I)
+            if m:
+                ext = "." + m.group(1).lower()
+            dest = os.path.join(folder, f"{slug}-{i:02d}{ext}")
+            try:
+                req = urllib.request.Request(u, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36",
+                    "Referer": "https://www.xiaohongshu.com/",
+                })
+                with opener.open(req, timeout=20) as r, open(dest, "wb") as f:
+                    f.write(r.read())
+                if os.path.getsize(dest) > 1024:   # <1KB 视为失败（风控空响应）
+                    ok_local = True
+                else:
+                    os.remove(dest)
+            except Exception:
+                if os.path.exists(dest):
+                    try:
+                        os.remove(dest)
+                    except OSError:
+                        pass
+        if ok_local:
+            # vault 内相对路径（img_dir 在 vault 目录下）
+            rel = os.path.relpath(dest, os.path.dirname(img_dir)).replace("\\", "/")
+            refs.append(("local", rel))
+        else:
+            refs.append(("url", u))
+    return refs
+
+
+def ingest(url: str, platform: str = "", img_dir: str = None) -> dict:
     """统一入口。platform 缺省时按 URL 自动推断。返回 {platform, title, md}。"""
     url = (url or "").strip()
     if not url:
@@ -76,7 +146,7 @@ def ingest(url: str, platform: str = "") -> dict:
     if plat == "wechat":
         out = ingest_wechat(url)
     elif plat == "xhs":
-        out = ingest_xhs(url)
+        out = ingest_xhs(url, img_dir=img_dir)
     else:
         raise RuntimeError("无法识别平台（支持：mp.weixin.qq.com 公众号文章 / xiaohongshu.com·xhslink.com 小红书笔记）")
     out["platform"] = plat

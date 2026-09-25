@@ -385,7 +385,12 @@ def save_article(url, platform, title, md, vault_path="", error=""):
 
 def do_article_ingest(url, write_vault=True):
     """公众号/小红书 采集 -> Markdown -> 可选写 Obsidian 库。"""
-    out = ai.ingest(url)
+    plat = ai.detect_platform(url) or ""
+    img_dir = None
+    if write_vault and plat == "xhs":
+        # 小红书图片本地化目录：<vault>/images/<slug>/
+        img_dir = os.path.join(ART_VAULT, "images", "xhs")
+    out = ai.ingest(url, img_dir=img_dir if img_dir else None)
     vpath = ""
     if write_vault and out.get("md"):
         os.makedirs(ART_VAULT, exist_ok=True)

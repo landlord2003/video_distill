@@ -12,23 +12,6 @@
   body{margin:0;font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
        background:var(--bg);color:var(--txt);height:100vh;overflow:hidden}
   #app{display:flex;height:100vh}
-  /* ===== 左侧栏（网页抓取历史） ===== */
-  #side{width:280px;background:var(--panel);border-right:1px solid var(--line);
-        display:flex;flex-direction:column;flex-shrink:0}
-  #side h2{margin:0;padding:14px 16px;font-size:15px;border-bottom:1px solid var(--line);
-           display:flex;align-items:center;gap:8px}
-  #side h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--acc2)}
-  #search{padding:10px 12px;border-bottom:1px solid var(--line)}
-  #search input{width:100%;padding:7px 10px;background:var(--panel2);border:1px solid var(--line);
-                border-radius:6px;color:var(--txt);outline:none}
-  #search input:focus{border-color:var(--acc)}
-  #hist{flex:1;overflow:auto}
-  .item{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
-  .item:hover{background:var(--panel2)}
-  .item .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .item .u{color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .item .m{color:var(--mut);font-size:11px;margin-top:3px;display:flex;justify-content:space-between}
-  .item .st{font-size:11px}
   .st{font-size:11px}
   .st.done{color:var(--acc2)} .st.error{color:var(--red)} .st.running{color:var(--acc)}
   .empty{color:var(--mut);padding:20px;text-align:center}
@@ -100,9 +83,12 @@
   .chip.err{color:var(--red);border-color:rgba(255,95,110,.4)}
   .chip.run{color:var(--acc);border-color:rgba(79,157,255,.4)}
   /* 分类栏/来源栏：红色 + 大字号（抖音与 YouTube 两个页签共用） */
-  #vcats .chip,#ytvcats .chip,#vsrcs .chip,#ytvsrcs .chip{color:var(--red);font-size:14px;padding:2px 10px}
-  #vcats .chip.on,#ytvcats .chip.on,#vsrcs .chip.on,#ytvsrcs .chip.on{background:rgba(255,95,110,.18);border-color:var(--red)}
+  /* 分类栏/来源栏：红色 + 大字号（记录中心统一使用） */
+  #vcats .chip,#vsrcs .chip{color:var(--red);font-size:14px;padding:2px 10px}
+  #vcats .chip.on,#vsrcs .chip.on{background:rgba(255,95,110,.18);border-color:var(--red)}
   /* ===== 方案A：视频工作台 左右分栏 ===== */
+  #web-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
+  #rec-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   #video-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   #yt-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   #art-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
@@ -182,11 +168,6 @@
 </head>
 <body>
 <div id="app">
-  <aside id="side">
-    <h2><span class="dot"></span>抓取历史</h2>
-    <div id="search"><input id="q" placeholder="搜索 URL / 标题…" oninput="loadHist()"></div>
-    <div id="hist"><div class="empty">暂无记录</div></div>
-  </aside>
   <main id="main">
     <div id="tabs">
       <button class="tab active" onclick="switchTab('web',this)">🌐 网页抓取</button>
@@ -194,18 +175,50 @@
       <button class="tab" onclick="switchTab('yt',this)">▶ YouTube</button>
       <button class="tab" onclick="switchTab('art',this)">📰 公众号·笔记</button>
       <button class="tab" onclick="switchTab('tts',this)">🔊 配音 TTS</button>
-      <span class="ver">v3.5 · 公众号/小红书/B站采集 · 分段蒸馏✓ · 来源分类✓</span>
+      <button class="tab" onclick="switchTab('rec',this)">📚 记录中心</button>
+      <span class="ver">v3.7 · 统一界面 · 记录中心 · 公众号/小红书/B站 · 分段蒸馏✓</span>
     </div>
-    <!-- 网页抓取（保持原有结构） -->
-    <div id="bar">
-      <input id="url" placeholder="输入要抓取的网址，如 https://www.ehang.com/" onkeydown="if(event.key==='Enter')crawl()">
-      <label class="toggle"><input type="checkbox" id="llm"> 结构化抽取(本地Ollama)</label>
-      <button id="go" onclick="crawl()">抓取</button>
-    </div>
-    <div id="status">就绪</div>
-    <div id="result">
-      <div class="empty" style="color:var(--mut);padding:40px;text-align:center">
-        输入网址点击「抓取」，结果 Markdown 会显示在这里并自动存入历史。
+    <!-- 网页抓取：与其他工具页统一骨架（左操作 / 右产出） -->
+    <div id="web-panel">
+      <div class="layoutA">
+        <div class="flow" id="webflow">
+          <div class="step" id="webst1">
+            <div class="step-h" onclick="fold('webst1')"><span class="no">1</span><span class="tt">抓取设置</span>
+              <span class="sub">输入网址</span></div>
+            <div class="step-b">
+              <input id="url" placeholder="输入要抓取的网址，如 https://www.ehang.com/" style="width:100%" onkeydown="if(event.key==='Enter')crawl()">
+              <label class="toggle" style="margin-top:8px"><input type="checkbox" id="llm"> 结构化抽取（本地 Ollama）</label>
+              <div class="segbtns" style="margin-top:10px">
+                <span style="flex:1"></span>
+                <button id="go" class="btn pri" onclick="crawl()" style="padding:8px 22px">🌐 抓取</button>
+              </div>
+            </div>
+          </div>
+          <div class="step" id="webst2">
+            <div class="step-h" onclick="fold('webst2')"><span class="no">2</span><span class="tt">处理进度</span>
+              <span class="sub">就绪</span></div>
+            <div class="step-b">
+              <div id="status" style="line-height:1.9;min-height:20px">等待提交…</div>
+            </div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:6px">
+            <button class="btn" onclick="clearWebAll()" title="清空输入与结果（不影响已入库记录）">🧹 清空重置</button>
+          </div>
+        </div>
+        <div class="work">
+          <div class="work-tabs">
+            <div class="wtab active" onclick="wtab('webresult',this)">✨ 抓取结果</div>
+          </div>
+          <div class="work-body">
+            <div id="webresult" class="wpane active">
+              <div id="result">
+                <div class="empty" style="color:var(--mut);padding:40px;text-align:center">
+                  输入网址点击「抓取」，结果 Markdown 会显示在这里并自动存入记录中心。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <!-- 视频工作台：左操作流 / 右产出区 -->
@@ -277,24 +290,10 @@
         <div class="work">
           <div class="work-tabs">
             <div class="wtab active" id="wt-res" onclick="wtab('wresult',this)">✨ 整理结果 <span class="chip run" id="vres-count" style="display:none"></span></div>
-            <div class="wtab" id="wt-hist" onclick="wtab('whist',this)">📚 已入库记录 <span class="chip" id="vhist-status"></span></div>
           </div>
           <div class="work-body">
             <div id="wresult" class="wpane active">
               <div id="vresult"><div class="empty" style="padding:40px">批量整理的结果卡片会出现在这里。</div></div>
-            </div>
-            <div id="whist" class="wpane">
-              <div class="kpi">
-                <div><div class="k">累计入库</div><div class="v" id="vk-total">–</div></div>
-                <div><div class="k">完成</div><div class="v ok" id="vk-done">–</div></div>
-                <div><div class="k">失败</div><div class="v err" id="vk-err">–</div></div>
-                <div><div class="k">总字数</div><div class="v" id="vk-chars">–</div></div>
-              </div>
-              <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
-              <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
-              <input type="text" id="vhq" placeholder="🔍 搜索已入库记录（标题 / 来源）…" style="margin-bottom:10px" oninput="renderVhistList()">
-              <div id="vh-detail"></div>
-              <div id="vhist"><div class="empty" style="padding:14px">加载中…</div></div>
             </div>
           </div>
         </div>
@@ -347,24 +346,10 @@
         <div class="work">
           <div class="work-tabs">
             <div class="wtab active" id="ywt-res" onclick="wtab('ytresult',this)">✨ 整理结果 <span class="chip run" id="ytres-count" style="display:none"></span></div>
-            <div class="wtab" id="ywt-hist" onclick="wtab('ythist',this)">📚 已入库记录 <span class="chip" id="yhist-status"></span></div>
           </div>
           <div class="work-body">
             <div id="ytresult" class="wpane active">
               <div id="yt-result-list"><div class="empty" style="padding:40px">YouTube 整理的结果卡片会出现在这里。</div></div>
-            </div>
-            <div id="ythist" class="wpane">
-              <div class="kpi">
-                <div><div class="k">累计入库</div><div class="v" id="ytk-total">–</div></div>
-                <div><div class="k">完成</div><div class="v ok" id="ytk-done">–</div></div>
-                <div><div class="k">失败</div><div class="v err" id="ytk-err">–</div></div>
-                <div><div class="k">总字数</div><div class="v" id="ytk-chars">–</div></div>
-              </div>
-              <div id="ytvcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
-              <div id="ytvsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
-              <input type="text" id="ythq" placeholder="🔍 搜索已入库记录（标题 / 来源）…" style="margin-bottom:10px" oninput="renderYtHistList()">
-              <div id="ytvh-detail"></div>
-              <div id="ytrec"><div class="empty" style="padding:14px">加载中…</div></div>
             </div>
           </div>
         </div>
@@ -422,22 +407,10 @@
         <div class="work">
           <div class="work-tabs">
             <div class="wtab active" id="awt-res" onclick="wtab('artresult',this)">✨ 采集结果 <span class="chip run" id="artres-count" style="display:none"></span></div>
-            <div class="wtab" id="awt-hist" onclick="wtab('arthist',this)">📚 已入库记录 <span class="chip" id="arthist-status"></span></div>
           </div>
           <div class="work-body">
             <div id="artresult" class="wpane active">
               <div id="art-result-list"><div class="empty" style="padding:40px">公众号 / 小红书采集结果会显示在这里（B站走视频流水线，结果在视频页签）。</div></div>
-            </div>
-            <div id="arthist" class="wpane">
-              <div class="kpi">
-                <div><div class="k">累计</div><div class="v" id="artk-total">–</div></div>
-                <div><div class="k">完成</div><div class="v ok" id="artk-done">–</div></div>
-                <div><div class="k">失败</div><div class="v err" id="artk-err">–</div></div>
-                <div><div class="k">总字数</div><div class="v" id="artk-chars">–</div></div>
-              </div>
-              <input type="text" id="arthq" placeholder="🔍 搜索已入库文章（标题 / 链接）…" style="margin-bottom:10px" oninput="renderArtHistList()">
-              <div id="artvh-detail"></div>
-              <div id="artrec"><div class="empty" style="padding:14px">加载中…</div></div>
             </div>
           </div>
         </div>
@@ -492,17 +465,36 @@
         <div class="work">
           <div class="work-tabs">
             <div class="wtab active" onclick="wtab('ttsres',this)">✨ 产出</div>
-            <div class="wtab" onclick="wtab('ttshist',this)">🗒 合成记录 <span class="chip" id="ttshist-status"></span></div>
           </div>
           <div class="work-body">
             <div class="wpane active" id="ttsres">
               <div id="tts-result-list"><div class="empty" style="padding:14px">还没有产出。左侧输入文本后点「合成语音」。</div></div>
             </div>
-            <div class="wpane" id="ttshist">
-              <input type="text" id="ttshq" placeholder="🔍 搜索合成记录…" style="margin-bottom:10px" oninput="renderTtsHist()">
-              <div id="ttshist-list"><div class="empty" style="padding:14px">加载中…</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 记录中心：网页 / 视频 / 文章 / 配音 四类记录统一管理 -->
+    <div id="rec-panel">
+      <div class="work" style="flex:1">
+        <div class="work-tabs">
+          <div id="rectypes" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
+        </div>
+        <div class="work-body">
+          <div class="kpi">
+            <div><div class="k">累计入库</div><div class="v" id="vk-total">–</div></div>
+            <div><div class="k">完成</div><div class="v ok" id="vk-done">–</div></div>
+            <div><div class="k">失败</div><div class="v err" id="vk-err">–</div></div>
+            <div><div class="k">总字数</div><div class="v" id="vk-chars">–</div></div>
+            <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+              <button class="btn" onclick="loadRecords(true)" title="重新拉取全部记录">↻ 刷新</button>
             </div>
           </div>
+          <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+          <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+          <input type="text" id="vhq" placeholder="🔍 搜索全部记录（标题 / 来源 / 链接）…" style="margin-bottom:12px;width:100%" oninput="renderRecords()">
+          <div id="rec-detail"></div>
+          <div id="rec-list"><div class="empty" style="padding:14px">加载中…</div></div>
         </div>
       </div>
     </div>
@@ -512,20 +504,170 @@
 <div id="mback" class="mback" onclick="if(event.target===this)hideModal()"><div class="mpanel" id="mpanel"></div></div>
 <script>
 const $ = s => document.querySelector(s);
-async function loadHist(){
-  const q = $('#q').value.trim();
-  const r = await fetch('/api/history?q='+encodeURIComponent(q));
-  const rows = await r.json();
-  const box = $('#hist');
-  if(!rows.length){ box.innerHTML='<div class="empty">暂无记录</div>'; return; }
+// ---------- 记录中心：网页 / 视频 / 文章 / 配音 统一管理 ----------
+let _recRows = [];            // 合并后的记录（带 type）
+let _recType = '';            // ''=全部 web/video/article/tts
+let _recLoaded = false;
+const _recTypeMeta = {
+  web:     {label:'🌐 网页', icon:'🌐'},
+  video:   {label:'🎬 视频', icon:'🎬'},
+  article: {label:'📰 文章', icon:'📰'},
+  tts:     {label:'🔊 配音', icon:'🔊'},
+};
+async function loadRecords(force){
+  try{
+    const [cw, vd, ar, tt] = await Promise.all([
+      fetch('/api/history').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/video/history').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/articles').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/tts/history').then(r=>r.json()).catch(()=>[]),
+    ]);
+    _recRows = [
+      ...(cw||[]).map(x=>({...x, type:'web'})),
+      ...(vd||[]).map(x=>({...x, type:'video'})),
+      ...(ar||[]).map(x=>({...x, type:'article'})),
+      ...(tt||[]).map(x=>({...x, type:'tts'})),
+    ];
+    _recRows.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+    _recLoaded = true;
+  }catch(e){ _recRows = []; }
+  renderRecTypeChips();
+  renderCatChips(); renderSrcChips();
+  renderRecords();
+}
+function renderRecTypeChips(){
+  const box = $('#rectypes'); if(!box) return;
+  const counts = {};
+  _recRows.forEach(x=>counts[x.type]=(counts[x.type]||0)+1);
+  const mk = (k,label,n)=>`<span class="chip ${_recType===k?'on':''}" style="cursor:pointer;font-size:13px;padding:3px 12px"
+      onclick="_setRecType('${k}')">${label}${n?(' '+n):''}</span>`;
+  box.innerHTML = mk('', '📚 全部', _recRows.length)
+    + Object.keys(_recTypeMeta).map(k=>mk(k, _recTypeMeta[k].label, counts[k]||0)).join('');
+}
+function _setRecType(k){ _recType = k; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderRecords(); }
+function recRowsFiltered(){
+  const q = ($('#vhq')?.value||'').toLowerCase();
+  return _recRows.filter(x=>{
+    if(_recType && x.type!==_recType) return false;
+    if((_recType===''||_recType==='video')){
+      if(_vcatFilter && (x.category||'')!==_vcatFilter) return false;
+      if(_vSrcFilter && (x.source||'')!==_vSrcFilter) return false;
+    }
+    if(!q) return true;
+    return [x.title,x.url,x.source_url,x.text,x.voice].some(v=>String(v||'').toLowerCase().includes(q));
+  });
+}
+function recStatus(x){
+  if(x.type==='tts') return x.error?'error':'done';
+  return x.status||'done';
+}
+function recTitle(x){
+  return x.title || x.text || x.url || x.source_url || x.id;
+}
+function recSub(x){
+  if(x.type==='web') return x.url||'';
+  if(x.type==='video') return [x.source_url, x.category?('分类 '+x.category):'', x.source||''].filter(Boolean).join(' · ');
+  if(x.type==='article') return [x.platform==='wechat'?'公众号':(x.platform==='xhs'?'小红书':(x.platform||'')), x.url].filter(Boolean).join(' · ');
+  if(x.type==='tts') return [x.voice, (x.chars?x.chars+'字':''), (x.chunks>1?x.chunks+'段':''), (x.seconds?x.seconds+'s':'')].filter(Boolean).join(' · ');
+  return '';
+}
+function recMeta(x){
+  const st = recStatus(x);
+  const sz = (x.type==='tts'&&x.seconds)?(' · '+x.seconds+'s'):(x.md_len?(' · '+x.md_len+'字'):'');
+  return `<span class="st ${st}">${st==='done'?'✓':st==='error'?'✗':'…'} ${_recTypeMeta[x.type].icon} ${_recTypeMeta[x.type].label.replace(/^\S+\s/,'')}</span>
+    <span>${x.created_at||''}${sz}${x.error?(' · '+esc(x.error.slice(0,80))):''}</span>`;
+}
+function renderRecords(){
+  const box = $('#rec-list'); if(!box) return;
+  const rows = recRowsFiltered();
+  // KPI
+  const done = rows.filter(x=>recStatus(x)==='done').length;
+  const err = rows.filter(x=>recStatus(x)==='error').length;
+  const chars = rows.reduce((s,x)=>s+(x.md_len||x.chars||0),0);
+  const set=(id,v)=>{const el=$(id); if(el) el.textContent=v;};
+  set('#vk-total', rows.length); set('#vk-done', done); set('#vk-err', err); set('#vk-chars', chars);
+  if(!rows.length){
+    box.innerHTML = `<div class="empty" style="padding:40px">${_recLoaded?'暂无记录':'加载中…'}</div>`;
+    return;
+  }
   box.innerHTML = rows.map(x=>`
-    <div class="item" onclick="view('${x.id}')">
-      <div class="t">${esc(x.title||x.url)}</div>
-      <div class="u">${esc(x.url)}</div>
-      <div class="m"><span class="st ${x.status}">${stxt(x.status)}</span>
-        <span>${x.created_at||''} · ${x.md_len||0}字</span></div>
-      <div class="delwrap"><button class="btn del" onclick="event.stopPropagation();del('${x.id}')">删除</button></div>
+    <div class="rec" onclick="recView('${x.type}','${escAttr(x.id)}')">
+      <div class="ic">${_recTypeMeta[x.type].icon}</div>
+      <div class="bd">
+        <div class="t">${esc(String(recTitle(x)).slice(0,80))}</div>
+        <div class="u">${esc(recSub(x))}</div>
+      </div>
+      <div class="sp">
+        ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>`:''}
+        ${x.type==='video'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}')">编辑</button>
+        <button class="btn" onclick="event.stopPropagation();recView('video','${escAttr(x.id)}')">查看</button>`:''}
+        <button class="btn del" onclick="event.stopPropagation();recDel('${x.type}','${escAttr(x.id)}')">删除</button>
+      </div>
+      <div class="m" style="flex-direction:column;align-items:flex-end;flex-shrink:0">${recMeta(x)}</div>
     </div>`).join('');
+}
+function recPlay(file){
+  const au = $('#ttsaudio'); 
+  const det = $('#rec-detail');
+  det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🔊 试听 ${esc(file)}</div></div>
+    <div class="vcard-b"><audio controls autoplay style="width:100%" src="/api/tts/files/${encodeURIComponent(file)}"></audio></div></div>`;
+  det.scrollIntoView({behavior:'smooth'});
+}
+async function recView(type, id){
+  const det = $('#rec-detail');
+  det.innerHTML = `<div class="empty" style="padding:14px"><span class="spinner"></span> 加载记录…</div>`;
+  try{
+    if(type==='web'){
+      const r = await fetch('/api/crawls/'+id); const d = await r.json();
+      if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+      _currentMd = d.markdown||''; _rawView=false;
+      det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🌐 ${esc(d.title||d.url||id)}</div>
+          <div><a class="btn" href="/api/crawls/${d.id}/download">下载 .md</a>
+          <button class="btn" onclick="recToggleRaw(this)">源码</button></div></div>
+        <div class="vcard-b"><div id="recmd" class="md-body"></div>
+        ${d.extracted?`<div class="row" style="margin-top:12px"><b>结构化抽取</b></div><pre class="json">${esc(typeof d.extracted==='string'?d.extracted:JSON.stringify(d.extracted,null,2))}</pre>`:''}</div></div>`;
+      const box=$('#recmd');
+      box.innerHTML = DOMPurify.sanitize(marked.parse(_currentMd||''));
+    } else if(type==='video'){
+      const r = await fetch('/api/video/records/'+id); const d = await r.json();
+      if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+      const md = d.markdown||'';
+      det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🎬 ${esc(d.title||id)}
+          ${d.category?`<span class="chip">${esc(d.category)}</span>`:''}${d.source?`<span class="chip" style="color:var(--red)">${esc(d.source)}</span>`:''}</div>
+          <div>${d.vault_path?`<a class="btn" href="file:///${encodeURIComponent(d.vault_path.replace(/\\\\/g,'/'))}" title="${escAttr(d.vault_path)}">Obsidian 笔记</a>`:''}</div></div>
+        <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div></div></div>`;
+    } else if(type==='article'){
+      const r = await fetch('/api/articles/'+id); const d = await r.json();
+      if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+      det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>📰 ${esc(d.title||id)}
+          <span class="chip">${d.platform==='wechat'?'公众号':(d.platform==='xhs'?'小红书':esc(d.platform||''))}</span></div>
+          <div>${d.vault_path?`<span class="mut" style="font-size:11px">${esc(d.vault_path.replace(/\\\\/g,'/'))}</span>`:''}</div></div>
+        <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||''))}</div></div></div>`;
+    } else if(type==='tts'){
+      const x = _recRows.find(r=>r.type==='tts'&&r.id===id)||{};
+      if(x.file) recPlay(x.file);
+      else det.innerHTML = `<div class="empty">${esc(x.error||'无音频文件')}</div>`;
+    }
+    det.scrollIntoView({behavior:'smooth'});
+  }catch(e){ det.innerHTML = `<div class="empty" style="color:var(--red)">加载失败：${esc(e.message)}</div>`; }
+}
+function recToggleRaw(btn){
+  const box = $('#recmd'); if(!box) return;
+  const raw = box.classList.toggle('md-raw');
+  if(raw){ box.textContent = _currentMd||''; btn.textContent='渲染'; }
+  else { box.classList.remove('md-raw'); box.className='md-body'; box.innerHTML = DOMPurify.sanitize(marked.parse(_currentMd||'')); btn.textContent='源码'; }
+}
+async function recDel(type, id){
+  const meta = {web:['/api/crawls/','确定删除这条网页抓取记录？关联 .md/.json 文件一并删除。'],
+                video:['/api/video/records/','确定删除这条视频记录？Obsidian 笔记文件也会一并删除。'],
+                article:['/api/articles/','确定删除这条文章记录？Obsidian 笔记文件也会一并删除。'],
+                tts:['/api/tts/history/','确定删除这条配音记录？音频文件也会一并删除。']};
+  if(!confirm(meta[type][1])) return;
+  try{
+    const r = await fetch(meta[type][0]+encodeURIComponent(id), {method:'DELETE'});
+    if(r.ok){ $('#rec-detail').innerHTML=''; loadRecords(); }
+    else { const e=await r.json().catch(()=>({})); alert('删除失败：'+(e.error||r.status)); }
+  }catch(e){ alert('删除异常：'+e.message); }
 }
 function stxt(s){return s==='done'?'✓ 完成':s==='error'?'✗ 失败':s==='running'?'… 进行中':'·'}
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
@@ -617,7 +759,7 @@ async function crawl(){
     if(!r.ok){ setStatus('✗ 失败：'+(d.error||'未知错误')); renderErr(d); }
     else { render(d); setStatus('✓ 完成：'+d.md_len+' 字 Markdown 已存入历史'); }
   }catch(e){ setStatus('✗ 请求异常：'+e.message); }
-  finally{ go.disabled=false; go.textContent='抓取'; loadHist(); }
+  finally{ go.disabled=false; go.textContent='🌐 抓取'; loadRecords(); }
 }
 function setStatus(h){ $('#status').innerHTML = h; }
 
@@ -678,7 +820,7 @@ async function del(id){
     const r = await fetch('/api/crawls/'+id, {method:'DELETE'});
     if(r.ok){
       setStatus('✓ 已删除记录 '+id);
-      loadHist();
+      loadRecords();
       $('#result').innerHTML = '<div class="empty" style="color:var(--mut);padding:40px;text-align:center">记录已删除</div>';
     } else {
       const e = await r.json().catch(()=>({}));
@@ -689,17 +831,21 @@ async function del(id){
 function switchTab(t, btn){
   document.querySelectorAll('#tabs .tab').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  const web = (t==='web'), yt = (t==='yt'), art = (t==='art'), tts = (t==='tts');
-  $('#bar').style.display = web?'flex':'none';
-  $('#status').style.display = web?'block':'none';
-  $('#result').style.display = web?'block':'none';
-  $('#video-panel').style.display = (!web && !yt && !art && !tts)?'flex':'none';
+  const web=(t==='web'), yt=(t==='yt'), art=(t==='art'), tts=(t==='tts'), rec=(t==='rec');
+  $('#web-panel').style.display = web?'flex':'none';
+  $('#video-panel').style.display = (!web && !yt && !art && !tts && !rec)?'flex':'none';
   $('#yt-panel').style.display = yt?'flex':'none';
   $('#art-panel').style.display = art?'flex':'none';
   $('#tts-panel').style.display = tts?'flex':'none';
-  if(!web){ checkVideoHealth(); loadVideoHist(); }
-  if(art){ loadArtHist(); }
-  if(tts){ ttsCheck(); ttsLoadVoices(); loadTtsHist(); }
+  $('#rec-panel').style.display = rec?'flex':'none';
+  if(!web){ checkVideoHealth(); }
+  if(tts){ ttsCheck(); ttsLoadVoices(); }
+  if(rec){ loadRecords(); }
+}
+function clearWebAll(){
+  $('#url').value='';
+  $('#status').innerHTML='等待提交…';
+  $('#result').innerHTML='<div class="empty" style="color:var(--mut);padding:40px;text-align:center">输入网址点击「抓取」，结果 Markdown 会显示在这里并自动存入记录中心。</div>';
 }
 // ---------- 文章/笔记采集（公众号 / 小红书 / B站） ----------
 let _artHistRows = [];
@@ -719,7 +865,7 @@ async function ingestArticle(plat){
     $('#artsub').textContent = '完成';
     addArtResult(d);
     (plat==='wechat' ? $('#wxurl') : $('#xhsurl')).value='';
-    loadArtHist();
+    loadRecords();
   }catch(e){ st.textContent='❌ '+e.message; $('#artsub').textContent='失败'; }
   finally{ go.disabled=false; }
 }
@@ -735,61 +881,7 @@ function addArtResult(d){
     <div class="md-body">${DOMPurify.sanitize(marked.parse(d.md||''))}</div></div>`;
   box.prepend(el);
   const cnt = $('#artres-count'); cnt.style.display=''; cnt.textContent=(parseInt(cnt.textContent)||0)+1;
-}
-async function loadArtHist(){
-  const st = $('#arthist-status');
-  st.textContent = '…';
-  try{
-    const r = await fetch('/api/articles');
-    const rows = await r.json();
-    _artHistRows = rows || [];
-    const done = _artHistRows.filter(x=>x.status==='done').length;
-    const err  = _artHistRows.filter(x=>x.status==='error').length;
-    const chars= _artHistRows.reduce((a,x)=>a+(x.md_len||0),0);
-    $('#artk-total').textContent = _artHistRows.length;
-    $('#artk-done').textContent  = done;
-    $('#artk-err').textContent   = err;
-    $('#artk-chars').textContent = chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars;
-    st.textContent = _artHistRows.length ? _artHistRows.length+' 条' : '';
-    renderArtHistList();
-  }catch(e){ st.textContent='!'; }
-}
-function renderArtHistList(){
-  const box = $('#artrec');
-  if(!box) return;
-  const q = ($('#arthq')?.value||'').trim().toLowerCase();
-  const rows = _artHistRows.filter(x=>
-    !q || ((x.title||'')+' '+(x.url||'')).toLowerCase().includes(q));
-  if(!rows.length){ box.innerHTML='<div class="empty" style="padding:14px">暂无记录</div>'; return; }
-  box.innerHTML = rows.map(x=>`
-    <div class="item" onclick="viewArt('${x.id}')">
-      <div class="t">${esc(x.title||x.url)}</div>
-      <div class="u">${esc(x.url||'')} ${x.platform?('· '+esc(x.platform)):''}</div>
-      <div class="m"><span class="st ${x.status}">${stxt(x.status)}</span>
-        <span>${x.created_at||''} · ${x.md_len||0}字</span></div>
-      <div class="delwrap"><button class="btn del" onclick="event.stopPropagation();delArt('${x.id}')">删除</button></div>
-    </div>`).join('');
-}
-async function viewArt(id){
-  const det = $('#artvh-detail');
-  det.innerHTML = '<div class="empty" style="padding:14px">加载中…</div>';
-  try{
-    const r = await fetch('/api/articles/'+id);
-    const d = await r.json();
-    det.innerHTML = `<div class="step" style="margin-bottom:12px">
-      <div class="step-h" style="cursor:default"><span class="no" style="background:var(--acc2)">✓</span>
-        <span class="tt">${esc(d.title||'(无标题)')}</span><span class="sub">${esc(d.platform||'')}</span></div>
-      <div class="step-b"><div class="mut" style="margin-bottom:8px">${esc(d.url||'')}
-        ${d.vault_path?('· 已入库 '+esc(d.vault_path.replace(/\\/g,'/'))):''}</div>
-      <div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||'(内容为空)'))}</div></div></div>`;
-  }catch(e){ det.innerHTML='<div class="empty" style="padding:14px">加载失败</div>'; }
-}
-async function delArt(id){
-  if(!confirm('删除该记录？若已写入 Obsidian 库，笔记文件也会一并删除。')) return;
-  const r = await fetch('/api/articles/'+id, {method:'DELETE'});
-  const d = await r.json().catch(()=>({}));
-  $('#artvh-detail').innerHTML = `<div class="empty" style="padding:10px">✓ 已删除${(d.removed&&d.removed.length)?'（含笔记 '+d.removed.length+' 个文件）':''}</div>`;
-  loadArtHist();
+  loadRecords();   // 采集入库后同步刷新记录中心
 }
 function clearArtAll(){
   $('#wxurl').value=''; $('#xhsurl').value=''; $('#biliurls').value='';
@@ -811,7 +903,7 @@ async function runBili(){
     const ok = rs.filter(x=>x.ok).length;
     st.innerHTML = rs.map((x,i)=>`${x.ok?'✅':'❌'} ${esc(x.title||urls[i]||'')} ${x.ok?'':('— '+esc((x.error||'').slice(0,120)))}`).join('<br>');
     $('#artsub').textContent = `完成 ${ok}/${rs.length}`;
-    loadVideoHist();
+    loadRecords();
   }catch(e){ st.textContent='❌ '+e.message; $('#artsub').textContent='失败'; }
   finally{ $('#biligo').disabled=false; }
 }
@@ -871,7 +963,7 @@ async function doTts(){
     au.src = '/api/tts/files/'+encodeURIComponent(d.file)+'?t='+Date.now();
     au.style.display='block'; au.play().catch(()=>{});
     addTtsResult(d);
-    loadTtsHist();
+    loadRecords();
   }catch(e){ st.textContent='❌ '+e.message; $('#ttssub').textContent='失败'; ttsCheck(); }
   finally{ go.disabled=false; }
 }
@@ -890,118 +982,39 @@ function addTtsResult(d){
     </div>`;
   box.prepend(el);
 }
-async function loadTtsHist(){
-  try{
-    const r = await fetch('/api/tts/history');
-    _ttsHistRows = await r.json();
-  }catch(e){ _ttsHistRows = []; }
-  renderTtsHist();
-}
-function renderTtsHist(){
-  const box = $('#ttshist-list'); if(!box) return;
-  const q = ($('#ttshq')?.value||'').toLowerCase();
-  const rows = _ttsHistRows.filter(x=>!q || (x.text||'').toLowerCase().includes(q) || (x.voice||'').toLowerCase().includes(q));
-  if(!rows.length){ box.innerHTML='<div class="empty">暂无记录</div>'; return; }
-  box.innerHTML = rows.map(x=>{
-    const stc = x.error ? 'error' : 'done';
-    return `<div class="item" ${x.error?'':`onclick="playTts('${escAttr(x.id)}','${escAttr(x.file||'')}')"`} style="cursor:${x.error?'default':'pointer'}">
-      <div class="t">${esc((x.text||'').slice(0,60))||'(空)'}</div>
-      <div class="u">${x.error?esc(x.error.slice(0,120)):esc(x.voice||'')} · ${x.chars||0}字${x.chunks>1?(' · '+x.chunks+'段'):''}${x.seconds?(' · '+x.seconds+'s'):''}</div>
-      <div class="m"><span class="st ${stc}">${x.error?'✗ 失败':'✓ 完成'}</span>
-        <span>${x.created_at||''}</span></div>
-      <div class="delwrap"><button class="btn del" onclick="event.stopPropagation();delTts('${escAttr(x.id)}')">删除</button></div>
-    </div>`;}).join('');
-}
-function playTts(id, file){
-  if(!file) return;
-  const au = $('#ttsaudio');
-  au.src = '/api/tts/files/'+encodeURIComponent(file)+'?t='+Date.now();
-  au.style.display='block';
-  au.play().catch(()=>{});
-  wtab('ttsres', document.querySelector('#tts-panel .wtab'));
-}
-async function delTts(id){
-  try{ await fetch('/api/tts/history/'+encodeURIComponent(id), {method:'DELETE'}); }catch(e){}
-  loadTtsHist();
-}
-// ---------- 已入库记录：统计 / 分类 / 搜索 / 查看 / 编辑 / 删除 ----------
-let _vhistRows = [];
+// ---------- 记录中心：视频分类/来源 chips（数据来自 _recRows，编辑/管理沿用） ----------
 let _vcatFilter = '';      // ''=全部 '__uncat__'=未分类 其他=分类名
 let _catKeys = [];         // 当前分类名列表（避免内联onclick注入）
-async function loadVideoHist(){
-  const st = $('#vhist-status');
-  st.textContent = '…';
-  try{
-    const r = await fetch('/api/video/history');
-    const rows = await r.json();
-    _vhistRows = rows || [];
-    const done = _vhistRows.filter(x=>x.status==='done').length;
-    const err  = _vhistRows.filter(x=>x.status==='error').length;
-    const chars= _vhistRows.reduce((a,x)=>a+(x.md_len||0),0);
-    $('#vk-total').textContent = _vhistRows.length;
-    $('#vk-done').textContent  = done;
-    $('#vk-err').textContent   = err;
-    $('#vk-chars').textContent = chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars;
-    st.textContent = _vhistRows.length ? _vhistRows.length+' 条' : '';
-    // YouTube 工作台的记录页签同步刷新（共用同一库）
-    const yst = document.getElementById('yhist-status');
-    if(yst) yst.textContent = st.textContent;
-    const setK = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
-    setK('ytk-total', _vhistRows.length);
-    setK('ytk-done', done);
-    setK('ytk-err', err);
-    setK('ytk-chars', chars>=10000 ? (chars/10000).toFixed(1)+'万' : chars);
-    renderCatChips();
-    renderVhistList();
-    renderYtChips();
-    renderYtHistList();
-    renderSrcChips();
-    renderYtSrcChips();
-  }catch(e){ st.textContent = '加载失败'; }
-}
+function _videoRows(){ return _recRows.filter(x=>x.type==='video'); }
 function catCounts(){
+  const rows = _videoRows();
   const counts = {}; let uncat = 0;
-  _vhistRows.forEach(x=>{
+  rows.forEach(x=>{
     const c = (x.category||'').trim();
     if(c) counts[c] = (counts[c]||0)+1; else uncat++;
   });
   return {counts, uncat, cats: Object.keys(counts).sort()};
 }
 function renderCatChips(){
+  const el = $('#vcats'); if(!el) return;
   const {counts, uncat, cats} = catCounts();
   _catKeys = cats;
   const chips = [
-    ['', '全部 '+_vhistRows.length],
+    ['', '全部分类'],
     ['__uncat__', '未分类 '+uncat],
     ...cats.map(c=>[c, esc(c)+' '+counts[c]])
   ];
-  $('#vcats').innerHTML = chips.map(([k,label],i)=>
+  el.innerHTML = chips.map(([k,label])=>
     `<span class="chip ${_vcatFilter===k?'on':''}" style="cursor:pointer" onclick="_setCat('${escAttr(k)}')">${label}</span>`
   ).join('')
   + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats()">⚙ 管理分类</span>`;
 }
-// ---------- YouTube 工作台：分类 chips + 记录列表（与抖音共用库，独立筛选） ----------
-let _ytCatFilter = '';
-function renderYtChips(){
-  const wrap = document.getElementById('ytvcats');
-  if(!wrap) return;
-  const {counts, uncat, cats} = catCounts();
-  const chips = [
-    ['', '全部 '+_vhistRows.length],
-    ['__uncat__', '未分类 '+uncat],
-    ...cats.map(c=>[c, esc(c)+' '+counts[c]])
-  ];
-  wrap.innerHTML = chips.map(([k,label])=>
-    `<span class="chip ${_ytCatFilter===k?'on':''}" style="cursor:pointer" onclick="_setYtCat('${escAttr(k)}')">${label}</span>`
-  ).join('')
-  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats()">⚙ 管理分类</span>`;
-}
-function _setYtCat(k){ _ytCatFilter = k; renderYtChips(); renderYtHistList(); }
 // ---------- 来源分类（抖音视频/YouTube视频…可增可管理） ----------
-let _vSrcFilter = '', _ytSrcFilter = '', _srcKeys = [];
+let _vSrcFilter = '', _srcKeys = [];
 function srcCounts(){
+  const rows = _videoRows();
   const counts = {}; let none = 0;
-  _vhistRows.forEach(x=>{
+  rows.forEach(x=>{
     const c = (x.source||'').trim();
     if(c) counts[c] = (counts[c]||0)+1; else none++;
   });
@@ -1010,7 +1023,7 @@ function srcCounts(){
 function _srcChips(filter, setter){
   const {counts, none, srcs} = srcCounts();
   _srcKeys = srcs;
-  const chips = [['', '全部']];
+  const chips = [['', '全部来源']];
   if(none) chips.push(['__nosrc__', '未标来源 '+none]);
   srcs.forEach(s=>chips.push([s, esc(s)+' '+counts[s]]));
   return chips.map(([k,label])=>
@@ -1020,66 +1033,13 @@ function _srcChips(filter, setter){
 }
 function renderSrcChips(){
   const el = document.getElementById('vsrcs');
-  if(el) el.innerHTML = '<span class="mut" style="align-self:center;font-size:12px">来源</span>' + _srcChips(_vSrcFilter, '_setSrc');
+  if(el) el.innerHTML = _srcChips(_vSrcFilter, '_setSrc');
 }
-function renderYtSrcChips(){
-  const el = document.getElementById('ytvsrcs');
-  if(el) el.innerHTML = '<span class="mut" style="align-self:center;font-size:12px">来源</span>' + _srcChips(_ytSrcFilter, '_setYtSrc');
-}
-function _setSrc(k){ _vSrcFilter = k; renderSrcChips(); renderVhistList(); }
-function _setYtSrc(k){ _ytSrcFilter = k; renderYtSrcChips(); renderYtHistList(); }
-function renderYtHistList(){
-  const box = document.getElementById('ytrec');
-  if(!box) return;
-  const q = ($('#ythq') ? $('#ythq').value.trim().toLowerCase() : '');
-  let rows = _vhistRows;
-  if(_ytCatFilter==='__uncat__') rows = rows.filter(x=>!((x.category||'').trim()));
-  else if(_ytCatFilter) rows = rows.filter(x=>((x.category||'').trim())===_ytCatFilter);
-  if(_ytSrcFilter==='__nosrc__') rows = rows.filter(x=>!((x.source||'').trim()));
-  else if(_ytSrcFilter) rows = rows.filter(x=>((x.source||'').trim())===_ytSrcFilter);
-  if(q) rows = rows.filter(x =>
-    ((x.title||'')+' '+(x.source_url||'')+' '+(x.vault_path||'')).toLowerCase().includes(q));
-  box.innerHTML = _recListHtml(rows, q||_ytCatFilter||_ytSrcFilter);
-}
-function _setCat(k){ _vcatFilter = k; renderCatChips(); renderVhistList(); }
-function _recListHtml(rows, hasFilter){
-  if(!rows.length)
-    return `<div class="empty" style="padding:14px">${hasFilter?'没有匹配的记录':'暂无视频整理记录'}</div>`;
-  return `<div class="vcard" style="margin-bottom:24px">` + rows.map(x=>{
-    const cat = (x.category||'').trim();
-    const src = (x.source||'').trim();
-    return `
-      <div class="rec" onclick="viewVideo('${x.id}')">
-        <div class="ic">🎬</div>
-        <div class="bd">
-          <div class="t">${esc(x.title||x.source_url)} <span class="st ${x.status}">${stxt(x.status)}</span>
-            ${cat?`<span class="chip" style="color:var(--red);border-color:rgba(255,95,110,.4)">${esc(cat)}</span>`:''}
-            ${src?`<span class="chip" style="color:var(--acc);border-color:rgba(79,157,255,.4)">${esc(src)}</span>`:''}</div>
-          <div class="u">${esc(x.source_url||'')} · ${x.created_at||''} · ${x.md_len||0}字</div>
-        </div>
-        <div class="sp">
-          <button class="btn" onclick="event.stopPropagation();editRec('${x.id}')">编辑</button>
-          <button class="btn" onclick="event.stopPropagation();viewVideo('${x.id}')">查看</button>
-          <button class="btn del" onclick="event.stopPropagation();delVideo('${x.id}','${escAttr(x.title||x.id)}')">删除</button>
-        </div>
-      </div>`;
-  }).join('') + `</div>`;
-}
-function renderVhistList(){
-  const box = $('#vhist');
-  const q = ($('#vhq') ? $('#vhq').value.trim().toLowerCase() : '');
-  let rows = _vhistRows;
-  if(_vcatFilter==='__uncat__') rows = rows.filter(x=>!((x.category||'').trim()));
-  else if(_vcatFilter) rows = rows.filter(x=>((x.category||'').trim())===_vcatFilter);
-  if(_vSrcFilter==='__nosrc__') rows = rows.filter(x=>!((x.source||'').trim()));
-  else if(_vSrcFilter) rows = rows.filter(x=>((x.source||'').trim())===_vSrcFilter);
-  if(q) rows = rows.filter(x =>
-    ((x.title||'')+' '+(x.source_url||'')+' '+(x.vault_path||'')).toLowerCase().includes(q));
-  box.innerHTML = _recListHtml(rows, q||_vcatFilter||_vSrcFilter);
-}
+function _setSrc(k){ _vSrcFilter = k; renderSrcChips(); renderRecords(); }
+function _setCat(k){ _vcatFilter = k; renderCatChips(); renderRecords(); }
 // 编辑记录：改名（同步重命名库内笔记文件）+ 归类
 function editRec(id){
-  const x = _vhistRows.find(r=>r.id===id);
+  const x = _videoRows().find(r=>r.id===id);
   if(!x) return;
   const {cats} = catCounts();
   const {srcs} = srcCounts();
@@ -1125,10 +1085,9 @@ async function saveRec(id){
     const d = await r.json();
     if(r.ok && d.ok){
       hideModal();
-      closeDetailView();
       if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
       if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
-      loadVideoHist();
+      loadRecords();
     } else { alert('保存失败：'+(d.error||r.status)); }
   }catch(e){ alert('保存异常：'+e.message); }
 }
@@ -1169,71 +1128,29 @@ async function renCat(i){
       body:JSON.stringify({old, new:nv})});
     const d = await r.json();
     if(r.ok && d.ok){
-      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=nv; if(_ytSrcFilter===old) _ytSrcFilter=nv; }
+      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=nv; }
       else if(_vcatFilter===old) _vcatFilter = nv;
       hideModal();
-      loadVideoHist();
+      loadRecords();
     } else { alert('重命名失败：'+(d.error||r.status)); }
   }catch(e){ alert('异常：'+e.message); }
 }
 async function delCat(i){
   const old = _mgKeys[i];
   const isSrc = _mgDim === 'source';
-  const n = (_vhistRows.filter(x=>((isSrc?x.source:x.category)||'').trim()===old)).length;
+  const n = (_videoRows().filter(x=>((isSrc?x.source:x.category)||'').trim()===old)).length;
   const fb = isSrc ? '未标来源' : '未分类';
   if(!confirm(`删除${isSrc?'来源':'分类'}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`)) return;
   try{
     const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+(isSrc?'?dim=source':''), {method:'DELETE'});
     const d = await r.json();
     if(r.ok && d.ok){
-      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=''; if(_ytSrcFilter===old) _ytSrcFilter=''; }
+      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=''; }
       else if(_vcatFilter===old) _vcatFilter='';
       hideModal();
-      loadVideoHist();
+      loadRecords();
     } else { alert('删除失败：'+(d.error||r.status)); }
   }catch(e){ alert('异常：'+e.message); }
-}
-function _histDetailEl(){
-  // 详情容器跟随当前所在工作台：YouTube 页签写自己的容器，抖音页签写抖音的
-  const yt = document.getElementById('ythist');
-  return $('#'+((yt && yt.classList.contains('active')) ? 'ytvh-detail' : 'vh-detail'));
-}
-async function viewVideo(id){
-  const det = _histDetailEl();
-  det.innerHTML = '<div class="empty" style="padding:14px"><span class="spinner"></span> 加载笔记…</div>';
-  try{
-    const r = await fetch('/api/video/records/'+id);
-    if(!r.ok){ det.innerHTML = '<div class="empty" style="padding:14px">✗ 记录不存在</div>'; return; }
-    const d = await r.json();
-    det.innerHTML = `<div class="vcard">
-      <div class="vcard-h">
-        <div>${esc(d.title||d.source_url)}</div>
-        <button class="btn" style="flex-shrink:0" onclick="closeDetailView()">收起 ▲</button>
-      </div>
-      <div class="vcard-b">
-        <div class="mut" style="margin-bottom:8px">${esc(d.source_url||'')} · ${d.created_at||''} · ${d.md_len||0}字
-          ${d.vault_path?('· '+esc(d.vault_path.replace(/\\\\/g,'/'))):''}</div>
-        ${d.error?`<div style="color:var(--red);font-size:12px">${esc(d.error)}</div>`:''}
-        <div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||'(笔记文件不存在或已被删除)'))}</div>
-      </div>
-    </div>`;
-    det.scrollIntoView({behavior:'smooth', block:'start'});
-  }catch(e){ det.innerHTML = '<div class="empty" style="padding:14px">✗ '+e.message+'</div>'; }
-}
-function closeDetailView(){ $('#vh-detail').innerHTML = ''; $('#ytvh-detail').innerHTML = ''; }
-async function delVideo(id, title){
-  if(!confirm('确定删除记录「'+title+'」？\\n\\n将同时删除：数据库记录、知识库中的整理笔记（Claw/07-视频号整理）、服务端副本。\\n此操作不可恢复。')) return;
-  const st = $('#vhist-status');
-  st.innerHTML = '…';
-  try{
-    const r = await fetch('/api/video/'+id, {method:'DELETE'});
-    const d = await r.json();
-    if(r.ok && d.ok){
-      st.textContent = '已删除';
-      _histDetailEl().innerHTML = '<div class="empty" style="padding:10px">✓ 已删除（含笔记 '+((d.removed||[]).length)+' 个文件）</div>';
-      loadVideoHist();
-    } else { st.textContent = '✗ 删除失败'; }
-  }catch(e){ st.textContent = '✗ '+e.message; }
 }
 // ---------- 抖音主页采集：清单先行，人工过目后再入库 ----------
 let _profileVideos = [];
@@ -1355,7 +1272,7 @@ async function runVideo(){
         : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
       setBar(results.length/total*100);
       renderVideo(results);
-      loadVideoHist();   // 每条入库后同步刷新「已入库记录」
+      loadRecords();   // 同步刷新记录中心
     }
     if(files.length){
       for(let j=0;j<files.length;j++){
@@ -1378,7 +1295,7 @@ async function runVideo(){
           : `❌ 文件「${esc(f.name.slice(0,20))}」失败（${secs} 秒）`);
         setBar(results.length/total*100);
         renderVideo(results);
-        loadVideoHist();   // 每条入库后同步刷新「已入库记录」
+        loadRecords();   // 同步刷新记录中心
       }
     }
     const totalSecs = Math.round((Date.now()-t0)/1000);
@@ -1518,7 +1435,7 @@ async function runYT(){
         : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
       setYtBar(results.length/total*100);
       renderYT(results);
-      loadVideoHist();   // 共用同一库，两个面板的记录同步刷新
+      loadRecords();   // 同步刷新记录中心
     }
     if(files.length){
       for(let j=0;j<files.length;j++){
@@ -1541,7 +1458,7 @@ async function runYT(){
           : `❌ 文件「${esc(f.name.slice(0,20))}」失败（${secs} 秒）`);
         setYtBar(results.length/total*100);
         renderYT(results);
-        loadVideoHist();
+        loadRecords();
       }
     }
     setYtBar(100);
@@ -1635,7 +1552,8 @@ function clearYTresult(){
   });
 })();
 
-loadHist();
+// 预加载记录中心数据（首切到该页签时已就绪）
+loadRecords();
 </script>
 </body>
 </html>
