@@ -103,7 +103,7 @@
   .seg button.on{background:var(--acc);color:#fff;font-weight:600}
   .segbtns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
   .vhealth{color:var(--mut);font-size:11px;text-align:center;padding:2px 0 8px}
-  .work{flex:1;min-width:0;display:flex;flex-direction:column}
+  .work{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
   .work-tabs{display:flex;padding:10px 18px 0;border-bottom:1px solid var(--line);align-items:center;flex-shrink:0}
   .wtab{padding:8px 18px;cursor:pointer;font-size:13px;color:var(--mut);border-bottom:2px solid transparent;
         display:flex;align-items:center;gap:8px}
@@ -161,7 +161,7 @@
       <button class="tab active" onclick="switchTab('pipe',this)">🚚 采集流水线</button>
       <button class="tab" onclick="switchTab('tts',this)">🔊 配音 TTS</button>
       <button class="tab" onclick="switchTab('rec',this)">📚 记录中心</button>
-      <span class="ver">v3.8 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · 账号清单采集</span>
+      <span class="ver">v3.9 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · 账号清单采集</span>
     </div>
 
     <!-- ================= 采集流水线：所有来源共用同一套 流程 ================= -->
@@ -893,6 +893,9 @@ function renderRecords(){
         <div class="u">${esc(recSub(x))}</div>
       </div>
       <div class="sp">
+        ${x.type==='video'&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
+        ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
+        ${x.type==='article'?`<span class="chip run" style="cursor:default">${_platLabel[x.platform]||esc(x.platform||'文章')}</span>`:''}
         ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>`:''}
         ${x.type==='video'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}')">编辑</button>
         <button class="btn" onclick="event.stopPropagation();recView('video','${escAttr(x.id)}')">查看</button>`:''}
@@ -954,7 +957,7 @@ function recToggleRaw(btn){
 }
 async function recDel(type, id){
   const meta = {web:['/api/crawls/','确定删除这条网页抓取记录？关联 .md/.json 文件一并删除。'],
-                video:['/api/video/records/','确定删除这条视频记录？Obsidian 笔记文件也会一并删除。'],
+                video:['/api/video/','确定删除这条视频记录？Obsidian 笔记文件也会一并删除。'],
                 article:['/api/articles/','确定删除这条文章记录？Obsidian 笔记文件也会一并删除。'],
                 tts:['/api/tts/history/','确定删除这条配音记录？音频文件也会一并删除。']};
   if(!confirm(meta[type][1])) return;
@@ -1212,6 +1215,8 @@ function addTtsResult(d){
 }
 
 // ---------- 初始化 ----------
+const _h = (location.hash||'').replace('#','');
+switchTab(['pipe','tts','rec'].includes(_h) ? _h : 'pipe', $('#tabs .tab' + (['pipe','tts','rec'].includes(_h) && _h!=='pipe' ? ':nth-child('+(_h==='tts'?2:3)+')' : '')));
 renderSrc();
 checkVideoHealth();
 loadRecords();
