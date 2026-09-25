@@ -28,6 +28,33 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 WEB_BEARER = ("Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
               "%3D1Zv7onMptdQjEsfCmMrgR76ldr1")
 
+# graphql UserTweets 的 features 参数（社区通用最小集）
+_GQL_FEATURES = json.dumps({
+    "rweb_tipjar_consumption_enabled": True,
+    "responsive_web_graphql_exclude_directive_enabled": True,
+    "verified_phone_label_enabled": False,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "communities_web_enable_tweet_community_results_fetch": True,
+    "articles_preview_enabled": True,
+    "tweetypie_unmention_optimization_enabled": True,
+    "responsive_web_edit_tweet_api_enabled": True,
+    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+    "view_counts_everywhere_api_enabled": True,
+    "longform_notetweets_consumption_enabled": True,
+    "responsive_web_twitter_article_tweet_consumption_enabled": True,
+    "tweet_awards_web_tipping_enabled": False,
+    "creator_subscriptions_quote_tweet_preview_enabled": False,
+    "freedom_of_speech_not_reach_fetch_enabled": True,
+    "standardized_nudges_misinfo": True,
+    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+    "rweb_video_timestamps_enabled": True,
+    "longform_notetweets_rich_text_read_enabled": True,
+    "longform_notetweets_inline_media_enabled": True,
+    "responsive_web_enhance_cards_enabled": False,
+}, separators=(",", ":"))
+
 _RESERVED = {"i", "home", "explore", "search", "notifications", "messages",
              "settings", "status", "statuses", "intent", "compose", "tos",
              "privacy", "hashtag"}
@@ -213,6 +240,8 @@ def _fmt_date(v):
 def _title_of(text: str) -> str:
     line = ((text or "").strip().splitlines() or [""])[0]
     line = re.sub(r"https?://\S+", "", line).strip(" \t#>-*")
+    # 去掉开头的 @提及，让标题更像正文
+    line = re.sub(r"^(?:@[A-Za-z0-9_]+\s+)+", "", line)
     return (line or "推文")[:40]
 
 
@@ -408,6 +437,96 @@ def _graphql_user_tweets(handle: str, max_count: int):
     return out
 
 
+def _twitter_cookies():
+    """从环境变量 TWITTER_COOKIE 取 auth_token / ct0（浏览器登录 x.com 后复制 Cookie 串）。"""
+    ck = (os.environ.get("TWITTER_COOKIE") or "").strip()
+    def gv(name):
+        m = re.search(r"(?:^|;\s*)" + name + r"=([^;\s]+)", ck)
+        return m.group(1) if m else ""
+    return gv("auth_token"), gv("ct0")
+
+
+_COOKIE_HINT = ("需要登录凭据：环境变量 TWITTER_COOKIE 设为浏览器登录 x.com 后复制的 "
+                "Cookie 串（须含 auth_token 与 ct0）")
+
+
+def _cookie_user_tweets(handle: str, max_count: int):
+    """登录 cookie + GraphQL UserTweets（最可靠）。
+    queryId 不写死：运行时从 x.com 主页入口 JS bundle 里提取，抗版本变更。"""
+    auth, ct0 = _twitter_cookies()
+    if not auth or not ct0:
+        raise RuntimeError(_COOKIE_HINT)
+    h = {"Cookie": f"auth_token={auth}; ct0={ct0}",
+         "Authorization": WEB_BEARER,
+         "X-Csrf-Token": ct0,
+         "X-Twitter-Active-User": "yes",
+         "X-Twitter-Client-Language": "en",
+         "Referer": f"https://x.com/{handle}"}
+    page = _get(f"https://x.com/{handle}", h, 30).decode("utf-8", "ignore")
+    m = re.search(r'"rest_id":"(\d+)"', page)
+    if not m:
+        raise RuntimeError("主页未解析到用户 ID（cookie 可能已失效，请重新复制 TWITTER_COOKIE）")
+    uid = m.group(1)
+    mb = re.search(r'https://abs\.twimg\.com/responsive-web/client-web/main[^"\\]+?\.js',
+                   page)
+    if not mb:
+        raise RuntimeError("未找到 x.com 前端入口 JS（页面结构变化）")
+    bundle = _get(mb.group(0).replace("&amp;", "&"), {"User-Agent": UA}, 30).decode(
+        "utf-8", "ignore")
+    qm = re.search(r'queryId:"([0-9A-Za-z_-]+)",operationName:"UserTweets"', bundle)
+    if not qm:
+        raise RuntimeError("前端 JS 中未找到 UserTweets queryId（X 前端结构变化）")
+    variables = json.dumps(
+        {"userId": uid, "count": min(max(1, max_count), 20),
+         "includePromotedContent": False,
+         "withQuickPromoteEligibilityTweetFields": True, "withVoice": False},
+        separators=(",", ":"))
+    url = ("https://x.com/i/api/graphql/" + qm.group(1) + "/UserTweets?variables=" +
+           urllib.parse.quote(variables) + "&features=" + urllib.parse.quote(_GQL_FEATURES))
+    data = _get_json(url, h, 30)
+    return _parse_timeline_ids(data)
+
+
+def _parse_timeline_ids(data):
+    """GraphQL 响应 -> 原创推文 ID 列表（跳过转推）。"""
+    out = []
+    try:
+        instr = data["data"]["user"]["result"]["timeline_v2"]["timeline"]["instructions"]
+    except Exception:
+        instr = []
+    for ins in instr if isinstance(instr, list) else []:
+        for e in (ins.get("entries") or []) if isinstance(ins, dict) else []:
+            ic = ((e.get("content") or {}).get("itemContent")) or {}
+            tr = ((ic.get("tweet_results") or {}).get("result")) or {}
+            if isinstance(tr.get("tweet"), dict):
+                tr = tr["tweet"]
+            leg = tr.get("legacy") or {}
+            tid, txt = leg.get("id_str"), leg.get("full_text") or ""
+            if tid and not txt.startswith("RT @"):
+                out.append(str(tid))
+    # 兜底：结构变化时全量扫 legacy.id_str（可能混入转推/引用）
+    if not out:
+        def _walk(o):
+            if isinstance(o, dict):
+                leg = o.get("legacy")
+                if isinstance(leg, dict) and leg.get("id_str") and \
+                        leg.get("full_text") is not None and \
+                        not str(leg["full_text"]).startswith("RT @"):
+                    out.append(str(leg["id_str"]))
+                for v in o.values():
+                    _walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    _walk(v)
+        _walk(data)
+    seen, uniq = set(), []
+    for i in out:
+        if i not in seen:
+            seen.add(i)
+            uniq.append(i)
+    return uniq
+
+
 def _syndication_timeline_ids(handle: str):
     """syndication timeline 页面里正则提取该账号的推文 ID（免 cookie）。"""
     raw = _get(
@@ -451,7 +570,7 @@ def list_user_tweets(handle_or_url: str, max_count: int = 50) -> dict:
     # L1 登录 cookie + GraphQL UserTweets（最可靠，需 TWITTER_COOKIE）
     if not ids:
         try:
-            ids = _graphql_user_tweets(handle, max_count)
+            ids = _cookie_user_tweets(handle, max_count)
             if ids:
                 errs.append(f"graphql(cookie): {len(ids)} 条")
         except RuntimeError as e:
