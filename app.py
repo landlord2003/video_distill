@@ -693,6 +693,32 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, {"error": "not found"})
             return
+        # vault 本地化图片（记录中心 Web 渲染相对路径 images/... 会打到站点根，这里映射回 vault）
+        if p.startswith("/images/"):
+            fname = p[len("/images/"):]
+            parts = fname.split("/")
+            # 仅允许 <platform>/<file> 两段，防目录穿越
+            if (len(parts) != 2 or ".." in fname or fname.startswith("/")
+                    or not re.fullmatch(r"[A-Za-z0-9_\-]+", parts[0])
+                    or not re.fullmatch(r"[A-Za-z0-9_.\-]+", parts[1])):
+                self._send(404, {"error": "not found"})
+                return
+            fpath = os.path.join(ART_VAULT, "images", parts[0], parts[1])
+            if os.path.isfile(fpath):
+                ext = parts[1].rsplit(".", 1)[-1].lower()
+                ctype = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                         "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml"}.get(ext, "application/octet-stream")
+                with io.open(fpath, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self._send(404, {"error": "not found"})
+            return
         if p == "/api/history":
             q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
             rows = []
