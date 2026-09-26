@@ -63,11 +63,37 @@ def _ext_from_url(u: str, default: str = ".m4a") -> str:
     return ".mp3" if ext == "mp3" else ".m4a"
 
 
+_ORIG_SOUND_RE = re.compile(r"^@(.+?)创作的原声$")
+
+
+def _song_info(aw: dict) -> dict:
+    """从 aweme 提取歌曲信息（歌名/歌手/专辑/原声识别）。
+
+    曲库歌曲：matched_song.title（真歌名）> music.title
+    原声：music.title 形如 "@xxx创作的原声"，抖音本身无歌名数据
+    """
+    music = aw.get("music") or {}
+    ms = music.get("matched_song") or {}
+    mt = (music.get("title") or "").strip()
+    m_orig = _ORIG_SOUND_RE.match(mt)
+    info = {"kind": "original", "song": "", "artist": "", "album": "",
+            "orig_owner": m_orig.group(1) if m_orig else ""}
+    if ms.get("title"):
+        info.update(kind="song", song=(ms.get("title") or "").strip(),
+                    artist=(ms.get("author") or "").strip(),
+                    album=(ms.get("album") or "").strip())
+    elif mt and not m_orig:
+        # 曲库音乐但无 matched_song：music.title 即歌名
+        info.update(kind="song", song=mt, artist=(music.get("author") or "").strip())
+    return info
+
+
 def _meta_from_aw(aw: dict) -> dict:
     """aweme_detail → 采集所需元数据。"""
     vid = str(aw.get("aweme_id") or "").strip()
     author = ((aw.get("author") or {}).get("nickname") or "").strip()
     music = aw.get("music") or {}
+    song = _song_info(aw)
     music_urls = (music.get("play_url") or {}).get("url_list") or []
     cover_urls = ((aw.get("video") or {}).get("cover") or {}).get("url_list") or []
     duration_ms = 0
@@ -84,9 +110,18 @@ def _meta_from_aw(aw: dict) -> dict:
         except (TypeError, ValueError, OSError, OverflowError):
             pass
     vurl, _src = extract_video_url(aw)
+    caption = (aw.get("desc") or "").strip()
+    # 展示标题：曲库歌曲用「歌名 - 歌手」，原声用「文案（号主 原声）」兜底
+    if song["kind"] == "song" and song["song"]:
+        title = song["song"] + (f" - {song['artist']}" if song["artist"] else "")
+    else:
+        owner = song["orig_owner"] or author or "未知号主"
+        title = f"{caption}（{owner} 原声）" if caption else f"{owner} 原声"
     return {
         "id": vid,
-        "title": (aw.get("desc") or "").strip() or f"抖音 {vid}",
+        "title": title or f"抖音 {vid}",
+        "caption": caption,
+        "song": song,
         "author": author,
         "music_url": music_urls[0] if music_urls else "",
         "video_url": vurl or "",
@@ -245,9 +280,20 @@ def ingest(url: str, vault_root: str = None, audio_only: bool = True,
     ])
     if files["cover_rel"]:
         md += f"![封面]({files['cover_rel']})\n\n"
+    song = meta.get("song") or {}
+    song_line = ""
+    if song.get("kind") == "song" and song.get("song"):
+        song_line = f"- 🎼 歌曲：{song['song']}"
+        if song.get("artist"):
+            song_line += f" · 歌手：{song['artist']}"
+        if song.get("album"):
+            song_line += f" · 专辑：{song['album']}"
+    elif song.get("orig_owner"):
+        song_line = f"- 🎙 抖音原声：@{song['orig_owner']}创作的原声（抖音无歌名/歌词数据）"
     media_src = f"/media/{os.path.basename(os.path.dirname(files['media_rel']))}/{os.path.basename(files['media_rel'])}"
     md += "\n".join([
         f"- 🎵 音频：[{os.path.basename(files['media_rel'])}]({files['media_rel']})",
+        *( [song_line] if song_line else [] ),
         f"- 👤 号主：{author} · ⏱ 时长：{dur_txt}"
         + (f" · 📅 {meta['create_time']}" if meta["create_time"] else ""),
         f"- ▶️ 播放器：[在线播放](http://127.0.0.1:{PLAYER_PORT}/player/douyin/{vid})",
