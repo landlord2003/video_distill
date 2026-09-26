@@ -856,8 +856,8 @@ function recRowsFiltered(){
   const q = ($('#vhq')?.value||'').toLowerCase();
   return _recRows.filter(x=>{
     if(_recType && x.type!==_recType) return false;
-    // 分类/来源筛选：视频/文章页签生效（共用一套池），其他页签不应用
-    if(_recType==='video' || _recType==='article'){
+    // 分类/来源筛选：全部（视频+文章联合）/视频/文章页签生效，配音/网页不应用
+    if(_recType==='' || _recType==='video' || _recType==='article'){
       if(_vcatFilter){
         const c = (x.category||'').trim();
         if(_vcatFilter==='__uncat__' ? c!=='' : c!==_vcatFilter) return false;
@@ -1032,8 +1032,8 @@ function srcCounts(){
 }
 function renderCatChips(){
   const el = $('#vcats'); if(!el) return;
-  // 分类筛选：视频/文章页签显示（共用一套分类池），其他页签隐藏
-  if(_recType!=='video' && _recType!=='article'){ el.style.display='none'; return; }
+  // 分类筛选：全部/视频/文章页签显示（共用一套分类池），配音/网页隐藏
+  if(!(_recType==='' || _recType==='video' || _recType==='article')){ el.style.display='none'; return; }
   el.style.display='flex';
   const {counts, uncat, cats} = catCounts();
   _catKeys = cats;
@@ -1063,7 +1063,7 @@ function _srcChips(filter, setter){
 function renderSrcChips(){
   const el = document.getElementById('vsrcs');
   if(!el) return;
-  if(_recType!=='video' && _recType!=='article'){ el.style.display='none'; return; }
+  if(!(_recType==='' || _recType==='video' || _recType==='article')){ el.style.display='none'; return; }
   el.style.display='flex';
   el.innerHTML = _srcChips(_vSrcFilter, '_setSrc');
 }
