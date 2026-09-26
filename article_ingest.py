@@ -78,7 +78,33 @@ def ingest_xhs(url: str, cookie: str = None, img_dir: str = None) -> dict:
     md = xhs_fetch.build_markdown(data, final_url or url, title, image_refs, None)
     # 兜底：外链图片也渲染成 markdown 图片（而非裸 URL 列表）
     md = re.sub(r"^- (https?://\S+)$", r"![图](\1)", md, flags=re.M)
-    return {"title": title, "md": md, "note_type": data.get("note_type", "image")}
+    # 图片型笔记：正文文字全在图里（desc 过短）→ 本地 qwen3-vl OCR 补文字
+    ocr_info = ""
+    if (img_dir and data.get("note_type", "image") != "video"
+            and len(data.get("desc") or "") < 120):
+        vault_root = os.path.dirname(os.path.dirname(img_dir))
+        local_paths = [os.path.join(vault_root, v.replace("/", os.sep))
+                       for k, v in image_refs if k == "local"]
+        if local_paths:
+            try:
+                import vision_ocr
+                texts = vision_ocr.ocr_images(local_paths)
+                got = [(i + 1, t) for i, t in enumerate(texts) if t.strip()]
+                if got:
+                    seg = ["", "## 📝 图片文字识别（本地 qwen3-vl）", ""]
+                    seg += [f"**图 {n}**\n\n{t}\n" for n, t in got]
+                    ocr_md = "\n".join(seg).rstrip() + "\n"
+                    md = md.replace("（正文为空，可能被反爬拦截，建议配置 XHS_COOKIE）",
+                                    "（正文为空，文字内容见图内 OCR）")
+                    if "\n## 图片" in md:
+                        md = md.replace("\n## 图片", "\n" + ocr_md + "\n## 图片", 1)
+                    else:
+                        md = md.rstrip() + "\n\n" + ocr_md
+                    ocr_info = f"图片型笔记已 OCR {len(got)}/{len(local_paths)} 张（本地 qwen3-vl）"
+            except Exception as _oe:
+                ocr_info = f"OCR 失败（不阻断）：{str(_oe)[:100]}"
+    return {"title": title, "md": md, "note_type": data.get("note_type", "image"),
+            "ocr": ocr_info}
 
 
 def _clean_xhs_desc(desc: str) -> str:
@@ -133,8 +159,10 @@ def _localize_xhs_images(images, title: str, img_dir: str):
                     except OSError:
                         pass
         if ok_local:
-            # vault 内相对路径（img_dir 在 vault 目录下）
-            rel = os.path.relpath(dest, os.path.dirname(img_dir)).replace("\\", "/")
+            # vault 内相对路径（img_dir 形如 <vault>/images/xhs，vault 根为其上两级，
+            # 这样 Obsidian 相对 md 目录与记录中心 Web 路由 /images/... 两边都能解析）
+            rel = os.path.relpath(
+                dest, os.path.dirname(os.path.dirname(img_dir))).replace("\\", "/")
             refs.append(("local", rel))
         else:
             refs.append(("url", u))

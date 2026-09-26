@@ -566,6 +566,87 @@ def _backfill_wechat_images():
         print(f"[backfill] 公众号存量图片本地化 {done} 张")
 
 
+def _backfill_vault_refs():
+    """后台回填（线程，不阻塞启动）：
+    ① 修存量 xhs/twitter 本地图引用前缀（旧格式缺 images/：](xhs/… → ](images/xhs/…）
+    ② 图片型 xhs 旧记录（正文过短）补本地 qwen3-vl OCR 段。均幂等。"""
+    import threading
+
+    def _work():
+        n_fix = n_ocr = 0
+        try:
+            with db() as c:
+                rows = c.execute(
+                    "SELECT id, vault_path FROM articles "
+                    "WHERE platform IN ('xhs','twitter') AND status='done'").fetchall()
+        except Exception:
+            return
+        for aid, vpath in rows:
+            targets = [p for p in (vpath, os.path.join(CRAWLS_DIR, f"article_{aid}.md"))
+                       if p and os.path.isfile(p)]
+            if not targets:
+                continue
+            need_ocr = False
+            for p in targets:
+                try:
+                    with io.open(p, "r", encoding="utf-8") as f:
+                        md = f.read()
+                    new = re.sub(r"\]\((xhs|twitter)/", r"](images/\1/", md)
+                    if new != md:
+                        with io.open(p, "w", encoding="utf-8") as f:
+                            f.write(new)
+                        n_fix += 1
+                    if p == targets[0] and "图片文字识别" not in new and "images/xhs/" in new:
+                        need_ocr = True
+                except Exception:
+                    pass
+            # 图片型笔记补 OCR：正文段（> 👤 行之后到 ## 图片 之前）过短
+            if need_ocr and vpath and os.path.isfile(vpath):
+                try:
+                    with io.open(vpath, "r", encoding="utf-8") as f:
+                        md = f.read()
+                    m = re.search(r"> 👤[^\n]*\n\n(.*?)\n## 图片", md, re.S)
+                    body = (m.group(1) if m else "").strip()
+                    # 注意：desc 为空的图片型笔记占位文案含"反爬拦截"字样，
+                    # 那正是最需要 OCR 的场景，不能据此跳过
+                    if len(body) >= 120:
+                        continue
+                    vault_root = os.path.dirname(vpath)
+                    locals_ = re.findall(r"!\[[^\]]*\]\((images/xhs/[^)]+)\)", md)
+                    paths = [os.path.join(vault_root, s.replace("/", os.sep))
+                             for s in locals_ if os.path.isfile(os.path.join(vault_root, s.replace("/", os.sep)))]
+                    if not paths:
+                        continue
+                    import vision_ocr
+                    texts = vision_ocr.ocr_images(paths)
+                    got = [(i + 1, t) for i, t in enumerate(texts) if t.strip()]
+                    if not got:
+                        continue
+                    seg = ["", "## 📝 图片文字识别（本地 qwen3-vl）", ""]
+                    seg += [f"**图 {n}**\n\n{t}\n" for n, t in got]
+                    ocr_md = "\n".join(seg).rstrip() + "\n"
+                    md = md.replace("（正文为空，可能被反爬拦截，建议配置 XHS_COOKIE）",
+                                    "（正文为空，文字内容见图内 OCR）")
+                    if "\n## 图片" in md:
+                        md = md.replace("\n## 图片", "\n" + ocr_md + "\n## 图片", 1)
+                    else:
+                        md = md.rstrip() + "\n\n" + ocr_md
+                    with io.open(vpath, "w", encoding="utf-8") as f:
+                        f.write(md)
+                    # crawls 副本同步
+                    cp = os.path.join(CRAWLS_DIR, f"article_{aid}.md")
+                    if os.path.isfile(cp):
+                        with io.open(cp, "w", encoding="utf-8") as f:
+                            f.write(md)
+                    n_ocr += 1
+                except Exception:
+                    pass
+        if n_fix or n_ocr:
+            print(f"[backfill] 图引用前缀修正 {n_fix} 处，图片型笔记补 OCR {n_ocr} 条")
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
 def do_article_ingest(url, write_vault=True, platform="", analyze=False,
                       follow=False):
     """公众号/小红书/Twitter 采集 -> Markdown -> 推文外链跟进(可选) -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
@@ -629,7 +710,8 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
                           out.get("md", ""), vault_path=vpath)
     return {"id": aid, "ok": True, "platform": out.get("platform", ""),
             "title": out.get("title", ""), "md": out.get("md", ""),
-            "vault_path": vpath, "analyze": ares, "follow": follow_info}
+            "vault_path": vpath, "analyze": ares, "follow": follow_info,
+            "ocr": out.get("ocr", "")}
 
 
 # ---------- HTTP ----------
@@ -695,12 +777,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         # vault 本地化图片（记录中心 Web 渲染相对路径 images/... 会打到站点根，这里映射回 vault）
         if p.startswith("/images/"):
-            fname = p[len("/images/"):]
+            fname = urllib.parse.unquote(p[len("/images/"):])
             parts = fname.split("/")
-            # 仅允许 <platform>/<file> 两段，防目录穿越
-            if (len(parts) != 2 or ".." in fname or fname.startswith("/")
-                    or not re.fullmatch(r"[A-Za-z0-9_\-]+", parts[0])
-                    or not re.fullmatch(r"[A-Za-z0-9_.\-]+", parts[1])):
+            # 仅允许 <platform>/<file> 两段；文件名可含中文/emoji，
+            # 但禁路径分隔符、.. 与控制字符（防目录穿越）
+            def _seg_ok(s):
+                return bool(s) and ".." not in s and "/" not in s and "\\" not in s \
+                    and all(c.isprintable() for c in s)
+            if len(parts) != 2 or not _seg_ok(parts[0]) or not _seg_ok(parts[1]):
                 self._send(404, {"error": "not found"})
                 return
             fpath = os.path.join(ART_VAULT, "images", parts[0], parts[1])
@@ -1401,6 +1485,7 @@ def main():
         sys.exit(1)
     init_db()
     _backfill_wechat_images()   # 存量公众号记录图片本地化（幂等）
+    _backfill_vault_refs()      # 后台：修图引用前缀 + 图片型笔记补 OCR（幂等）
     srv = NoReuseServer(("127.0.0.1", PORT), Handler)
     print(f"crawl4ai app running at http://127.0.0.1:{PORT} (pid={os.getpid()})")
     sys.stdout.flush()

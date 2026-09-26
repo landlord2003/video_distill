@@ -337,7 +337,9 @@ def _localize_images(images, title: str, img_dir):
                     except OSError:
                         pass
         if ok_local:
-            rel = os.path.relpath(dest, os.path.dirname(img_dir)).replace("\\", "/")
+            # vault 根 = img_dir 上两级（<vault>/images/twitter），两边（Obsidian 相对/Web 路由）都能解析
+            rel = os.path.relpath(
+                dest, os.path.dirname(os.path.dirname(img_dir))).replace("\\", "/")
             refs.append(("local", rel))
         else:
             refs.append(("url", u))
