@@ -566,10 +566,55 @@ def _backfill_wechat_images():
         print(f"[backfill] 公众号存量图片本地化 {done} 张")
 
 
+def _plain_text_len(md: str) -> int:
+    """估算 md 正文纯文字长度（去 frontmatter/图片/链接/URL/标记符），作 OCR 兜底判据。"""
+    body = re.sub(r"^---\n.*?\n---\n", "", md or "", flags=re.S)
+    if "\n## 图片" in body:
+        body = body.split("\n## 图片")[0]
+    body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)
+    body = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", body)
+    body = re.sub(r"https?://\S+", "", body)
+    body = re.sub(r"[#>*`|_-]", " ", body)
+    return len(re.sub(r"\s", "", body))
+
+
+def _maybe_ocr_images(md: str, vault_root: str):
+    """全平台通用兜底：正文纯文字过短且 md 里有已本地化图片 → 本地 qwen3-vl OCR 补文字。
+    覆盖 xhs/twitter/wechat 及未来任何走文章管线、做了图片本地化的源。
+    返回 (新md, 描述)。失败不阻断。"""
+    try:
+        if _plain_text_len(md) >= 120:
+            return md, ""
+        locals_ = sorted(set(re.findall(
+            r"!\[[^\]]*\]\((images/[A-Za-z0-9_\-]+/[^)]+)\)", md)))
+        paths = []
+        for s in locals_:
+            fp = os.path.join(vault_root, s.replace("/", os.sep))
+            if os.path.isfile(fp):
+                paths.append(fp)
+        if not paths:
+            return md, ""
+        import vision_ocr
+        texts = vision_ocr.ocr_images(paths)
+        got = [(i + 1, t) for i, t in enumerate(texts) if t.strip()]
+        if not got:
+            return md, ""
+        seg = ["", "## 📝 图片文字识别（本地 qwen3-vl）", ""]
+        seg += [f"**图 {n}**\n\n{t}\n" for n, t in got]
+        ocr_md = "\n".join(seg).rstrip() + "\n"
+        if "\n## 图片" in md:
+            md = md.replace("\n## 图片", "\n" + ocr_md + "\n## 图片", 1)
+        else:
+            md = md.rstrip() + "\n\n" + ocr_md
+        return md, f"正文过短，已 OCR {len(got)}/{len(paths)} 张图片补文字（本地 qwen3-vl）"
+    except Exception as _e:
+        return md, f"OCR 兜底失败（不阻断）：{str(_e)[:100]}"
+
+
 def _backfill_vault_refs():
     """后台回填（线程，不阻塞启动）：
     ① 修存量 xhs/twitter 本地图引用前缀（旧格式缺 images/：](xhs/… → ](images/xhs/…）
-    ② 图片型 xhs 旧记录（正文过短）补本地 qwen3-vl OCR 段。均幂等。"""
+    ② 图片型 xhs/twitter 旧记录（正文过短）补本地 qwen3-vl OCR 段。均幂等。"""
     import threading
 
     def _work():
@@ -596,23 +641,23 @@ def _backfill_vault_refs():
                         with io.open(p, "w", encoding="utf-8") as f:
                             f.write(new)
                         n_fix += 1
-                    if p == targets[0] and "图片文字识别" not in new and "images/xhs/" in new:
+                    if (p == targets[0] and "图片文字识别" not in new
+                            and re.search(r"images/(xhs|twitter|wechat)/", new)):
                         need_ocr = True
                 except Exception:
                     pass
-            # 图片型笔记补 OCR：正文段（> 👤 行之后到 ## 图片 之前）过短
+            # 图片型笔记补 OCR：正文纯文字（去图片/链接/标记符）过短
             if need_ocr and vpath and os.path.isfile(vpath):
                 try:
                     with io.open(vpath, "r", encoding="utf-8") as f:
                         md = f.read()
-                    m = re.search(r"> 👤[^\n]*\n\n(.*?)\n## 图片", md, re.S)
-                    body = (m.group(1) if m else "").strip()
-                    # 注意：desc 为空的图片型笔记占位文案含"反爬拦截"字样，
+                    # 注意：正文为空的占位文案含"反爬拦截"字样，
                     # 那正是最需要 OCR 的场景，不能据此跳过
-                    if len(body) >= 120:
+                    if _plain_text_len(md) >= 120:
                         continue
                     vault_root = os.path.dirname(vpath)
-                    locals_ = re.findall(r"!\[[^\]]*\]\((images/xhs/[^)]+)\)", md)
+                    locals_ = re.findall(
+                        r"!\[[^\]]*\]\((images/(?:xhs|twitter|wechat)/[^)]+)\)", md)
                     paths = [os.path.join(vault_root, s.replace("/", os.sep))
                              for s in locals_ if os.path.isfile(os.path.join(vault_root, s.replace("/", os.sep)))]
                     if not paths:
@@ -660,6 +705,11 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
     if write_vault and plat == "wechat" and out.get("md"):
         out["md"], _n_img = _localize_md_images(
             out["md"], img_dir, ART_VAULT)
+    # 全平台 OCR 兜底：正文纯文字过短且图已本地化（如 Twitter 纯图推文、
+    # 公众号纯图文章、小红书图片型笔记）→ 本地 qwen3-vl 补文字，任何源通用
+    ocr_info = ""
+    if write_vault and out.get("md") and img_dir:
+        out["md"], ocr_info = _maybe_ocr_images(out["md"], ART_VAULT)
     follow_info = ""
     if follow and out.get("platform") == "twitter":
         if (out.get("tweet") or {}).get("article", {}).get("blocks"):
@@ -711,7 +761,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
     return {"id": aid, "ok": True, "platform": out.get("platform", ""),
             "title": out.get("title", ""), "md": out.get("md", ""),
             "vault_path": vpath, "analyze": ares, "follow": follow_info,
-            "ocr": out.get("ocr", "")}
+            "ocr": ocr_info or out.get("ocr", "")}
 
 
 # ---------- HTTP ----------
