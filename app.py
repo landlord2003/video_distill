@@ -888,13 +888,34 @@ class Handler(BaseHTTPRequestHandler):
             if os.path.isfile(fpath):
                 ext = parts[1].rsplit(".", 1)[-1].lower()
                 ctype = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav",
+                         "mp4": "video/mp4", "webm": "video/webm",
                          "lrc": "text/plain; charset=utf-8",
                          "srt": "text/plain; charset=utf-8"}.get(ext, "application/octet-stream")
+                fsize = os.path.getsize(fpath)
+                # Range 分段响应（视频/音频拖动进度条必需）
+                rng = self.headers.get("Range") or ""
+                m = re.match(r"bytes=(\d*)-(\d*)$", rng.strip())
+                start, end = 0, fsize - 1
+                partial = False
+                if m and (m.group(1) or m.group(2)):
+                    if m.group(1):
+                        start = int(m.group(1))
+                        if m.group(2):
+                            end = min(int(m.group(2)), fsize - 1)
+                    else:
+                        start = max(fsize - int(m.group(2)), 0)
+                    start = min(start, fsize - 1)
+                    end = max(end, start)
+                    partial = True
+                length = end - start + 1
                 with io.open(fpath, "rb") as f:
-                    data = f.read()
-                self.send_response(200)
+                    f.seek(start)
+                    data = f.read(length)
+                self.send_response(206 if partial else 200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data)))
+                if partial:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{fsize}")
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Cache-Control", "max-age=86400")
                 self.end_headers()

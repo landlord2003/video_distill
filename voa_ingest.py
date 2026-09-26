@@ -4,16 +4,17 @@
 
 内容源：m.iyuba.cn/voaS/，国内直连（显式绕开系统代理），无需 cookie。
 - 栏目列表（服务端直渲染，?pages=N 翻页，每页约 7 条）：
-    index.jsp=VOA慢速  indexC.jsp=VOA常速  indexAM.jsp=1分钟美语
-    （indexCV.jsp / indexTV.html 为视频栏目，暂不支持）
-- 详情/字幕：play.jsp?id=<voaid>（常速条目同样有效）→ 隐藏 #senAll 区块内逐句双语：
-    <div id='<秒>'>英文句</div><div id='<秒>cn'>中文译</div>
+    index.jsp=VOA慢速  indexC.jsp=VOA常速  indexAM.jsp=1分钟美语  indexCV.jsp=VOA视频
+- 详情/字幕：play.jsp?id=<voaid>（常速条目同样有效）/ playCV.jsp?id=<voaid>（视频版）
+    → 隐藏 #senAll 区块内逐句双语：div id='<秒>'=英文句、id='<秒>cn'=中文译
     ⚠ 属性为单引号；页面里同句文本会以明文重复出现一遍，须只取带数字 id 的 div
 - 音频：http://staticvip.iyuba.cn/sounds/voa/<yyyymm>/<id>.mp3（直链无防盗链，支持断点续传）
+- 视频：http://staticvip.iyuba.cn/video/voa/<id>.mp4（与音频同一集内容，同 id 空间；
+    playCV 详情页 <source> 直链；采集时对任意条目探测该直链，有则一并下载）
 - 封面：http://staticvip.iyuba.cn/images/voa/<yyyymm>/<id>.jpg
 - 已知失效：apps.iyuba.cn/afterClass/detailApi.jsp 返回 404，勿再用
 
-产物：Markdown（双语逐句对照+时间轴）+ 本地 mp3/lrc（<vault>/media/voa/，Web 走 /media/
+产物：Markdown（双语逐句对照+时间轴）+ 本地 mp3/mp4/lrc（<vault>/media/voa/，Web 走 /media/
 路由）+ 封面（img_dir=<vault>/images/voa/，复用 /images/ 路由）。
 """
 import datetime
@@ -88,6 +89,9 @@ def _cat_from_url(url: str) -> str:
     u = (url or "").lower()
     if "indexam" in u or "playam" in u:
         return "1分钟美语"
+    # indexcv/playcv 必须在 indexc/playc 之前判断（子串包含）
+    if "indexcv" in u or "playcv" in u:
+        return "VOA视频"
     if "indexc" in u or "playc" in u:
         return "VOA常速"
     if "index" in u or "play" in u:
@@ -100,7 +104,7 @@ def fetch_list(url: str) -> list:
     html = _get(url)
     cat = _cat_from_url(url)
     items, seen = [], set()
-    # play.jsp / playC.jsp（慢速/常速）/ playAM.jsp（1分钟美语）
+    # play.jsp（慢速）/ playC.jsp（常速）/ playAM.jsp（1分钟美语）/ playCV.jsp（视频版）
     for m in re.finditer(r'href="(play[A-Za-z]*)\.jsp\?([^"]+)"', html):
         qs = urllib.parse.parse_qs(m.group(2))
         voaid = (qs.get("id") or [""])[0].strip()
@@ -117,7 +121,7 @@ def fetch_list(url: str) -> list:
             "keywords": _unquote2((qs.get("Keyword") or [""])[0]).lstrip("+ ").replace("+", " "),
             "intro": _unquote2((qs.get("IntroDesc") or [""])[0]).lstrip("+ ").replace("+", " "),
             "category": cat,
-            "play_url": f"{BASE}play.jsp?id={voaid}",
+            "play_url": f"{BASE}{m.group(1)}.jsp?id={voaid}",
         })
     return items
 
@@ -128,6 +132,7 @@ PRESETS = [
     ("VOA常速", "http://m.iyuba.cn/voaS/indexC.jsp"),
     ("VOA慢速", "http://m.iyuba.cn/voaS/index.jsp"),
     ("1分钟美语", "http://m.iyuba.cn/voaS/indexAM.jsp"),
+    ("VOA视频", "http://m.iyuba.cn/voaS/indexCV.jsp"),
 ]
 
 
@@ -174,7 +179,7 @@ def _enrich_from_lists(item: dict, max_pages: int = 2) -> None:
     """裸播放链接（无标题参数）→ 扫各栏目列表前几页反查标题/日期/简介/关键词。
     找不到就保留原值（标题回落 'VOA <id>'），不报错。"""
     for page in range(1, max_pages + 1):
-        for jsp in ("indexC.jsp", "index.jsp", "indexAM.jsp"):
+        for jsp in ("indexC.jsp", "index.jsp", "indexAM.jsp", "indexCV.jsp"):
             try:
                 u = f"{BASE}{jsp}?pages={page}"
                 for it in fetch_list(u):
@@ -189,19 +194,33 @@ def _enrich_from_lists(item: dict, max_pages: int = 2) -> None:
 
 
 def _item_from_url(url: str) -> dict:
-    """单条播放页链接 → 最小 item（id 必需；title/封面/音频在详情页兜底解析）。"""
-    qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    """单条播放页链接 → 最小 item（id 必需；title/封面/音视频在详情页兜底解析）。"""
+    sp = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(sp.query)
     voaid = (qs.get("id") or [""])[0].strip()
     if not voaid.isdigit():
         raise RuntimeError(f"无法从链接解析 VOA id：{url[:120]}")
+    jsp = os.path.basename(sp.path) or "play.jsp"
     title = _unquote2((qs.get("title") or [""])[0])
     item = {"id": voaid, "title": title, "pic": (qs.get("pic") or [""])[0],
             "sound": (qs.get("sound") or [""])[0], "date": (qs.get("creatTime") or [""])[0],
             "keywords": "", "intro": "", "category": _cat_from_url(url),
-            "play_url": f"{BASE}play.jsp?id={voaid}"}
+            "play_url": f"{BASE}{jsp}?id={voaid}"}
     if not title:
         _enrich_from_lists(item)
     return item
+
+
+def _probe(url: str, timeout: int = 20) -> bool:
+    """Range GET 探测直链是否存在且足够大（HEAD 在该站返回不可靠）。"""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA,
+                                                   "Range": "bytes=0-1023"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as r:
+            return r.status in (200, 206) and len(r.read()) >= 1024
+    except Exception:
+        return False
 
 
 def _extract_sentences(html: str):
@@ -244,6 +263,15 @@ def ingest_item(item: dict, img_dir: str = None) -> dict:
         audio_url = "http://staticvip.iyuba.cn/sounds/voa" + item["sound"]
     else:
         audio_url = ""
+    # 视频直链：playCV 详情页 <source> 标签；普通播放页无标签时探测构造直链
+    # （视频与音频同一集内容、同 id 空间，常速条目大多也有 mp4）
+    m4 = re.search(r"https?://staticvip\.iyuba\.cn/video/voa/[^\"'\s<>]+\.mp4", html)
+    if m4:
+        video_url = m4.group(0)
+    elif _probe(f"http://staticvip.iyuba.cn/video/voa/{voaid}.mp4"):
+        video_url = f"http://staticvip.iyuba.cn/video/voa/{voaid}.mp4"
+    else:
+        video_url = ""
     # 封面直链：详情页 → 列表 pic
     m = re.search(r"https?://staticvip\.iyuba\.cn/images/voa/[^\"'\s<>]+\.(?:jpg|jpeg|png)", html)
     cover_url = m.group(0) if m else (item.get("pic") or "")
@@ -251,12 +279,17 @@ def ingest_item(item: dict, img_dir: str = None) -> dict:
     vault_root = os.path.dirname(os.path.dirname(img_dir)) if img_dir else None
     media_dir = os.path.join(vault_root, "media", "voa") if vault_root else None
 
-    # 下载 mp3 / lrc / 封面（失败回落外链，不阻断）
-    audio_rel, lrc_rel, cover_rel = "", "", ""
+    # 下载 mp3 / mp4 / lrc / 封面（失败回落外链，不阻断）
+    audio_rel, video_rel, lrc_rel, cover_rel = "", "", "", ""
     if media_dir:
-        dest_mp3 = os.path.join(media_dir, f"voa_{voaid}.mp3")
-        if audio_url and _download(audio_url, dest_mp3, min_size=100 * 1024):
-            audio_rel = os.path.relpath(dest_mp3, vault_root).replace("\\", "/")
+        if audio_url:
+            dest_mp3 = os.path.join(media_dir, f"voa_{voaid}.mp3")
+            if _download(audio_url, dest_mp3, min_size=100 * 1024):
+                audio_rel = os.path.relpath(dest_mp3, vault_root).replace("\\", "/")
+        if video_url:
+            dest_mp4 = os.path.join(media_dir, f"voa_{voaid}.mp4")
+            if _download(video_url, dest_mp4, min_size=500 * 1024, timeout=600):
+                video_rel = os.path.relpath(dest_mp4, vault_root).replace("\\", "/")
         lrc_lines = []
         for i, (t, en, zh) in enumerate(sents):
             tag = f"[{_fmt_lrc(t)}]"
@@ -288,12 +321,14 @@ def ingest_item(item: dict, img_dir: str = None) -> dict:
          f"# {title}", ""]
     if cover_rel:
         L += [f"![封面]({cover_rel})", ""]
-    L += ["## 🎧 音频与字幕", ""]
+    L += ["## 🎧 音视频与字幕", ""]
     if audio_src:
         note = "" if audio_rel else "（外链，未本地化）"
         L.append(f"- 音频：[{os.path.basename(audio_src)}]({audio_src}){note}")
     else:
         L.append("- 音频：未找到直链")
+    if video_rel:
+        L.append(f"- 视频：[{os.path.basename(video_rel)}]({video_rel})")
     if lrc_src:
         L.append(f"- LRC 字幕：[{os.path.basename(lrc_src)}]({lrc_src})")
     L += ["", f"- 栏目：{cat} · 日期：{date}",
@@ -312,7 +347,8 @@ def ingest_item(item: dict, img_dir: str = None) -> dict:
     md = "\n".join(L).rstrip() + "\n"
     return {"title": title, "md": md, "platform": "voa",
             "source": cat, "category": cat,
-            "audio_rel": audio_rel, "lrc_rel": lrc_rel, "cover_rel": cover_rel,
+            "audio_rel": audio_rel, "video_rel": video_rel,
+            "lrc_rel": lrc_rel, "cover_rel": cover_rel,
             "sents": len(sents)}
 
 

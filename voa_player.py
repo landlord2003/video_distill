@@ -2,11 +2,12 @@
 """VOA 逐句学习播放器（服务端渲染自包含 HTML）。
 
 功能（按用户需求定制，只做学习呈现、不做任何解析任务）：
-- 音频 + 逐句双语字幕卡拉OK同步（当前句高亮 + 自动滚动）
+- 音频/视频 + 逐句双语字幕卡拉OK同步（当前句高亮 + 自动滚动）
 - 点击句子跳播；单句循环（精听）
 - 倍速 0.6~1.5
 - 翻译三态：显示 / 遮掩（模糊，悬停偷看）/ 隐藏
-数据源：vault 内 media/voa/voa_<id>.lrc + voa_<id>.mp3（由 voa_ingest 产出）。
+数据源：vault 内 media/voa/voa_<id>.lrc + voa_<id>.mp3/.mp4（由 voa_ingest 产出；
+本地有 mp4 时优先用视频元素，同步逻辑对 audio/video 元素完全一致）。
 """
 import io
 import json
@@ -65,6 +66,7 @@ def render(voaid: str, title: str = ""):
         return 400, "<h1>bad voa id</h1>"
     lrc_path = os.path.join(ART_VAULT, "media", "voa", f"voa_{voaid}.lrc")
     mp3_rel = f"/media/voa/voa_{voaid}.mp3"
+    mp4_rel = f"/media/voa/voa_{voaid}.mp4"
     if not os.path.isfile(lrc_path):
         return 404, ("<h1>未找到该条目的 LRC 字幕文件</h1>"
                      f"<p>期望位置：media/voa/voa_{_esc(voaid)}.lrc。"
@@ -76,6 +78,9 @@ def render(voaid: str, title: str = ""):
     if not sents:
         return 404, "<h1>LRC 内无可解析句子</h1>"
     has_mp3 = os.path.isfile(os.path.join(ART_VAULT, "media", "voa", f"voa_{voaid}.mp3"))
+    has_mp4 = os.path.isfile(os.path.join(ART_VAULT, "media", "voa", f"voa_{voaid}.mp4"))
+    has_cover = os.path.isfile(os.path.join(ART_VAULT, "images", "voa", f"voa_{voaid}.jpg"))
+    has_media = has_mp3 or has_mp4
     # 安全内嵌 JSON（防 </script> 提前闭合）
     data = json.dumps([[t, en, zh] for t, en, zh in sents], ensure_ascii=False
                       ).replace("</", "<\\/")
@@ -96,6 +101,7 @@ h1{font-size:19px;margin:0 0 6px}
 .sub{color:var(--mut);font-size:13px;margin-bottom:14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
 audio{width:100%;margin-bottom:10px}
+video{width:100%;max-height:62vh;border-radius:10px;background:#000;margin-bottom:10px}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 button,.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 14px;font-size:13.5px;cursor:pointer;color:var(--fg)}
 button:hover{border-color:var(--acc);color:var(--acc)}
@@ -147,9 +153,9 @@ __AUDIO__
 </div>
 <script>
 const SENTS = __DATA__;
-const MP3 = "__MP3__";
-const NO_MP3 = __NOMP3__;
-// 直接使用页面上可见的 <audio id="au">（此前 new Audio() 造出第二个隐形音频对象，
+const MEDIA = "__MEDIA__";
+const NO_MEDIA = __NOMEDIA__;
+// 直接使用页面上可见的媒体元素 <audio/video id="au">（此前 new Audio() 造出第二个隐形音频对象，
 // 用户播放可见播放器时跟踪逻辑监听的却是隐形副本，导致高亮永远不动的 bug）
 const audio = document.getElementById("au");
 let cur = -1, loop = false;
@@ -169,7 +175,7 @@ list.appendChild(frag);
 function fmt(t){ t = Math.round(t); return String(Math.floor(t/60)).padStart(2,"0") + ":" + String(t%60).padStart(2,"0"); }
 function dur(i){ const nx = SENTS[i+1] ? SENTS[i+1][0] : (audio.duration || SENTS[i][0] + 10); return Math.max(nx - SENTS[i][0], 1.2); }
 function seekTo(i){
-  if (NO_MP3) return;
+  if (NO_MEDIA) return;
   cur = i;
   audio.currentTime = SENTS[i][0] + 0.01;
   if (audio.paused) audio.play().catch(()=>{});
@@ -181,7 +187,7 @@ function paint(){
   if (cur >= 0) rows[cur].scrollIntoView({block: "center", behavior: "smooth"});
 }
 function tick(){
-  if (NO_MP3) return;
+  if (NO_MEDIA) return;
   const t = audio.currentTime;
   if (t <= 0) return;
   // 播放即自动跟踪当前句（无需先点击）
@@ -217,10 +223,10 @@ document.addEventListener("keydown", e => {
   else if (e.key === "ArrowLeft" && cur > 0) seekTo(cur - 1);
   else if (e.key === "ArrowRight" && cur + 1 < SENTS.length) seekTo(cur + 1);
 });
-if (NO_MP3) {
+if (NO_MEDIA) {
   const w = document.createElement("div");
   w.className = "hint"; w.style.color = "#c00";
-  w.textContent = "⚠ 本地 MP3 缺失，仅浏览字幕。请重新采集该条目以下载音频。";
+  w.textContent = "⚠ 本地音视频缺失，仅浏览字幕。请重新采集该条目以下载音视频。";
   document.querySelector(".card").prepend(w);
 }
 </script>
@@ -229,9 +235,14 @@ if (NO_MP3) {
     html = (html.replace("__TITLE__", _esc(title))
                 .replace("__N__", str(len(sents)))
                 .replace("__DATA__", data)
-                .replace("__MP3__", mp3_rel)
-                .replace("__NOMP3__", "true" if not has_mp3 else "false"))
-    if has_mp3:
+                .replace("__MEDIA__", mp4_rel if has_mp4 else mp3_rel)
+                .replace("__NOMEDIA__", "true" if not has_media else "false"))
+    if has_mp4:
+        poster = f' poster="/images/voa/voa_{voaid}.jpg"' if has_cover else ""
+        html = html.replace("__AUDIO__",
+                            '    <video id="au" controls playsinline%s src="%s"></video>'
+                            % (poster, mp4_rel))
+    elif has_mp3:
         html = html.replace("__AUDIO__",
                             '    <audio id="au" controls src="%s"></audio>' % mp3_rel)
     else:
