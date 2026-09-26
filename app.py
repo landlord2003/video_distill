@@ -813,6 +813,80 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
             "ocr": ocr_info or out.get("ocr", "")}
 
 
+# ---------- 抖音音乐（采集·播放·管理，免解析） ----------
+def do_douyin_music(url, write_vault=True, audio_only=True):
+    """单条抖音作品链接 → 下载音频/视频落地 → 极简笔记入库（platform=douyin_music）。
+    已抓过的链接直接跳过（返回 skipped），与 VOA 批量「自动排除已抓」一致。"""
+    import douyin_music as dm
+    url = (url or "").strip()
+    if not url:
+        raise RuntimeError("url 不能为空")
+    with db() as c:
+        row = c.execute("SELECT id, title FROM articles WHERE platform='douyin_music' "
+                        "AND url=? AND status='done'", (url,)).fetchone()
+    if row:
+        return {"id": row[0], "ok": True, "platform": "douyin_music",
+                "title": row[1] or "已抓过", "skipped": True,
+                "md": "", "vault_path": "",
+                "follow": f"该链接已采集过（记录 {row[0]}），自动跳过"}
+    out = dm.ingest(url, vault_root=ART_VAULT, audio_only=audio_only)
+    vpath = ""
+    if write_vault and out.get("md"):
+        os.makedirs(ART_VAULT, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        vpath = os.path.join(ART_VAULT, f"{ts}-{out['aweme_id']}.md")
+        with io.open(vpath, "w", encoding="utf-8") as f:
+            f.write(out["md"])
+    aid, _ = save_article(url, out["platform"], out["title"], out.get("md", ""),
+                          vault_path=vpath, source=out.get("source", ""))
+    return {"id": aid, "ok": True, "platform": "douyin_music",
+            "title": out["title"], "source": out.get("source", ""),
+            "aweme_id": out.get("aweme_id", ""), "md": out.get("md", ""),
+            "media_rel": out.get("media_rel", ""), "vault_path": vpath,
+            "skipped": False}
+
+
+def _douyin_playlist_rows(source: str, cur_aid: str = "") -> list:
+    """播放列表：同号主优先（号主为空则全部抖音音乐），当前条在前。"""
+    rows, seen = [], set()
+    with db() as c:
+        qs = ("SELECT id, url, title, source FROM articles "
+              "WHERE platform='douyin_music' AND status='done'")
+        args = ()
+        if source:
+            qs += " AND source=?"
+            args = (source,)
+        qs += " ORDER BY created_at DESC LIMIT 100"
+        try:
+            allrows = c.execute(qs, args).fetchall()
+        except Exception:
+            allrows = []
+    if not allrows and source:
+        with db() as c:
+            allrows = c.execute(
+                "SELECT id, url, title, source FROM articles "
+                "WHERE platform='douyin_music' AND status='done' "
+                "ORDER BY created_at DESC LIMIT 100").fetchall()
+    import douyin_music as dm
+    # 当前条排最前，其余保持时间序
+    ordered = []
+    for r in allrows:
+        if r[0] == cur_aid:
+            ordered.insert(0, r)
+        else:
+            ordered.append(r)
+    for aid, u, t, src in ordered:
+        vid = dm.extract_id(u or "")
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        rows.append({"aid": aid, "vid": vid, "title": (t or f"抖音 {vid}")[:50],
+                     "src": src or ""})
+        if len(rows) >= 50:
+            break
+    return rows
+
+
 # ---------- HTTP ----------
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -969,6 +1043,57 @@ class Handler(BaseHTTPRequestHandler):
             code, html = voa_player.render(voaid, title=title)
             self.send_response(code)
             body = html.encode("utf-8")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        # 抖音音乐播放器（纯播放+播放列表连播）。
+        # <key> 两种形态：纯数字长 id = aweme_id；含 '-' = articles.id（记录主键）
+        m = re.match(r"^/player/douyin/([^/]+)$", p)
+        if m:
+            import douyin_music as dm
+            import douyin_player
+            key = urllib.parse.unquote(m.group(1))
+            vid, title, author, aid = "", "", "", ""
+            if re.fullmatch(r"\d{10,}", key):
+                vid = key
+                try:
+                    with db() as c:
+                        r = c.execute(
+                            "SELECT id, title, source FROM articles "
+                            "WHERE platform='douyin_music' AND url LIKE ? "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (f"%{vid}%",)).fetchone()
+                        if r:
+                            aid, title, author = r[0], r[1] or "", r[2] or ""
+                except Exception:
+                    pass
+            else:
+                aid = key
+                try:
+                    with db() as c:
+                        r = c.execute(
+                            "SELECT url, title, source FROM articles "
+                            "WHERE id=? AND platform='douyin_music'",
+                            (aid,)).fetchone()
+                        if not r:
+                            self._send(404, "<h1>记录不存在</h1>", "text/html; charset=utf-8")
+                            return
+                        vid = dm.extract_id(r[0] or "")
+                        title, author = r[1] or "", r[2] or ""
+                except Exception:
+                    pass
+            if not vid:
+                self._send(404, "<h1>无法从记录解析 aweme_id</h1>",
+                           "text/html; charset=utf-8")
+                return
+            code, html = douyin_player.render(
+                vid, title=title, author=author,
+                playlist=_douyin_playlist_rows(author, cur_aid=aid))
+            body = html.encode("utf-8")
+            self.send_response(code)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
@@ -1225,13 +1350,23 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 with db() as c:
                     row = c.execute(
-                        "SELECT vault_path FROM articles WHERE id=?", (aid,)).fetchone()
+                        "SELECT vault_path, platform, url FROM articles WHERE id=?",
+                        (aid,)).fetchone()
                     c.execute("DELETE FROM articles WHERE id=?", (aid,))
                     c.commit()
             if row and row[0] and os.path.isfile(row[0]):
                 try:
                     os.remove(row[0])
                     removed.append(row[0])
+                except Exception:
+                    pass
+            # 抖音音乐：连同本地媒体（m4a/mp3/mp4）与封面一并删除
+            if row and row[1] == "douyin_music":
+                try:
+                    import douyin_music as dm
+                    vid = dm.extract_id(row[2] or "")
+                    if vid:
+                        removed += dm.cleanup_media(ART_VAULT, vid)
                 except Exception:
                     pass
             fp = os.path.join(CRAWLS_DIR, "article_" + aid + ".md")
@@ -1539,6 +1674,25 @@ class Handler(BaseHTTPRequestHandler):
                                                          "fmt", "chars", "chunks", "seconds",
                                                          "file", "error"]))
                         c.commit()
+                except Exception:
+                    pass
+                self._send(500, {"error": str(e)[:500]})
+            return
+        # ---------------- 抖音音乐采集（免解析，媒体落地+极简笔记） ----------------
+        if self.path == "/api/douyin_music":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                url = (data.get("url") or "").strip()
+                write_vault = bool(data.get("write_vault", True))
+                audio_only = bool(data.get("audio_only", True))
+                self._send(200, do_douyin_music(url, write_vault=write_vault,
+                                                audio_only=audio_only))
+            except Exception as e:
+                # 失败也落一条 error 记录，便于历史里看到原因
+                try:
+                    _u = (data.get("url") if isinstance(data, dict) else "") or ""
+                    save_article(_u, "douyin_music", "", "", error=str(e)[:500])
                 except Exception:
                     pass
                 self._send(500, {"error": str(e)[:500]})

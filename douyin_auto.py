@@ -107,9 +107,12 @@ def _log(verbose, msg):
         print(msg)
 
 
-def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60):
+def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
+                     return_full=False):
     """playwright 打开视频页并拦截 aweme_detail，返回 (vid, 标题, 视频直链)。
 
+    return_full=True 时返回完整 aweme_detail dict（供抖音音乐等场景提取
+    music.play_url / 封面 / 作者 / 时长等字段）。
     失败抛 RuntimeError（含原因）。
     """
     m = re.search(r"(?:video/|modal_id=)(\d{5,})", arg or "")
@@ -208,6 +211,8 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60):
         raise RuntimeError("未拦截到 aweme_detail（可能页面被验证拦截或未登录）")
 
     aw = detail["data"]
+    if return_full:
+        return aw
     title = (aw.get("desc") or "").strip() or vid
     vurl, src = extract_video_url(aw)
     _log(verbose, f"标题: {title} | 直链来源字段: {src}")
