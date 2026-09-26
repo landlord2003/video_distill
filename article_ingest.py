@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def detect_platform(url: str):
-    """按 URL 推断平台：wechat / xhs / twitter / None。"""
+    """按 URL 推断平台：wechat / xhs / twitter / voa / None。"""
     u = (url or "").lower().strip()
     if not u:
         return None
@@ -26,6 +26,9 @@ def detect_platform(url: str):
     # Twitter/X 推文（含 t.co 不在此列——t.co 短链无法本地判断）
     if ("twitter.com" in u or "x.com" in u) and "/status" in u:
         return "twitter"
+    # VOA 英语听力（爱语吧 iyuba，国内直连）
+    if "iyuba.cn" in u and "/voas/" in u:
+        return "voa"
     return None
 
 
@@ -182,9 +185,12 @@ def ingest(url: str, platform: str = "", img_dir: str = None) -> dict:
     elif plat == "twitter":
         import twitter_ingest as twi
         out = twi.ingest_tweet(url, img_dir=img_dir)
+    elif plat == "voa":
+        import voa_ingest
+        out = voa_ingest.ingest(url, img_dir=img_dir)
     else:
         raise RuntimeError("无法识别平台（支持：公众号 mp.weixin.qq.com / 小红书 xiaohongshu.com"
-                           " / Twitter 推文 x.com/*/status/*）")
+                           " / Twitter 推文 x.com/*/status/* / VOA iyuba.cn/voaS）")
     out["platform"] = plat
     out["filename"] = _sanitize(out["title"]) + ".md"
     return out

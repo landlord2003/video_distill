@@ -380,7 +380,7 @@ def save_video(rec):
     return vid, path
 
 
-def save_article(url, platform, title, md, vault_path="", error=""):
+def save_article(url, platform, title, md, vault_path="", error="", source=""):
     """文章采集结果写 DB（同 URL 成功记录覆盖更新，失败记 error 行）。
 
     重复抓取保留用户已编辑的 category/source；首次入库 source 按平台自动标注。"""
@@ -402,8 +402,9 @@ def save_article(url, platform, title, md, vault_path="", error=""):
                     prev_cat, prev_src = row[0] or "", row[1] or ""
         if not aid:
             aid = short_id(url or title or "article")
-        _PLAT_SRC = {"twitter": "Twitter", "wechat": "公众号", "xhs": "小红书"}
-        def_src = prev_src or _PLAT_SRC.get((platform or "").lower(), "")
+        _PLAT_SRC = {"twitter": "Twitter", "wechat": "公众号", "xhs": "小红书",
+                     "voa": "VOA"}
+        def_src = prev_src or source or _PLAT_SRC.get((platform or "").lower(), "")
         path = os.path.join(CRAWLS_DIR, "article_" + aid + ".md")
         with io.open(path, "w", encoding="utf-8") as f:
             f.write(md or "")
@@ -696,8 +697,34 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
                       follow=False):
     """公众号/小红书/Twitter 采集 -> Markdown -> 推文外链跟进(可选) -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
     plat = (platform or "").strip() or ai.detect_platform(url) or ""
+    # VOA 列表页链接 → 展开为整页批量（递归走单条路径，复用入库/OCR 全套逻辑）
+    if plat == "voa":
+        try:
+            import voa_ingest as _vi
+            if _vi.is_list(url):
+                items = _vi.fetch_list(url)
+                batch, first = [], None
+                for it in items:
+                    try:
+                        sub = do_article_ingest(it["play_url"], write_vault,
+                                                platform="voa", analyze=False,
+                                                follow=False)
+                        batch.append({"title": sub.get("title", ""), "ok": True})
+                        if not first:
+                            first = sub.get("md", "")
+                    except Exception as _be:
+                        batch.append({"title": it.get("title", ""), "ok": False,
+                                      "error": str(_be)[:120]})
+                okn = sum(1 for b in batch if b["ok"])
+                return {"id": "", "ok": okn > 0, "platform": "voa",
+                        "title": f"VOA 批量采集 {okn}/{len(batch)} 条",
+                        "md": first or "", "vault_path": "", "analyze": None,
+                        "follow": f"列表批量：{okn}/{len(batch)} 成功",
+                        "batch": batch, "ocr": ""}
+        except ImportError:
+            pass
     img_dir = None
-    if write_vault and plat in ("xhs", "twitter", "wechat"):
+    if write_vault and plat in ("xhs", "twitter", "wechat", "voa"):
         # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token/防盗链，会失效）
         img_dir = os.path.join(ART_VAULT, "images", plat)
     out = ai.ingest(url, img_dir=img_dir if img_dir else None)
@@ -757,7 +784,8 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
         with io.open(vpath, "w", encoding="utf-8") as f:
             f.write(out["md"])
     aid, _ = save_article(url, out.get("platform", ""), out.get("title", ""),
-                          out.get("md", ""), vault_path=vpath)
+                          out.get("md", ""), vault_path=vpath,
+                          source=out.get("source", ""))
     return {"id": aid, "ok": True, "platform": out.get("platform", ""),
             "title": out.get("title", ""), "md": out.get("md", ""),
             "vault_path": vpath, "analyze": ares, "follow": follow_info,
@@ -820,6 +848,34 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self._send(404, {"error": "not found"})
+            return
+        # vault 本地化音频/LRC（VOA 等，media/... 相对路径 Web 渲染打到站点根，这里映射回 vault）
+        if p.startswith("/media/"):
+            fname = urllib.parse.unquote(p[len("/media/"):])
+            parts = fname.split("/")
+            def _seg_ok2(s):
+                return bool(s) and ".." not in s and "/" not in s and "\\" not in s \
+                    and all(c.isprintable() for c in s)
+            if len(parts) != 2 or not _seg_ok2(parts[0]) or not _seg_ok2(parts[1]):
+                self._send(404, {"error": "not found"})
+                return
+            fpath = os.path.join(ART_VAULT, "media", parts[0], parts[1])
+            if os.path.isfile(fpath):
+                ext = parts[1].rsplit(".", 1)[-1].lower()
+                ctype = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav",
+                         "lrc": "text/plain; charset=utf-8",
+                         "srt": "text/plain; charset=utf-8"}.get(ext, "application/octet-stream")
+                with io.open(fpath, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "max-age=86400")
                 self.end_headers()
                 self.wfile.write(data)
             else:

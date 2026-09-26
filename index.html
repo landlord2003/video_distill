@@ -364,6 +364,9 @@ const SOURCES = {
   xhs: {icon:'📕', name:'小红书', kind:'article', kindName:'文章管线', srcName:'小红书',
     hint:'⚠ <b>建议先设环境变量 XHS_COOKIE</b>（浏览器登录小红书后复制），否则常被风控拦截。图片自动下载本地化到知识库；视频笔记仅保留视频链接。',
     ph:'粘贴小红书笔记链接\n例：https://www.xiaohongshu.com/explore/…\n或分享短链 https://xhslink.com/…'},
+  voa: {icon:'🎧', name:'VOA英语听力', kind:'article', kindName:'文章管线', srcName:'VOA',
+    hint:'<b>国内直连，无需 cookie/代理</b>（内容源：爱语吧 m.iyuba.cn）。播放页链接=单条采集；列表页链接=整页批量。自动下载 MP3+封面，逐句中英字幕生成 LRC，双语对照入库。支持 VOA慢速/常速/1分钟美语。',
+    ph:'单条：http://m.iyuba.cn/voaS/play.jsp?id=13143\n批量：http://m.iyuba.cn/voaS/indexC.jsp（当前页全部）\n或带页码 http://m.iyuba.cn/voaS/index.jsp?pages=2'},
   bilibili: {icon:'📺', name:'B站', kind:'video', kindName:'视频流水线', srcName:'B站视频',
     hint:'走完整视频流水线（下载→抽帧→转写→蒸馏），记录来源标为「B站视频」，入库到 Claw/07-视频号整理。',
     ph:'粘贴 B站 视频链接，每行一个\n例：https://www.bilibili.com/video/BVxxxx\nhttps://b23.tv/xxxx'},
@@ -616,6 +619,13 @@ async function runArticlePipe(){
         const d = await r.json();
         if(!r.ok)
           results.push({source_url:urls[i], ok:false, error:d.error||('HTTP '+r.status), markdown:'', _icon:s.icon});
+        else if(d.batch){
+          // VOA 列表页批量：每条一个结果行
+          d.batch.forEach(b=>results.push({source_url:urls[i], ok:b.ok, title:b.title,
+            markdown:'', error:b.error||'', _icon:s.icon}));
+          const okn = d.batch.filter(b=>b.ok).length;
+          doneMsgs.unshift(`📚 列表批量：成功 ${okn}/${d.batch.length} 条`);
+        }
         else{
           results.push({source_url:urls[i], ok:true, title:d.title, markdown:d.md,
                         vault_path:d.vault_path, _icon:s.icon});
@@ -820,7 +830,7 @@ const _recTypeMeta = {
   article: {label:'📰 文章', icon:'📰'},
   tts:     {label:'🔊 配音', icon:'🔊'},
 };
-const _platLabel = {wechat:'公众号', xhs:'小红书', twitter:'🐦 Twitter'};
+const _platLabel = {wechat:'公众号', xhs:'小红书', twitter:'🐦 Twitter', voa:'🎧 VOA'};
 async function loadRecords(force){
   try{
     const [cw, vd, ar, tt] = await Promise.all([
