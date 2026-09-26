@@ -977,9 +977,11 @@ async function recView(type, id){
     } else if(type==='article'){
       const r = await fetch('/api/articles/'+id); const d = await r.json();
       if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
+      const vm = d.platform==='voa' ? (String(d.url||'').match(/[?&]id=(\d+)/)||[])[1] : '';
       det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>📰 ${esc(d.title||id)}
           <span class="chip">${_platLabel[d.platform]||esc(d.platform||'')}</span></div>
-          <div>${d.vault_path?`<span class="mut" style="font-size:11px">${esc(d.vault_path.replace(/\\\\/g,'/'))}</span>`:''}
+          <div>${vm?`<a class="btn" href="/player/voa/${vm}" target="_blank">🎧 学习播放器</a>`:''}
+          ${d.vault_path?`<span class="mut" style="font-size:11px">${esc(d.vault_path.replace(/\\\\/g,'/'))}</span>`:''}
           <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
         <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||''))}</div></div></div>`;
     } else if(type==='tts'){

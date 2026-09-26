@@ -25,6 +25,8 @@ import urllib.request
 UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36")
 BASE = "http://m.iyuba.cn/voaS/"
+# 本机学习播放器端口（与 app.py PORT 默认一致）
+PLAYER_PORT = os.environ.get("PORT", "8788")
 CATS = {"index.jsp": "VOA慢速", "indexC.jsp": "VOA常速", "indexAM.jsp": "1分钟美语"}
 
 
@@ -244,7 +246,8 @@ def ingest_item(item: dict, img_dir: str = None) -> dict:
         L.append("- 音频：未找到直链")
     if lrc_src:
         L.append(f"- LRC 字幕：[{os.path.basename(lrc_src)}]({lrc_src})")
-    L += ["", f"- 栏目：{cat} · 日期：{date}"]
+    L += ["", f"- 栏目：{cat} · 日期：{date}",
+          f"- 学习播放器：[🎧 逐句精听（翻译可遮掩）](http://127.0.0.1:{PLAYER_PORT}/player/voa/{voaid})"]
     if item.get("keywords"):
         L.append(f"- 关键词：{item['keywords']}")
     if item.get("intro"):

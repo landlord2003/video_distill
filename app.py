@@ -697,6 +697,9 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
                       follow=False):
     """公众号/小红书/Twitter 采集 -> Markdown -> 推文外链跟进(可选) -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
     plat = (platform or "").strip() or ai.detect_platform(url) or ""
+    # VOA 源只做「照搬」（音频+双语字幕+播放器），不做要点解析等任何解析任务
+    if plat == "voa":
+        analyze = False
     # VOA 列表页链接 → 展开为整页批量（递归走单条路径，复用入库/OCR 全套逻辑）
     if plat == "voa":
         try:
@@ -908,6 +911,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
             else:
                 self._send(404, {"error": "not found"})
+            return
+        # VOA 逐句学习播放器（音频+双语字幕同步，翻译可显示/遮掩/隐藏）
+        m = re.match(r"^/player/voa/(\d+)$", p)
+        if m:
+            voaid = m.group(1)
+            title = ""
+            try:
+                with db() as c:
+                    r = c.execute(
+                        "SELECT title FROM articles WHERE platform='voa' "
+                        "AND url LIKE ? ORDER BY created_at DESC LIMIT 1",
+                        (f"%id={voaid}%",)).fetchone()
+                    title = r[0] if r else ""
+            except Exception:
+                pass
+            import voa_player
+            code, html = voa_player.render(voaid, title=title)
+            self.send_response(code)
+            body = html.encode("utf-8")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if p == "/api/history":
             q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
