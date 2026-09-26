@@ -105,7 +105,10 @@ select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:
 .row{display:flex;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;align-items:baseline}
 .row:last-child{border-bottom:0}
 .row:hover{background:#f0f4ff}
-.row.cur{background:#e8f0fe;box-shadow:inset 3px 0 0 var(--acc)}
+.row.cur{background:#fff3cd;box-shadow:inset 4px 0 0 #e6a700}
+.row.cur .en{color:#b45309;font-weight:700}
+.row.cur .no,.row.cur .tm{color:#e6a700;font-weight:600}
+.row.cur .zh{color:#b45309}
 .no{color:var(--mut);font-size:12px;min-width:26px;text-align:right;flex:none}
 .tm{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;min-width:44px;flex:none}
 .en{flex:1}
@@ -177,17 +180,17 @@ function paint(){
   if (cur >= 0) rows[cur].scrollIntoView({block: "center", behavior: "smooth"});
 }
 function tick(){
-  if (NO_MP3 || cur < 0) return;
-  const end = SENTS[cur][0] + dur(cur);
-  if (audio.currentTime >= end - 0.03) {
-    if (loop) { audio.currentTime = SENTS[cur][0] + 0.01; return; }
-    if (cur + 1 < SENTS.length) { cur++; paint(); }
-  } else {
-    // 拖动进度后自动对齐当前句
-    let i = cur;
-    while (i + 1 < SENTS.length && audio.currentTime >= SENTS[i+1][0]) i++;
-    while (i > 0 && audio.currentTime < SENTS[i][0]) i--;
-    if (i !== cur) { cur = i; paint(); }
+  if (NO_MP3) return;
+  const t = audio.currentTime;
+  if (t <= 0) return;
+  // 播放即自动跟踪当前句（无需先点击）
+  let i = cur < 0 ? 0 : cur;
+  while (i + 1 < SENTS.length && t >= SENTS[i+1][0]) i++;
+  while (i > 0 && t < SENTS[i][0]) i--;
+  if (i !== cur) { cur = i; paint(); }
+  // 单句循环：到句尾回跳
+  if (loop && cur >= 0 && t >= SENTS[cur][0] + dur(cur) - 0.03) {
+    audio.currentTime = SENTS[cur][0] + 0.01;
   }
 }
 setInterval(tick, 200);
