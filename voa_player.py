@@ -149,8 +149,9 @@ __AUDIO__
 const SENTS = __DATA__;
 const MP3 = "__MP3__";
 const NO_MP3 = __NOMP3__;
-const audio = new Audio(MP3);
-audio.preload = "metadata";
+// 直接使用页面上可见的 <audio id="au">（此前 new Audio() 造出第二个隐形音频对象，
+// 用户播放可见播放器时跟踪逻辑监听的却是隐形副本，导致高亮永远不动的 bug）
+const audio = document.getElementById("au");
 let cur = -1, loop = false;
 const list = document.getElementById("list");
 const frag = document.createDocumentFragment();
@@ -194,8 +195,9 @@ function tick(){
   }
 }
 setInterval(tick, 200);
-audio.addEventListener("ended", () => { if (!loop && cur + 1 < SENTS.length) { cur = 0; } });
-document.getElementById("rate").onchange = e => audio.playbackRate = +e.target.value;
+if (audio) audio.addEventListener("ended", () => { if (!loop && cur + 1 < SENTS.length) { cur = 0; } });
+const _rate = document.getElementById("rate");
+if (_rate) _rate.onchange = e => { if (audio) audio.playbackRate = +e.target.value; };
 const bLoop = document.getElementById("bLoop");
 bLoop.onclick = () => { loop = !loop; bLoop.classList.toggle("on", loop); };
 const listEl = list;

@@ -874,7 +874,7 @@ function renderRecTypeChips(){
   box.innerHTML = mk('', '📚 全部', _recRows.length)
     + Object.keys(_recTypeMeta).map(k=>mk(k, _recTypeMeta[k].label, counts[k]||0)).join('');
 }
-function _setRecType(k){ _recType = k; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderRecords(); }
+function _setRecType(k){ _recType = k; _vcatFilter=''; _vSrcFilter=''; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderRecords(); }
 function recRowsFiltered(){
   const q = ($('#vhq')?.value||'').toLowerCase();
   return _recRows.filter(x=>{
