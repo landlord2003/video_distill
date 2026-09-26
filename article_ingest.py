@@ -172,8 +172,10 @@ def _localize_xhs_images(images, title: str, img_dir: str):
     return refs
 
 
-def ingest(url: str, platform: str = "", img_dir: str = None) -> dict:
-    """统一入口。platform 缺省时按 URL 自动推断。返回 {platform, title, md}。"""
+def ingest(url: str, platform: str = "", img_dir: str = None,
+           meta: dict = None) -> dict:
+    """统一入口。platform 缺省时按 URL 自动推断。返回 {platform, title, md}。
+    meta：批量采集时已知的列表条目元数据（voa 用，免二次反查）。"""
     url = (url or "").strip()
     if not url:
         raise RuntimeError("url 不能为空")
@@ -187,7 +189,7 @@ def ingest(url: str, platform: str = "", img_dir: str = None) -> dict:
         out = twi.ingest_tweet(url, img_dir=img_dir)
     elif plat == "voa":
         import voa_ingest
-        out = voa_ingest.ingest(url, img_dir=img_dir)
+        out = voa_ingest.ingest(url, img_dir=img_dir, item=meta)
     else:
         raise RuntimeError("无法识别平台（支持：公众号 mp.weixin.qq.com / 小红书 xiaohongshu.com"
                            " / Twitter 推文 x.com/*/status/* / VOA iyuba.cn/voaS）")

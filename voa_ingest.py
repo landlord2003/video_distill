@@ -86,11 +86,12 @@ def _unquote2(v: str) -> str:
 
 def _cat_from_url(url: str) -> str:
     u = (url or "").lower()
+    if "indexam" in u or "playam" in u:
+        return "1分钟美语"
     if "indexc" in u or "playc" in u:
         return "VOA常速"
-    for k, v in CATS.items():
-        if k.split(".")[0] in u:
-            return v
+    if "index" in u or "play" in u:
+        return "VOA慢速"
     return "VOA"
 
 
@@ -99,8 +100,9 @@ def fetch_list(url: str) -> list:
     html = _get(url)
     cat = _cat_from_url(url)
     items, seen = [], set()
-    for m in re.finditer(r'href="play(?:C)?\.jsp\?([^"]+)"', html):
-        qs = urllib.parse.parse_qs(m.group(1))
+    # play.jsp / playC.jsp（慢速/常速）/ playAM.jsp（1分钟美语）
+    for m in re.finditer(r'href="(play[A-Za-z]*)\.jsp\?([^"]+)"', html):
+        qs = urllib.parse.parse_qs(m.group(2))
         voaid = (qs.get("id") or [""])[0].strip()
         if not voaid.isdigit() or voaid in seen:
             continue
@@ -118,6 +120,54 @@ def fetch_list(url: str) -> list:
             "play_url": f"{BASE}play.jsp?id={voaid}",
         })
     return items
+
+
+# 批量采集预设入口（前端写死按钮；批量一次抓 10 条新内容，自动排除已抓、顺延翻页）
+BATCH_SIZE = 10
+PRESETS = [
+    ("VOA常速", "http://m.iyuba.cn/voaS/indexC.jsp"),
+    ("VOA慢速", "http://m.iyuba.cn/voaS/index.jsp"),
+    ("1分钟美语", "http://m.iyuba.cn/voaS/indexAM.jsp"),
+]
+
+
+def fetch_new_items(url: str, limit: int = BATCH_SIZE, have_ids=None,
+                    max_pages: int = 10):
+    """从 url 对应页起顺延翻页，跳过 have_ids 已抓条目，收集至多 limit 条新内容。
+    返回 (new_items, skipped, pages_scanned)。"""
+    have = set(have_ids or [])
+    # 以入参为模板重建分页 URL（保留栏目，替换 pages 参数）
+    p = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(p.query)
+    try:
+        start = int((qs.get("pages") or ["1"])[0] or 1)
+    except ValueError:
+        start = 1
+    new, skipped, pages = [], 0, 0
+    bad_pages = 0
+    for page in range(start, start + max_pages):
+        q = dict(urllib.parse.parse_qsl(p.query))
+        q["pages"] = str(page)
+        u = urllib.parse.urlunparse(p._replace(query=urllib.parse.urlencode(q)))
+        try:
+            items = fetch_list(u)
+        except Exception:
+            # 个别栏目个别页服务端 500（如 indexAM.jsp?pages=1），跳页继续
+            bad_pages += 1
+            if bad_pages >= 3:
+                break
+            continue
+        if not items:
+            break
+        pages += 1
+        for it in items:
+            if it["id"] in have or any(x["id"] == it["id"] for x in new):
+                skipped += 1
+                continue
+            new.append(it)
+            if len(new) >= limit:
+                return new, skipped, pages
+    return new, skipped, pages
 
 
 def _enrich_from_lists(item: dict, max_pages: int = 2) -> None:
@@ -266,6 +316,7 @@ def ingest_item(item: dict, img_dir: str = None) -> dict:
             "sents": len(sents)}
 
 
-def ingest(url: str, img_dir: str = None) -> dict:
-    """统一入口（单条播放页链接）。列表页由 app.py 展开为批量。"""
-    return ingest_item(_item_from_url(url), img_dir=img_dir)
+def ingest(url: str, img_dir: str = None, item: dict = None) -> dict:
+    """统一入口（单条播放页链接）。列表页由 app.py 展开为批量。
+    item：批量路径传入的列表条目元数据（含 id/title/date 等），免二次反查。"""
+    return ingest_item(item if item else _item_from_url(url), img_dir=img_dir)

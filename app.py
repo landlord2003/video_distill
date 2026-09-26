@@ -694,24 +694,41 @@ def _backfill_vault_refs():
 
 
 def do_article_ingest(url, write_vault=True, platform="", analyze=False,
-                      follow=False):
+                      follow=False, meta=None):
     """公众号/小红书/Twitter 采集 -> Markdown -> 推文外链跟进(可选) -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
     plat = (platform or "").strip() or ai.detect_platform(url) or ""
     # VOA 源只做「照搬」（音频+双语字幕+播放器），不做要点解析等任何解析任务
     if plat == "voa":
         analyze = False
-    # VOA 列表页链接 → 展开为整页批量（递归走单条路径，复用入库/OCR 全套逻辑）
+    # VOA 列表页链接 → 批量采集：自动排除已抓条目、顺延翻页，每次抓 BATCH_SIZE 条新内容
     if plat == "voa":
         try:
             import voa_ingest as _vi
             if _vi.is_list(url):
-                items = _vi.fetch_list(url)
+                have = set()
+                try:
+                    with db() as c:
+                        for (u,) in c.execute(
+                                "SELECT url FROM articles WHERE platform='voa'"):
+                            m = re.search(r"[?&]id=(\d+)", u or "")
+                            if m:
+                                have.add(m.group(1))
+                except Exception:
+                    pass
+                items, skipped, pages = _vi.fetch_new_items(
+                    url, limit=_vi.BATCH_SIZE, have_ids=have)
+                if not items:
+                    return {"id": "", "ok": True, "platform": "voa",
+                            "title": "VOA 批量采集：没有新内容",
+                            "md": "", "vault_path": "", "analyze": None,
+                            "follow": f"该栏目已抓条目全部跳过（{skipped} 条），无新增",
+                            "batch": [], "ocr": ""}
                 batch, first = [], None
                 for it in items:
                     try:
                         sub = do_article_ingest(it["play_url"], write_vault,
                                                 platform="voa", analyze=False,
-                                                follow=False)
+                                                follow=False, meta=it)
                         batch.append({"title": sub.get("title", ""), "ok": True})
                         if not first:
                             first = sub.get("md", "")
@@ -720,9 +737,10 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
                                       "error": str(_be)[:120]})
                 okn = sum(1 for b in batch if b["ok"])
                 return {"id": "", "ok": okn > 0, "platform": "voa",
-                        "title": f"VOA 批量采集 {okn}/{len(batch)} 条",
+                        "title": f"VOA 批量采集 {okn}/{len(batch)} 条新内容",
                         "md": first or "", "vault_path": "", "analyze": None,
-                        "follow": f"列表批量：{okn}/{len(batch)} 成功",
+                        "follow": (f"自动排除已抓 {skipped} 条 · 顺延扫描 {pages} 页 · "
+                                   f"本次新增 {okn}/{len(batch)}"),
                         "batch": batch, "ocr": ""}
         except ImportError:
             pass
@@ -730,7 +748,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
     if write_vault and plat in ("xhs", "twitter", "wechat", "voa"):
         # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token/防盗链，会失效）
         img_dir = os.path.join(ART_VAULT, "images", plat)
-    out = ai.ingest(url, img_dir=img_dir if img_dir else None)
+    out = ai.ingest(url, img_dir=img_dir if img_dir else None, meta=meta)
     # 公众号 md 里的远程图不落地（wechat_fetch 不支持 img_dir），入库前统一本地化
     if write_vault and plat == "wechat" and out.get("md"):
         out["md"], _n_img = _localize_md_images(

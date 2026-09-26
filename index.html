@@ -185,6 +185,7 @@
             <div class="step-b">
               <div class="seg" id="modeSeg"></div>
               <div id="m-links">
+                <div id="presetRow" style="display:none;margin-bottom:6px"></div>
                 <textarea id="purls" rows="5" oninput="pCount()" style="width:100%"></textarea>
                 <div class="mut" style="font-size:11px;margin-top:4px">每行一条链接；也可只粘贴一条。支持批量，逐条自动入库。</div>
               </div>
@@ -365,8 +366,11 @@ const SOURCES = {
     hint:'⚠ <b>建议先设环境变量 XHS_COOKIE</b>（浏览器登录小红书后复制），否则常被风控拦截。图片自动下载本地化到知识库；视频笔记仅保留视频链接。',
     ph:'粘贴小红书笔记链接\n例：https://www.xiaohongshu.com/explore/…\n或分享短链 https://xhslink.com/…'},
   voa: {icon:'🎧', name:'VOA英语听力', kind:'article', kindName:'文章管线', srcName:'VOA',
-    hint:'<b>国内直连，无需 cookie/代理</b>（内容源：爱语吧 m.iyuba.cn）。播放页链接=单条采集；列表页链接=整页批量。自动下载 MP3+封面，逐句中英字幕生成 LRC，双语对照入库。支持 VOA慢速/常速/1分钟美语。',
-    ph:'单条：http://m.iyuba.cn/voaS/play.jsp?id=13143\n批量：http://m.iyuba.cn/voaS/indexC.jsp（当前页全部）\n或带页码 http://m.iyuba.cn/voaS/index.jsp?pages=2'},
+    hint:'<b>国内直连，无需 cookie/代理</b>（内容源：爱语吧 m.iyuba.cn）。点上方预设按钮选栏目 → 直接「开始采集」即抓 <b>10 条新内容</b>（自动排除已抓、顺延翻页）。每条自动下载 MP3+封面、逐句中英字幕生成 LRC，入库后点开记录有「🎧 学习播放器」逐句精听（翻译可遮掩）。不做要点解析。',
+    ph:'点上方预设按钮选栏目（推荐），或粘贴单条播放页链接\n例：http://m.iyuba.cn/voaS/play.jsp?id=13143',
+    presets:[['VOA常速','http://m.iyuba.cn/voaS/indexC.jsp'],
+             ['VOA慢速','http://m.iyuba.cn/voaS/index.jsp'],
+             ['1分钟美语','http://m.iyuba.cn/voaS/indexAM.jsp']]},
   bilibili: {icon:'📺', name:'B站', kind:'video', kindName:'视频流水线', srcName:'B站视频',
     hint:'走完整视频流水线（下载→抽帧→转写→蒸馏），记录来源标为「B站视频」，入库到 Claw/07-视频号整理。',
     ph:'粘贴 B站 视频链接，每行一个\n例：https://www.bilibili.com/video/BVxxxx\nhttps://b23.tv/xxxx'},
@@ -401,6 +405,15 @@ function renderSrc(){
   $('#m-account').style.display = MODE==='account'?'block':'none';
   $('#m-files').style.display = MODE==='files'?'block':'none';
   $('#purls').placeholder = s.ph;
+  // 预设批量入口（当前仅 VOA）：一键填入栏目链接
+  const prow = $('#presetRow');
+  if(prow){
+    if(s.presets){
+      prow.style.display = 'block';
+      prow.innerHTML = '<span class="mut" style="font-size:12px;margin-right:6px">批量入口（每次抓10条新内容）：</span>' +
+        s.presets.map(([l,u])=>`<button class="btn" style="margin:2px 4px 2px 0" onclick="document.getElementById('purls').value='${u}';pCount()">${l}</button>`).join('');
+    } else prow.style.display = 'none';
+  }
   if(s.account){
     $('#accurl').placeholder = s.account.ph;
     $('#accstatus').textContent = '先采内容清单 → 勾选 → 「填入下方清单」→ 运行流水线';
