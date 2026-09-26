@@ -842,6 +842,7 @@ const _recTypeMeta = {
   web:     {label:'🌐 网页', icon:'🌐'},
   video:   {label:'🎬 视频', icon:'🎬'},
   article: {label:'📰 文章', icon:'📰'},
+  voa:     {label:'🎧 VOA英语', icon:'🎧'},
   tts:     {label:'🔊 配音', icon:'🔊'},
 };
 const _platLabel = {wechat:'公众号', xhs:'小红书', twitter:'🐦 Twitter', voa:'🎧 VOA'};
@@ -856,7 +857,8 @@ async function loadRecords(force){
     _recRows = [
       ...(cw||[]).map(x=>({...x, type:'web'})),
       ...(vd||[]).map(x=>({...x, type:'video'})),
-      ...(ar||[]).map(x=>({...x, type:'article'})),
+      // VOA 独立成「VOA英语」大类（数据同在 articles 表，按 platform 区分）
+      ...(ar||[]).map(x=>({...x, type: x.platform==='voa' ? 'voa' : 'article'})),
       ...(tt||[]).map(x=>({...x, type:'tts'})),
     ];
     _recRows.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
@@ -880,8 +882,8 @@ function recRowsFiltered(){
   const q = ($('#vhq')?.value||'').toLowerCase();
   return _recRows.filter(x=>{
     if(_recType && x.type!==_recType) return false;
-    // 分类/来源筛选：全部（视频+文章联合）/视频/文章页签生效，配音/网页不应用
-    if(_recType==='' || _recType==='video' || _recType==='article'){
+    // 分类/来源筛选：全部（联合）/视频/文章/VOA 页签生效，配音/网页不应用
+    if(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa'){
       if(_vcatFilter){
         const c = (x.category||'').trim();
         if(_vcatFilter==='__uncat__' ? c!=='' : c!==_vcatFilter) return false;
@@ -906,6 +908,7 @@ function recSub(x){
   if(x.type==='web') return x.url||'';
   if(x.type==='video') return [x.source_url, x.category?('分类 '+x.category):'', x.source||''].filter(Boolean).join(' · ');
   if(x.type==='article') return [_platLabel[x.platform]||x.platform||'', x.url].filter(Boolean).join(' · ');
+  if(x.type==='voa') return [x.category?('栏目 '+x.category):'VOA', (String(x.url||'').match(/[?&]id=(\d+)/)||[])[1]?('#'+String(x.url).match(/[?&]id=(\d+)/)[1]):''].filter(Boolean).join(' · ');
   if(x.type==='tts') return [x.voice, (x.chars?x.chars+'字':''), (x.chunks>1?x.chunks+'段':''), (x.seconds?x.seconds+'s':'')].filter(Boolean).join(' · ');
   return '';
 }
@@ -938,12 +941,14 @@ function renderRecords(){
       <div class="sp">
         ${x.type==='video'&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
         ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
-        ${x.type==='article'&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
+        ${(x.type==='article'||x.type==='voa')&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
         ${x.type==='article'?`<span class="chip run" style="cursor:default">${esc(x.source||_platLabel[x.platform]||x.platform||'文章')}</span>`:''}
         ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>`:''}
         ${x.type==='web'?`<button class="btn" onclick="event.stopPropagation();recView('web','${escAttr(x.id)}')">查看</button>`:''}
         ${x.type==='article'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','article')">编辑</button>
         <button class="btn" onclick="event.stopPropagation();recView('article','${escAttr(x.id)}')">查看</button>`:''}
+        ${x.type==='voa'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','voa')">编辑</button>
+        <button class="btn" onclick="event.stopPropagation();recView('voa','${escAttr(x.id)}')">查看</button>`:''}
         ${x.type==='video'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}')">编辑</button>
         <button class="btn" onclick="event.stopPropagation();recView('video','${escAttr(x.id)}')">查看</button>`:''}
         <button class="btn del" onclick="event.stopPropagation();recDel('${x.type}','${escAttr(x.id)}')">删除</button>
@@ -988,11 +993,11 @@ async function recView(type, id){
           <div>${d.vault_path?`<a class="btn" href="file:///${encodeURIComponent(d.vault_path.replace(/\\\\/g,'/'))}" title="${escAttr(d.vault_path)}">Obsidian 笔记</a>`:''}
           <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
         <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div></div></div>`;
-    } else if(type==='article'){
+    } else if(type==='article' || type==='voa'){
       const r = await fetch('/api/articles/'+id); const d = await r.json();
       if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
       const vm = d.platform==='voa' ? (String(d.url||'').match(/[?&]id=(\d+)/)||[])[1] : '';
-      det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>📰 ${esc(d.title||id)}
+      det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>${type==='voa'?'🎧':'📰'} ${esc(d.title||id)}
           <span class="chip">${_platLabel[d.platform]||esc(d.platform||'')}</span></div>
           <div>${vm?`<a class="btn" href="/player/voa/${vm}" target="_blank">🎧 学习播放器</a>`:''}
           ${d.vault_path?`<span class="mut" style="font-size:11px">${esc(d.vault_path.replace(/\\\\/g,'/'))}</span>`:''}
@@ -1017,6 +1022,7 @@ async function recDel(type, id){
   const meta = {web:['/api/crawls/','确定删除这条网页抓取记录？关联 .md/.json 文件一并删除。'],
                 video:['/api/video/','确定删除这条视频记录？Obsidian 笔记文件也会一并删除。'],
                 article:['/api/articles/','确定删除这条文章记录？Obsidian 笔记文件也会一并删除。'],
+                voa:['/api/articles/','确定删除这条 VOA 记录？音视频/LRC/笔记文件也会一并删除。'],
                 tts:['/api/tts/history/','确定删除这条配音记录？音频文件也会一并删除。']};
   if(!confirm(meta[type][1])) return;
   try{
@@ -1030,11 +1036,13 @@ let _vcatFilter = '';      // ''=全部 '__uncat__'=未分类 其他=分类名
 let _catKeys = [];
 function _videoRows(){ return _recRows.filter(x=>x.type==='video'); }
 function _articleRows(){ return _recRows.filter(x=>x.type==='article'); }
-function _managedRows(){ return _recRows.filter(x=>x.type==='video'||x.type==='article'); }
+function _voaRows(){ return _recRows.filter(x=>x.type==='voa'); }
+function _managedRows(){ return _recRows.filter(x=>x.type==='video'||x.type==='article'||x.type==='voa'); }
 // chips 计数口径：当前页签类型下的记录（保证 chip 数字与列表一致）
 function _chipRows(){
   if(_recType==='video') return _videoRows();
   if(_recType==='article') return _articleRows();
+  if(_recType==='voa') return _voaRows();
   return _managedRows();
 }
 // 全量并集口径：编辑弹窗分类/来源下拉、管理弹窗（重命名/删除作用于视频+文章）
@@ -1058,8 +1066,8 @@ function srcCounts(){
 }
 function renderCatChips(){
   const el = $('#vcats'); if(!el) return;
-  // 分类筛选：全部/视频/文章页签显示（共用一套分类池），配音/网页隐藏
-  if(!(_recType==='' || _recType==='video' || _recType==='article')){ el.style.display='none'; return; }
+  // 分类筛选：全部/视频/文章/VOA 页签显示（共用一套分类池），配音/网页隐藏
+  if(!(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa')){ el.style.display='none'; return; }
   el.style.display='flex';
   const {counts, uncat, cats} = catCounts();
   _catKeys = cats;
@@ -1089,7 +1097,7 @@ function _srcChips(filter, setter){
 function renderSrcChips(){
   const el = document.getElementById('vsrcs');
   if(!el) return;
-  if(!(_recType==='' || _recType==='video' || _recType==='article')){ el.style.display='none'; return; }
+  if(!(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa')){ el.style.display='none'; return; }
   el.style.display='flex';
   el.innerHTML = _srcChips(_vSrcFilter, '_setSrc');
 }
@@ -1107,10 +1115,10 @@ function editRec(id, type){
   const x = _recRows.find(r=>r.type===type && r.id===id);
   if(!x) return;
   const {keys: cats} = catCountsAll();
-  if(type==='article'){
+  if(type==='article' || type==='voa'){
     const {keys: srcs} = srcCountsAll();
     const cat = (x.category||'').trim(), src = (x.source||'').trim();
-    showModal(`<h3>✏️ 编辑文章记录</h3>
+    showModal(`<h3>✏️ 编辑${type==='voa'?'VOA':'文章'}记录</h3>
       <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
       <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
       <label>分类</label>
@@ -1132,7 +1140,7 @@ function editRec(id, type){
       ${_mgLinks()}
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
         <button class="btn" onclick="hideModal()">取消</button>
-        <button class="btn pri" onclick="saveRec('${escAttr(id)}','article')">保存</button>
+        <button class="btn pri" onclick="saveRec('${escAttr(id)}','${type}')">保存</button>
       </div>`);
     return;
   }
@@ -1168,7 +1176,7 @@ async function saveRec(id, type){
   type = type || 'video';
   const title = $('#me-title').value.trim();
   if(!title){ $('#me-title').focus(); return; }
-  if(type==='article'){
+  if(type==='article' || type==='voa'){
     const newCatInput = $('#me-newcat');
     const cat = (newCatInput && newCatInput.style.display!=='none' && newCatInput.value.trim())
       ? newCatInput.value.trim() : ($('#me-cat')?.value || '');
