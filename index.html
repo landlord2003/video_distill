@@ -428,7 +428,7 @@ function renderSrc(){
   let opts = '';
   if(s.kind==='music') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
-    <label class="toggle" title="优先抓纯音频直链；视频类作品下载后 ffmpeg 抽音轨（省约 90% 空间）。关闭则保留 mp4 可看画面"><input type="checkbox" id="oaudio" checked> 🎵 只存音频（省空间）</label>
+    <label class="toggle" title="视频+音频一起落地：mp4 可看画面，音频（纯音频直链优先，否则从视频抽音轨）用于播放与转写。取消勾选则只存音频（省约 90% 空间）"><input type="checkbox" id="owithvideo" checked> 🎬 同时下载视频（可看画面）</label>
     <label class="toggle" title="两级取字幕：先抓抖音官方原生字幕（自动字幕/创作者字幕，时间线最准）；没有则本地 whisper AI 转写（时间线真实，个别字可能有误）"><input type="checkbox" id="otranscribe" checked> 📝 生成字幕（官方优先→AI转写兜底）</label>
     <div class="mut" style="font-size:12px;margin-top:4px">🚫 免解析：仅下载落地 + 极简笔记，不做转录蒸馏/要点解析（字幕除外）</div>`;
   else if(s.kind==='video') opts = `
@@ -542,7 +542,7 @@ function _pipeOpts(){
           llm: !!($('#ollm') && $('#ollm').checked),
           analyze: !!($('#oanalyze') && $('#oanalyze').checked),
           follow: !!($('#ofollow') && $('#ofollow').checked),
-          audioOnly: !!($('#oaudio') && $('#oaudio').checked)};
+          withVideo: !!($('#owithvideo') && $('#owithvideo').checked)};
 }
 
 // --- 视频类来源（抖音/YouTube/B站）：逐条 下载→转写→蒸馏→入库 ---
@@ -698,7 +698,7 @@ async function runMusicPipe(){
       try{
         const r = await fetch('/api/douyin_music',{method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({url:urls[i], write_vault:o.vault, audio_only:o.audioOnly,
+          body:JSON.stringify({url:urls[i], write_vault:o.vault, with_video:o.withVideo,
                                transcribe:!!($('#otranscribe') && $('#otranscribe').checked)})});
         const d = await r.json();
         if(!r.ok)

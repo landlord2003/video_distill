@@ -14,8 +14,9 @@
     video.play_addr.url_list  视频直链（兜底：下载后 ffmpeg -vn 抽音轨）
     video.cover.url_list      封面
     author.nickname / desc / duration / create_time
-  → 音频落地 <vault>/media/douyin/<aweme_id>.m4a|.mp3（audio_only=True 时删中间 mp4）
+  → 音频落地 <vault>/media/douyin/<aweme_id>.m4a|.mp3；视频落地 <id>.mp4（with_video=True 默认两者都存）
   → 封面落地 <vault>/images/douyin/<aweme_id>.jpg（Web 走 /images/ 路由）
+  → 字幕两级：官方原生（自动字幕/创作者字幕）→ 本地 whisper 转写，落 <id>.lrc
   → 极简 Markdown 笔记（标题/号主/时长/封面/播放器链接/原链），platform=douyin_music
 
 账号采集：复用 /api/video/profile（douyin_profile.py 拦截主页作品清单），
@@ -159,11 +160,14 @@ def _extract_audio(mp4_path: str, m4a_path: str) -> bool:
     return False
 
 
-def download_media(meta: dict, vault_root: str, audio_only: bool = True,
+def download_media(meta: dict, vault_root: str, with_video: bool = True,
                    verbose: bool = True) -> dict:
-    """按元数据落地媒体与封面到 vault，返回 {media_rel, cover_rel, keep_mp4}。
+    """按元数据落地媒体与封面到 vault，返回 {media_rel, video_rel, cover_rel}。
 
-    media/douyin/<id>.m4a|.mp3|.mp4 + images/douyin/<id>.jpg
+    with_video=True（默认）：视频+音频都落地——
+      video/douyin 下 <id>.mp4（可看画面），音频 <id>.m4a|.mp3（纯音频直链优先，
+      没有则从 mp4 抽音轨，mp4 保留不删）
+    with_video=False：只留音频（抽轨后删 mp4，省空间）
     """
     vid = meta["id"]
     media_dir = os.path.join(vault_root, "media", "douyin")
@@ -171,11 +175,12 @@ def download_media(meta: dict, vault_root: str, audio_only: bool = True,
     os.makedirs(media_dir, exist_ok=True)
     os.makedirs(img_dir, exist_ok=True)
 
-    media_rel = ""
-    keep_mp4 = not audio_only
+    media_rel = ""   # 音频文件（播放/转写主载体）
+    video_rel = ""   # mp4（with_video 时保留）
     tmp_mp4 = os.path.join(media_dir, f"_dytmp_{vid}.mp4")
+    mp4_dest = os.path.join(media_dir, f"{vid}.mp4")
 
-    # 1) 纯音频直链（音乐类作品大多有）：直接下，秒级且 ~2MB
+    # 1) 音频：纯音频直链（音乐类作品大多有，秒级 ~2MB）
     if meta.get("music_url"):
         ext = _ext_from_url(meta["music_url"])
         dest = os.path.join(media_dir, f"{vid}{ext}")
@@ -183,34 +188,25 @@ def download_media(meta: dict, vault_root: str, audio_only: bool = True,
                 and os.path.getsize(dest) > 20 * 1024:
             media_rel = os.path.relpath(dest, vault_root).replace("\\", "/")
 
-    # 2) 兜底：视频直链 → mp4 → 抽音轨（audio_only 时删 mp4，保留则改名为正式文件）
-    if not media_rel and meta.get("video_url"):
+    # 2) 视频：有直链就下载（with_video 保留为正式 mp4；否则仅作抽轨源）
+    need_mp4 = bool(meta.get("video_url")) and (with_video or not media_rel)
+    if need_mp4:
         if douyin_auto.download(meta["video_url"], tmp_mp4) \
                 and os.path.getsize(tmp_mp4) > 100 * 1024:
-            m4a = os.path.join(media_dir, f"{vid}.m4a")
-            if _extract_audio(tmp_mp4, m4a):
-                if keep_mp4:
-                    dest = os.path.join(media_dir, f"{vid}.mp4")
-                    os.replace(tmp_mp4, dest)
-                    media_rel = os.path.relpath(dest, vault_root).replace("\\", "/")
-                else:
-                    try:
-                        os.remove(tmp_mp4)
-                    except OSError:
-                        pass
+            # 2a) 没有纯音频 → 从 mp4 抽音轨
+            if not media_rel:
+                m4a = os.path.join(media_dir, f"{vid}.m4a")
+                if _extract_audio(tmp_mp4, m4a):
                     media_rel = os.path.relpath(m4a, vault_root).replace("\\", "/")
-            elif keep_mp4:
-                dest = os.path.join(media_dir, f"{vid}.mp4")
-                if os.path.exists(tmp_mp4):
-                    os.replace(tmp_mp4, dest)
-                    media_rel = os.path.relpath(dest, vault_root).replace("\\", "/")
+            # 2b) mp4 保留 or 删除
+            if with_video:
+                os.replace(tmp_mp4, mp4_dest)
+                video_rel = os.path.relpath(mp4_dest, vault_root).replace("\\", "/")
             else:
-                # audio_only 但抽不出音轨：保留 mp4 兜底（能听能看总比丢好）
-                if os.path.exists(tmp_mp4):
-                    dest = os.path.join(media_dir, f"{vid}.mp4")
-                    os.replace(tmp_mp4, dest)
-                    media_rel = os.path.relpath(dest, vault_root).replace("\\", "/")
-                    keep_mp4 = True
+                try:
+                    os.remove(tmp_mp4)
+                except OSError:
+                    pass
         else:
             if os.path.exists(tmp_mp4):
                 try:
@@ -240,7 +236,8 @@ def download_media(meta: dict, vault_root: str, audio_only: bool = True,
                 except OSError:
                     pass
 
-    return {"media_rel": media_rel, "cover_rel": cover_rel, "keep_mp4": keep_mp4}
+    return {"media_rel": media_rel, "video_rel": video_rel,
+            "cover_rel": cover_rel}
 
 
 def media_paths(vault_root: str, aweme_id: str) -> dict:
@@ -405,12 +402,12 @@ def transcribe_lrc(vault_root: str, aweme_id: str, verbose: bool = True) -> int:
     return len(segs)
 
 
-def ingest(url: str, vault_root: str = None, audio_only: bool = True,
+def ingest(url: str, vault_root: str = None, with_video: bool = True,
            verbose: bool = True, transcribe: bool = True) -> dict:
-    """单条抖音作品链接 → 下载媒体 + 字幕（两级）+ 极简 Markdown。失败抛 RuntimeError。
+    """单条抖音作品链接 → 下载媒体（视频+音频）+ 字幕（两级）+ 极简 Markdown。
 
-    字幕：官方原生（自动字幕/创作者字幕）优先；没有且 transcribe=True 时
-    本地 whisper 转写（时间线真实、文字为 AI 听写）。
+    失败抛 RuntimeError。字幕：官方原生（自动字幕/创作者字幕）优先；
+    没有且 transcribe=True 时本地 whisper 转写（时间线真实、文字为 AI 听写）。
     """
     if not vault_root:
         vault_root = ART_VAULT
@@ -422,7 +419,7 @@ def ingest(url: str, vault_root: str = None, audio_only: bool = True,
     if not meta["music_url"] and not meta["video_url"]:
         raise RuntimeError("aweme_detail 中既无音频直链也无视频直链（可能需登录/风控）")
 
-    files = download_media(meta, vault_root, audio_only=audio_only)
+    files = download_media(meta, vault_root, with_video=with_video)
     if not files["media_rel"]:
         raise RuntimeError("媒体下载失败（直链可能过期或被风控，稍后重试）")
 
@@ -472,8 +469,12 @@ def ingest(url: str, vault_root: str = None, audio_only: bool = True,
     elif song.get("orig_owner"):
         song_line = f"- 🎙 抖音原声：@{song['orig_owner']}创作的原声（抖音无歌名/歌词数据）"
     media_src = f"/media/{os.path.basename(os.path.dirname(files['media_rel']))}/{os.path.basename(files['media_rel'])}"
+    video_line = ""
+    if files.get("video_rel"):
+        video_line = f"- 🎬 视频：[{os.path.basename(files['video_rel'])}]({files['video_rel']})"
     md += "\n".join([
         f"- 🎵 音频：[{os.path.basename(files['media_rel'])}]({files['media_rel']})",
+        *( [video_line] if video_line else [] ),
         *( [song_line] if song_line else [] ),
         f"- 📝 字幕：{sub_src or '无'}"
         + ("（AI 听写，个别字可能有误）" if sub_src.startswith("AI") else ""),
@@ -484,7 +485,8 @@ def ingest(url: str, vault_root: str = None, audio_only: bool = True,
     ])
     return {"title": title, "md": md, "platform": "douyin_music",
             "source": author, "aweme_id": vid, "subtitle": sub_src,
-            "media_rel": files["media_rel"], "cover_rel": files["cover_rel"],
+            "media_rel": files["media_rel"], "video_rel": files.get("video_rel", ""),
+            "cover_rel": files["cover_rel"],
             "duration_sec": dur_s, "url": meta["url"]}
 
 
@@ -514,9 +516,8 @@ if __name__ == "__main__":
     import sys as _sys
     import json as _json
     if len(_sys.argv) < 2:
-        print("用法: python douyin_music.py <抖音作品链接或ID> [keep_mp4]")
+        print("用法: python douyin_music.py <抖音作品链接或ID> [audio_only]")
         _sys.exit(1)
-    keep = len(_sys.argv) > 2 and _sys.argv[2] == "keep_mp4"
-    out = ingest(_sys.argv[1], audio_only=not keep)
+    out = ingest(_sys.argv[1], with_video=len(_sys.argv) <= 2)
     print(_json.dumps({k: v for k, v in out.items() if k != "md"},
                       ensure_ascii=False, indent=2))

@@ -814,8 +814,8 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
 
 
 # ---------- 抖音音乐（采集·播放·管理，免解析） ----------
-def do_douyin_music(url, write_vault=True, audio_only=True, transcribe=True):
-    """单条抖音作品链接 → 下载音频/视频落地 → 极简笔记入库（platform=douyin_music）。
+def do_douyin_music(url, write_vault=True, with_video=True, transcribe=True):
+    """单条抖音作品链接 → 下载视频+音频落地 → 极简笔记入库（platform=douyin_music）。
     已抓过的链接直接跳过（返回 skipped），与 VOA 批量「自动排除已抓」一致。"""
     import douyin_music as dm
     url = (url or "").strip()
@@ -829,7 +829,7 @@ def do_douyin_music(url, write_vault=True, audio_only=True, transcribe=True):
                 "title": row[1] or "已抓过", "skipped": True,
                 "md": "", "vault_path": "",
                 "follow": f"该链接已采集过（记录 {row[0]}），自动跳过"}
-    out = dm.ingest(url, vault_root=ART_VAULT, audio_only=audio_only,
+    out = dm.ingest(url, vault_root=ART_VAULT, with_video=with_video,
                     transcribe=transcribe)
     vpath = ""
     if write_vault and out.get("md"):
@@ -843,7 +843,8 @@ def do_douyin_music(url, write_vault=True, audio_only=True, transcribe=True):
     return {"id": aid, "ok": True, "platform": "douyin_music",
             "title": out["title"], "source": out.get("source", ""),
             "aweme_id": out.get("aweme_id", ""), "md": out.get("md", ""),
-            "media_rel": out.get("media_rel", ""), "vault_path": vpath,
+            "media_rel": out.get("media_rel", ""),
+            "video_rel": out.get("video_rel", ""), "vault_path": vpath,
             "skipped": False}
 
 
@@ -1696,10 +1697,10 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(self.rfile.read(length).decode("utf-8"))
                 url = (data.get("url") or "").strip()
                 write_vault = bool(data.get("write_vault", True))
-                audio_only = bool(data.get("audio_only", True))
+                with_video = bool(data.get("with_video", True))
                 transcribe = bool(data.get("transcribe", True))
                 self._send(200, do_douyin_music(url, write_vault=write_vault,
-                                                audio_only=audio_only,
+                                                with_video=with_video,
                                                 transcribe=transcribe))
             except Exception as e:
                 # 失败也落一条 error 记录，便于历史里看到原因
