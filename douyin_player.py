@@ -126,7 +126,7 @@ select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:
 .row:hover{background:#f0f4ff}
 .row.cur{background:#fff3cd;box-shadow:inset 3px 0 0 #e6a700;font-weight:600}
 .row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
-.subs{border:1px solid var(--line);border-radius:10px;overflow:hidden;max-height:46vh;overflow-y:auto}
+.subs{border:1px solid var(--line);border-radius:10px;overflow:hidden;max-height:85vh;overflow-y:auto}
 .srow{display:flex;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line);cursor:pointer;align-items:baseline}
 .srow:last-child{border-bottom:0}
 .srow:hover{background:#f0f4ff}
@@ -251,11 +251,17 @@ if (subsEl && SENTS.length) {
     frag.appendChild(row);
   });
   subsEl.appendChild(frag);
-  // 字幕容器内滚动：高亮句滚到容器中部，页面（含视频）保持不动
+  // 固定显示 5 行：容器高度 = 行高 × 5（当前句始终滚到第一行，容器内可手动滚动）
+  // 底部补白 = 4 行高，让最后一句也能滚到第一行位置
+  if (subsEl.children.length) {
+    const rh = subsEl.children[0].offsetHeight;
+    subsEl.style.height = (rh * 5) + "px";
+    subsEl.style.paddingBottom = (subsEl.clientHeight - rh) + "px";
+  }
+  // 字幕容器内滚动：当前句对齐容器第一行，页面（含视频）保持不动
 function keepInView(box, el){
   const br = box.getBoundingClientRect(), er = el.getBoundingClientRect();
-  if (er.top < br.top + 10 || er.bottom > br.bottom - 10)
-    box.scrollTop += er.top - br.top - (box.clientHeight - er.height) / 2;
+  box.scrollTop += er.top - br.top;
 }
 au.addEventListener("timeupdate", () => {
     const t = au.currentTime;

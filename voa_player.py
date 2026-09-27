@@ -107,7 +107,7 @@ button,.btn{border:1px solid var(--line);background:#fff;border-radius:8px;paddi
 button:hover{border-color:var(--acc);color:var(--acc)}
 button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px;background:#fff;color:var(--fg)}
-.sents{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;max-height:56vh;overflow-y:auto}
+.sents{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;max-height:85vh;overflow-y:auto}
 .row{display:flex;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;align-items:baseline}
 .row:last-child{border-bottom:0}
 .row:hover{background:#f0f4ff}
@@ -172,6 +172,13 @@ SENTS.forEach((s, i) => {
   frag.appendChild(row);
 });
 list.appendChild(frag);
+// 固定显示 5 行：容器高度 = 行高 × 5（当前句始终滚到第一行，容器内可手动滚动）
+// 底部补白 = 4 行高，让最后一句也能滚到第一行位置
+if (list.children.length) {
+  const rh = list.children[0].offsetHeight;
+  list.style.height = (rh * 5) + "px";
+  list.style.paddingBottom = (list.clientHeight - rh) + "px";
+}
 function fmt(t){ t = Math.round(t); return String(Math.floor(t/60)).padStart(2,"0") + ":" + String(t%60).padStart(2,"0"); }
 function dur(i){ const nx = SENTS[i+1] ? SENTS[i+1][0] : (audio.duration || SENTS[i][0] + 10); return Math.max(nx - SENTS[i][0], 1.2); }
 function seekTo(i){
@@ -181,11 +188,10 @@ function seekTo(i){
   if (audio.paused) audio.play().catch(()=>{});
   paint();
 }
-// 字幕容器内滚动：高亮句滚到容器中部，页面（含视频）保持不动
+// 字幕容器内滚动：当前句对齐容器第一行，页面（含视频）保持不动
 function keepInView(box, el){
   const br = box.getBoundingClientRect(), er = el.getBoundingClientRect();
-  if (er.top < br.top + 10 || er.bottom > br.bottom - 10)
-    box.scrollTop += er.top - br.top - (box.clientHeight - er.height) / 2;
+  box.scrollTop += er.top - br.top;
 }
 function paint(){
   const rows = list.children;
