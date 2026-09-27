@@ -41,7 +41,7 @@ ART_VAULT = (os.environ.get("ARTICLE_VAULT_DIR")
                  else os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "articles_vault")))
 
-URL_ID_RE = re.compile(r"(?:video/|modal_id=)(\d{5,})")
+URL_ID_RE = re.compile(r"(?:video/|note/|modal_id=)(\d{5,})")
 
 _SRT_TS = re.compile(r"(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{1,3})")
 _LRC_LINE = re.compile(r"^\[(\d+):(\d{1,2})(?:\.(\d{1,3}))?\](.*)$")

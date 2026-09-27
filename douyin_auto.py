@@ -20,6 +20,7 @@ channel="msedge" 直接复用系统已装的 Edge，无需下载 chromium）。
 """
 import os
 import re
+import json
 import sys
 import shutil
 import time
@@ -107,6 +108,24 @@ def _log(verbose, msg):
         print(msg)
 
 
+def _find_aweme(obj):
+    """在任意嵌套结构（如 window._ROUTER_DATA）中递归查找 aweme 详情对象。"""
+    if isinstance(obj, dict):
+        if "aweme_id" in obj and ("video" in obj or "images" in obj
+                                  or "music" in obj):
+            return obj
+        for v in obj.values():
+            r = _find_aweme(v)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find_aweme(v)
+            if r is not None:
+                return r
+    return None
+
+
 def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
                      return_full=False):
     """playwright 打开视频页并拦截 aweme_detail，返回 (vid, 标题, 视频直链)。
@@ -115,7 +134,7 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
     music.play_url / 封面 / 作者 / 时长等字段）。
     失败抛 RuntimeError（含原因）。
     """
-    m = re.search(r"(?:video/|modal_id=)(\d{5,})", arg or "")
+    m = re.search(r"(?:video/|note/|modal_id=)(\d{5,})", arg or "")
     if m:
         vid = m.group(1)
     else:
@@ -137,6 +156,8 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
         raise RuntimeError(f"playwright 未安装：{e}（pip install playwright）")
 
     detail = {}
+    detail_url = {}   # 记录最近一次 detail 请求的完整 URL（含签名），供重放兜底
+    retried = {"done": False}
     req_log = []
     url = f"https://www.douyin.com/video/{vid}"
     with sync_playwright() as p:
@@ -155,11 +176,36 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
         context.add_cookies(cookies)
         page = context.new_page()
 
+        # route 代理拦截：route.fetch() 由我们主动发起，响应体一定可读，
+        # 彻底避开 on_response 事后取 body 的 "navigated away" 竞态
+        def on_detail_route(route):
+            try:
+                resp = route.fetch()
+                body = resp.text()
+                _log(verbose, f"  [route] detail 响应体 {len(body)} bytes")
+                try:
+                    j = json.loads(body)
+                    aw = j.get("aweme_detail")
+                    if aw:
+                        detail["data"] = aw
+                        _log(verbose, "  [route] 抓到 aweme_detail")
+                except Exception as e:
+                    _log(verbose, f"  [route] body 解析失败: {e}")
+                route.fulfill(response=resp)
+            except Exception:
+                try:
+                    route.continue_()
+                except Exception:
+                    pass
+
+        page.route("**/aweme/v1/web/aweme/detail*", on_detail_route)
+
         def on_request(req):
             u = req.url
             if "aweme" in u or "douyin" in u:
                 req_log.append(u)
                 if "aweme/v1/web/aweme/detail" in u:
+                    detail_url["u"] = u
                     _log(verbose, "  [req] detail 请求已发出: " + u[:140])
 
         def on_response(resp):
@@ -189,6 +235,23 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
         for i in range(wait_secs):
             if detail:
                 break
+            # SSR 兜底：页面 window._ROUTER_DATA 由服务端注入了本作品完整详情，
+            # 不依赖网络拦截（note 链接会经历 /video → /note 内部导航，易竞态）
+            if not detail and not retried["done"] and i >= 3:
+                retried["done"] = True
+                try:
+                    raw = page.evaluate(
+                        "() => { const d = window._ROUTER_DATA;"
+                        " return d ? JSON.stringify(d) : null }")
+                    if raw:
+                        aw = _find_aweme(json.loads(raw))
+                        if aw:
+                            detail["data"] = aw
+                            _log(verbose, "  [SSR] 从 _ROUTER_DATA 抓到 aweme 详情")
+                        else:
+                            _log(verbose, "  [SSR] _ROUTER_DATA 中未找到 aweme 详情")
+                except Exception as e:
+                    _log(verbose, f"  [SSR] 读取失败: {e}")
             if verbose and i % 10 == 9:
                 try:
                     curl = page.url
