@@ -22,6 +22,8 @@
 前端勾选后逐条走本模块下载入库（与「先过目再入库」原则一致）。
 """
 import datetime
+import io
+import json
 import os
 import re
 import subprocess
@@ -39,6 +41,9 @@ ART_VAULT = (os.environ.get("ARTICLE_VAULT_DIR")
                                    "articles_vault")))
 
 URL_ID_RE = re.compile(r"(?:video/|modal_id=)(\d{5,})")
+
+_SRT_TS = re.compile(r"(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{1,3})\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})[,.](\d{1,3})")
+_LRC_LINE = re.compile(r"^\[(\d+):(\d{1,2})(?:\.(\d{1,3}))?\](.*)$")
 
 
 def extract_id(url: str) -> str:
@@ -249,9 +254,164 @@ def media_paths(vault_root: str, aweme_id: str) -> dict:
     return out
 
 
+def lrc_path(vault_root: str, aweme_id: str) -> str:
+    return os.path.join(vault_root, "media", "douyin", f"{aweme_id}.lrc")
+
+
+def has_lrc(vault_root: str, aweme_id: str) -> bool:
+    return os.path.isfile(lrc_path(vault_root, aweme_id))
+
+
+# ---------------- 字幕：两级取（官方原生 → 本地 whisper 转写） ----------------
+
+def _http_get(url: str, timeout: int = 30) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA, "Referer": "https://www.douyin.com/"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _parse_srt_vtt(blob: bytes) -> list:
+    """SRT/VTT → [(start_sec, end_sec, text), ...]（时间戳小时位可省，VTT 常见）"""
+    txt = blob.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    segs, cur = [], None  # [start, end, [lines]]
+    for line in txt.split("\n"):
+        m = _SRT_TS.search(line)
+        if m:
+            g = m.groups()
+            def _sec(h, mi, s, ms):
+                return (int(h or 0)) * 3600 + int(mi) * 60 + int(s) + int(ms.ljust(3, "0")[:3]) / 1000.0
+            s = _sec(g[0], g[1], g[2], g[3])
+            e = _sec(g[4], g[5], g[6], g[7])
+            if cur:
+                segs.append(cur)
+            cur = [s, e, []]
+        elif cur is not None:
+            t = line.strip()
+            if not t:
+                if cur[2]:
+                    segs.append(cur)
+                    cur = None
+            elif not t.isdigit() and t != "WEBVTT":
+                cur[2].append(t)
+    if cur and cur[2]:
+        segs.append(cur)
+    return [(round(s, 2), round(e, 2), " ".join(ls)) for s, e, ls in segs]
+
+
+def _parse_caption_json(blob: bytes) -> list:
+    """抖音自动字幕 JSON（utterances: start_time/end_time 毫秒 + text）"""
+    j = json.loads(blob.decode("utf-8", errors="replace"))
+    utts = j.get("utterances") if isinstance(j, dict) else None
+    if not utts:
+        return []
+    out = []
+    for u in utts:
+        txt = (u.get("text") or "").strip()
+        if not txt:
+            continue
+        try:
+            s = float(u.get("start_time") or 0) / 1000.0
+            e = float(u.get("end_time") or 0) / 1000.0
+        except (TypeError, ValueError):
+            continue
+        out.append((round(s, 2), round(e, 2), txt))
+    return out
+
+
+def _native_captions(aw: dict) -> list:
+    """从 aweme_detail 提取官方原生字幕（yt-dlp DouyinIE 同款两级）。
+
+    ① interaction_stickers[*].auto_video_caption_info.auto_captions[*]
+       （平台 ASR 自动字幕；utterances 内联或 url 指向 JSON）
+    ② video.cla_info.caption_infos[*].url（创作者/平台字幕，srt/webvtt 优先）
+    返回 [(start_sec, end_sec, text), ...]，无则 []。
+    """
+    candidates = []  # (priority, kind, payload)
+    for st in (aw.get("interaction_stickers") or []):
+        cap_info = st.get("auto_video_caption_info") or {}
+        for cap in (cap_info.get("auto_captions") or []):
+            lang = (cap.get("LanguageCodeName") or cap.get("lang") or "").lower()
+            pri = 0 if lang.startswith("zh") else 1
+            if cap.get("url"):
+                candidates.append((pri, "url", cap["url"]))
+            utts = cap.get("utterances")
+            if utts:
+                candidates.append((pri, "inline_json",
+                                   json.dumps({"utterances": utts}).encode()))
+    cla = ((aw.get("video") or {}).get("cla_info") or {}).get("caption_infos") or []
+    for cap in cla:
+        u, fmt = cap.get("url") or "", (cap.get("Format") or cap.get("format") or "").lower()
+        if not u:
+            continue
+        pri = 0 if fmt in ("srt", "webvtt") else 1
+        candidates.append((pri, "srt_vtt" if fmt in ("srt", "webvtt") else "maybe_json", u))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[0])
+    for _pri, kind, payload in candidates:
+        try:
+            blob = payload.encode() if isinstance(payload, str) and kind == "inline_json" \
+                else _http_get(payload) if isinstance(payload, str) else payload
+            if kind == "inline_json":
+                segs = _parse_caption_json(blob)
+            elif kind == "srt_vtt":
+                segs = _parse_srt_vtt(blob)
+            else:  # maybe_json：先试 utterances JSON，再试 srt/vtt
+                segs = _parse_caption_json(blob) or _parse_srt_vtt(blob)
+            if segs:
+                return segs
+        except Exception:
+            continue
+    return []
+
+
+def _write_lrc(vault_root: str, aweme_id: str, segs: list) -> str:
+    """[(s,e,text)] → media/douyin/<id>.lrc（VOA 同格式 [mm:ss.xx]text），返回 rel path。"""
+    lines = []
+    for s, _e, txt in sorted(segs, key=lambda x: x[0]):
+        total = int(round(float(s) * 100))  # 厘秒
+        mm, rem = divmod(total, 6000)
+        ss, cs = divmod(rem, 100)
+        lines.append(f"[{mm:02d}:{ss:02d}.{cs:02d}]{txt}")
+    dest = lrc_path(vault_root, aweme_id)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with io.open(dest, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return os.path.relpath(dest, vault_root).replace("\\", "/")
+
+
+def transcribe_lrc(vault_root: str, aweme_id: str, verbose: bool = True) -> int:
+    """本地 whisper 转写已有音频 → 写 .lrc。返回句数；无音频/失败抛 RuntimeError。"""
+    media_dir = os.path.join(vault_root, "media", "douyin")
+    src = None
+    for ext in (".m4a", ".mp3", ".mp4"):
+        p = os.path.join(media_dir, f"{aweme_id}{ext}")
+        if os.path.isfile(p):
+            src = p
+            break
+    if not src:
+        raise RuntimeError("本地无音频/视频文件，无法转写（请先采集）")
+    import video_pipeline as vp
+    segs, _lang, err = vp.transcribe_segments(src)
+    if err:
+        raise RuntimeError(f"转写失败：{err}")
+    if not segs:
+        raise RuntimeError("转写结果为空（可能是纯音乐无人声，抖音源本身无歌词）")
+    if verbose:
+        print(f"[douyin_music] whisper 转写 {aweme_id}: {len(segs)} 句", flush=True)
+    _write_lrc(vault_root, aweme_id, segs)
+    return len(segs)
+
+
 def ingest(url: str, vault_root: str = None, audio_only: bool = True,
-           verbose: bool = True) -> dict:
-    """单条抖音作品链接 → 下载媒体 + 极简 Markdown。失败抛 RuntimeError。"""
+           verbose: bool = True, transcribe: bool = True) -> dict:
+    """单条抖音作品链接 → 下载媒体 + 字幕（两级）+ 极简 Markdown。失败抛 RuntimeError。
+
+    字幕：官方原生（自动字幕/创作者字幕）优先；没有且 transcribe=True 时
+    本地 whisper 转写（时间线真实、文字为 AI 听写）。
+    """
     if not vault_root:
         vault_root = ART_VAULT
     # playwright 拦截 aweme_detail（拿全量字段：music/cover/author/duration）
@@ -271,6 +431,27 @@ def ingest(url: str, vault_root: str = None, audio_only: bool = True,
     author = meta["author"] or "未知号主"
     dur_s = meta["duration_ms"] // 1000 if meta["duration_ms"] else 0
     dur_txt = f"{dur_s // 60}:{dur_s % 60:02d}" if dur_s else "未知"
+
+    # 字幕两级取：官方原生 → whisper 本地转写
+    sub_src = ""
+    try:
+        segs = _native_captions(aw)
+        if segs:
+            _write_lrc(vault_root, vid, segs)
+            sub_src = "官方字幕"
+            if verbose:
+                print(f"[douyin_music] 官方原生字幕 {vid}: {len(segs)} 句", flush=True)
+        elif transcribe:
+            try:
+                n = transcribe_lrc(vault_root, vid, verbose=verbose)
+                sub_src = f"AI转写({n}句)"
+            except RuntimeError as te:
+                if verbose:
+                    print(f"[douyin_music] 转写跳过: {te}", flush=True)
+                sub_src = "无字幕源"
+    except Exception as se:
+        if verbose:
+            print(f"[douyin_music] 字幕环节异常（不阻断）: {se}", flush=True)
 
     md = "\n".join([
         "---", "kind: article", "platform: douyin_music", f"aweme_id: {vid}",
@@ -294,22 +475,24 @@ def ingest(url: str, vault_root: str = None, audio_only: bool = True,
     md += "\n".join([
         f"- 🎵 音频：[{os.path.basename(files['media_rel'])}]({files['media_rel']})",
         *( [song_line] if song_line else [] ),
+        f"- 📝 字幕：{sub_src or '无'}"
+        + ("（AI 听写，个别字可能有误）" if sub_src.startswith("AI") else ""),
         f"- 👤 号主：{author} · ⏱ 时长：{dur_txt}"
         + (f" · 📅 {meta['create_time']}" if meta["create_time"] else ""),
         f"- ▶️ 播放器：[在线播放](http://127.0.0.1:{PLAYER_PORT}/player/douyin/{vid})",
         f"- 🔗 原链：{meta['url']}", "",
     ])
     return {"title": title, "md": md, "platform": "douyin_music",
-            "source": author, "aweme_id": vid,
+            "source": author, "aweme_id": vid, "subtitle": sub_src,
             "media_rel": files["media_rel"], "cover_rel": files["cover_rel"],
             "duration_sec": dur_s, "url": meta["url"]}
 
 
 def cleanup_media(vault_root: str, aweme_id: str) -> list:
-    """删除某 aweme_id 的本地媒体与封面（记录删除联动）。"""
+    """删除某 aweme_id 的本地媒体/字幕/封面（记录删除联动）。"""
     removed = []
     media_dir = os.path.join(vault_root, "media", "douyin")
-    for ext in (".m4a", ".mp3", ".mp4"):
+    for ext in (".m4a", ".mp3", ".mp4", ".lrc"):
         fp = os.path.join(media_dir, f"{aweme_id}{ext}")
         if os.path.isfile(fp):
             try:

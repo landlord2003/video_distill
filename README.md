@@ -307,6 +307,9 @@ docs/设计方案.md       # 原实施方案
 
 ## 版本线
 
+- **v4.7**：抖音音乐**两级取字幕 + 播放器卡拉OK化**——采集时先抓官方原生字幕（①interaction_stickers 自动字幕 utterances 毫秒时间线 ②video.cla_info.caption_infos srt/vtt，yt-dlp DouyinIE 同款路径），没有则本地 whisper AI 转写兜底（transcribe_segments 复用，时间线真实/文字为听写）；统一落 LRC（media/douyin/&lt;id&gt;.lrc）；`/player/douyin` 加卡拉OK字幕区（播放到哪句高亮哪句+点击跳播+自动滚动），无字幕明示「暂无字幕」；记录中心加「📝 转写」按钮（本地 whisper 补转写存量记录，已有字幕自动跳过）；删除记录联动清理 .lrc；处理选项加「📝 生成字幕」开关
+- **v4.6.1**：歌名提取链修复——曲库歌曲取 matched_song.title/author/album（「歌名 - 歌手」），原声识别「@xxx创作的原声」标注为「文案（号主 原声）」并在笔记明示抖音无歌名/歌词数据；不再拿话题文案当歌名
+
 - **v4.6**：新增 🎵 **抖音音乐**源（免解析，照搬可播放）——链接清单/号主主页过目勾选两路采集；playwright 拦截 aweme_detail 提取 纯音频直链(优先,~2MB)/视频直链(ffmpeg 抽音轨)/封面/号主/时长；CDN 直链有时效故**采集即落地**（media/douyin/）；`/player/douyin/<id>` 纯播放器（大封面+播放列表同号主自动连播+单曲循环+倍速+**进度记忆续播**）；记录中心独立「🎵 抖音音乐」大类（号主=来源维度 chips）；删除记录联动清理本地音频/封面；新增 douyin_music.py / douyin_player.py，douyin_auto.fetch_direct_url 加 return_full 开关
 
 - **v4.5.1**：记录中心 VOA 独立成「🎧 VOA英语」大类——按 platform 从文章中拆分，文章页签不再混入；独立页签含栏目 chips 筛选与编辑/查看/删除

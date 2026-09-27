@@ -814,7 +814,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
 
 
 # ---------- 抖音音乐（采集·播放·管理，免解析） ----------
-def do_douyin_music(url, write_vault=True, audio_only=True):
+def do_douyin_music(url, write_vault=True, audio_only=True, transcribe=True):
     """单条抖音作品链接 → 下载音频/视频落地 → 极简笔记入库（platform=douyin_music）。
     已抓过的链接直接跳过（返回 skipped），与 VOA 批量「自动排除已抓」一致。"""
     import douyin_music as dm
@@ -829,7 +829,8 @@ def do_douyin_music(url, write_vault=True, audio_only=True):
                 "title": row[1] or "已抓过", "skipped": True,
                 "md": "", "vault_path": "",
                 "follow": f"该链接已采集过（记录 {row[0]}），自动跳过"}
-    out = dm.ingest(url, vault_root=ART_VAULT, audio_only=audio_only)
+    out = dm.ingest(url, vault_root=ART_VAULT, audio_only=audio_only,
+                    transcribe=transcribe)
     vpath = ""
     if write_vault and out.get("md"):
         os.makedirs(ART_VAULT, exist_ok=True)
@@ -1089,9 +1090,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(404, "<h1>无法从记录解析 aweme_id</h1>",
                            "text/html; charset=utf-8")
                 return
+            sents, sub_source = [], ""
+            try:
+                lrcp = dm.lrc_path(ART_VAULT, vid)
+                if os.path.isfile(lrcp):
+                    import douyin_player as _dp
+                    sents = _dp.parse_lrc(lrcp)
+                    sub_source = "官方字幕 / AI 转写"
+            except Exception:
+                pass
             code, html = douyin_player.render(
                 vid, title=title, author=author,
-                playlist=_douyin_playlist_rows(author, cur_aid=aid))
+                playlist=_douyin_playlist_rows(author, cur_aid=aid),
+                sents=sents, sub_source=sub_source)
             body = html.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1686,8 +1697,10 @@ class Handler(BaseHTTPRequestHandler):
                 url = (data.get("url") or "").strip()
                 write_vault = bool(data.get("write_vault", True))
                 audio_only = bool(data.get("audio_only", True))
+                transcribe = bool(data.get("transcribe", True))
                 self._send(200, do_douyin_music(url, write_vault=write_vault,
-                                                audio_only=audio_only))
+                                                audio_only=audio_only,
+                                                transcribe=transcribe))
             except Exception as e:
                 # 失败也落一条 error 记录，便于历史里看到原因
                 try:
@@ -1696,6 +1709,33 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 self._send(500, {"error": str(e)[:500]})
+            return
+        # ---------------- 抖音音乐 补转写字幕（本地 whisper，存量记录可用） ----------------
+        m = re.match(r"^/api/douyin_transcribe/([^/]+)$", self.path)
+        if m and self.command == "POST":
+            try:
+                import douyin_music as dm
+                key = urllib.parse.unquote(m.group(1))
+                # key 支持记录 id 或纯 aweme_id
+                vid = key if re.fullmatch(r"\d{10,}", key) else ""
+                if not vid:
+                    with db() as c:
+                        r = c.execute(
+                            "SELECT url FROM articles WHERE id=? AND platform='douyin_music'",
+                            (key,)).fetchone()
+                        vid = dm.extract_id(r[0]) if r else ""
+                if not vid:
+                    self._send(404, {"error": "记录不存在或无法解析 aweme_id"})
+                    return
+                if dm.has_lrc(ART_VAULT, vid):
+                    self._send(200, {"ok": True, "skipped": True,
+                                     "msg": "已有字幕，无需重复转写"})
+                    return
+                n = dm.transcribe_lrc(ART_VAULT, vid)
+                self._send(200, {"ok": True, "sentences": n,
+                                 "msg": f"转写完成：{n} 句（AI 听写，个别字可能有误）"})
+            except Exception as e:
+                self._send(500, {"error": str(e)[:400]})
             return
         # ---------------- 视频号/抖音 整理 ----------------
         if self.path == "/api/video":

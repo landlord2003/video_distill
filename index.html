@@ -429,7 +429,8 @@ function renderSrc(){
   if(s.kind==='music') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
     <label class="toggle" title="优先抓纯音频直链；视频类作品下载后 ffmpeg 抽音轨（省约 90% 空间）。关闭则保留 mp4 可看画面"><input type="checkbox" id="oaudio" checked> 🎵 只存音频（省空间）</label>
-    <div class="mut" style="font-size:12px;margin-top:4px">🚫 免解析：仅下载落地 + 极简笔记，不做转录/蒸馏/要点解析</div>`;
+    <label class="toggle" title="两级取字幕：先抓抖音官方原生字幕（自动字幕/创作者字幕，时间线最准）；没有则本地 whisper AI 转写（时间线真实，个别字可能有误）"><input type="checkbox" id="otranscribe" checked> 📝 生成字幕（官方优先→AI转写兜底）</label>
+    <div class="mut" style="font-size:12px;margin-top:4px">🚫 免解析：仅下载落地 + 极简笔记，不做转录蒸馏/要点解析（字幕除外）</div>`;
   else if(s.kind==='video') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
     <label class="toggle" title="英文等外语视频：保留原文并逐段对照中文翻译（本地模型翻译）"><input type="checkbox" id="obilingual"> 🔤 双语字幕对照</label>
@@ -697,7 +698,8 @@ async function runMusicPipe(){
       try{
         const r = await fetch('/api/douyin_music',{method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({url:urls[i], write_vault:o.vault, audio_only:o.audioOnly})});
+          body:JSON.stringify({url:urls[i], write_vault:o.vault, audio_only:o.audioOnly,
+                               transcribe:!!($('#otranscribe') && $('#otranscribe').checked)})});
         const d = await r.json();
         if(!r.ok)
           results.push({source_url:urls[i], ok:false, error:d.error||('HTTP '+r.status), markdown:'', _icon:s.icon});
@@ -1006,6 +1008,7 @@ function renderRecords(){
         ${x.type==='article'?`<span class="chip run" style="cursor:default">${esc(x.source||_platLabel[x.platform]||x.platform||'文章')}</span>`:''}
         ${x.type==='dymusic'&&x.source?`<span class="chip run" style="cursor:default">👤 ${esc(x.source)}</span>`:''}
         ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn pri" onclick="event.stopPropagation();window.open('/player/douyin/${escAttr(x.id)}')">▶ 播放</button>`:''}
+        ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn" onclick="event.stopPropagation();dyTranscribe('${escAttr(x.id)}',this)" title="本地 whisper 补转写字幕（已有则跳过）">📝 转写</button>`:''}
         ${x.type==='dymusic'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','dymusic')">编辑</button>
         <button class="btn" onclick="event.stopPropagation();recView('dymusic','${escAttr(x.id)}')">查看</button>`:''}
         ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>`:''}
@@ -1084,6 +1087,16 @@ function recToggleRaw(btn){
   const raw = box.classList.toggle('md-raw');
   if(raw){ box.classList.add('md-raw'); box.textContent = _currentMd||''; btn.textContent='渲染'; }
   else { box.classList.remove('md-raw'); box.innerHTML = DOMPurify.sanitize(marked.parse(_currentMd||'')); btn.textContent='源码'; }
+}
+async function dyTranscribe(id, btn){
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ 转写中…'; }
+  try{
+    const r = await fetch('/api/douyin_transcribe/'+encodeURIComponent(id), {method:'POST'});
+    const d = await r.json();
+    if(r.ok) alert(d.msg || '完成');
+    else alert('✗ '+(d.error||('HTTP '+r.status)));
+  }catch(err){ alert('✗ 请求失败: '+err.message); }
+  if(btn){ btn.disabled = false; btn.textContent = '📝 转写'; }
 }
 async function recDel(type, id){
   const meta = {web:['/api/crawls/','确定删除这条网页抓取记录？关联 .md/.json 文件一并删除。'],

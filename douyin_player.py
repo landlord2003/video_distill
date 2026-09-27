@@ -9,8 +9,10 @@
 数据源：vault media/douyin/<aweme_id>.m4a|.mp3|.mp4 + images/douyin/<aweme_id>.jpg
 （由 douyin_music.ingest 产出；Web 走 /media/ 与 /images/ 路由）
 """
+import io
 import json
 import os
+import re
 
 # 与 app.py / douyin_music.py 保持同一 vault 解析逻辑
 _ART_VAULT_DEFAULT = r"E:\Workbuddy\Claw\08-文章笔记"
@@ -18,6 +20,33 @@ ART_VAULT = (os.environ.get("ARTICLE_VAULT_DIR")
              or (_ART_VAULT_DEFAULT if os.path.isdir(os.path.dirname(_ART_VAULT_DEFAULT))
                  else os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "articles_vault")))
+
+_LRC_LINE = re.compile(r"^\[(\d+):(\d{1,2})(?:\.(\d{1,3}))?\](.*)$")
+
+
+def parse_lrc(path: str):
+    """LRC → [(t, text), ...]（抖音单行文本格式；VOA 双行双语格式兼容：取 en 行）。"""
+    out = []
+    with io.open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = _LRC_LINE.match(line.strip())
+            if not m:
+                continue
+            mm, ss, frac, text = m.groups()
+            t = int(mm) * 60 + int(ss)
+            if frac:
+                t += int(frac.ljust(3, "0")[:3]) / 1000.0
+            text = text.strip()
+            if text:
+                out.append((round(t, 2), text))
+    # 同一时间戳连续两行（双语）只取第一行，避免重复显示
+    merged, last_t = [], None
+    for t, text in out:
+        if last_t is not None and abs(t - last_t) <= 0.05 and merged:
+            continue
+        merged.append((t, text))
+        last_t = t
+    return merged
 
 
 def _esc(s: str) -> str:
@@ -37,8 +66,13 @@ def media_src(aweme_id: str):
 
 
 def render(aweme_id: str, title: str = "", author: str = "",
-           playlist=None):
-    """返回 (http_code, html)。playlist: [{aid,title,vid,cur}]（当前条 cur=True）。"""
+           playlist=None, sents=None, sub_source: str = ""):
+    """返回 (http_code, html)。
+
+    playlist: [{aid,title,vid,cur}]（当前条 cur=True）
+    sents: [(t, text), ...] 字幕句（有则卡拉OK同步区，无则提示可补转写）
+    sub_source: 字幕来源标注（官方字幕 / AI转写）
+    """
     aweme_id = str(aweme_id).strip()
     src, kind = media_src(aweme_id)
     has_cover = os.path.isfile(os.path.join(ART_VAULT, "images", "douyin",
@@ -92,6 +126,15 @@ select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:
 .row:hover{background:#f0f4ff}
 .row.cur{background:#fff3cd;box-shadow:inset 3px 0 0 #e6a700;font-weight:600}
 .row .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+.subs{border:1px solid var(--line);border-radius:10px;overflow:hidden;max-height:46vh;overflow-y:auto}
+.srow{display:flex;gap:10px;padding:9px 16px;border-bottom:1px solid var(--line);cursor:pointer;align-items:baseline}
+.srow:last-child{border-bottom:0}
+.srow:hover{background:#f0f4ff}
+.srow.cur{background:#fff3cd;box-shadow:inset 3px 0 0 #e6a700}
+.srow.cur .st{color:#b45309;font-weight:700}
+.srow.cur .tm{color:#e6a700;font-weight:600}
+.srow .tm{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;min-width:44px;flex:none}
+.srow .st{flex:1}
 .hint{color:var(--mut);font-size:12.5px;margin:10px 4px}
 .kbd{border:1px solid var(--line);border-radius:4px;padding:0 5px;background:#fff;font-size:11.5px}
 @media (max-width:760px){ .side{flex:1 1 100%;max-width:none} }
@@ -119,6 +162,7 @@ __MEDIA__
         </div>
         <div class="hint"><span class="kbd">Space</span> 播放/暂停 · <span class="kbd">←</span><span class="kbd">→</span> 快退/快进 10 秒 · 进度自动记忆，下次续播</div>
       </div>
+__SUBSBOX__
     </div>
     <div class="side">
       <div class="pl" id="plbox">
@@ -192,15 +236,59 @@ document.addEventListener("keydown", e => {
   else if (e.key === "ArrowLeft") au.currentTime = Math.max(0, au.currentTime - 10);
   else if (e.key === "ArrowRight") au.currentTime = Math.min(au.duration || 0, au.currentTime + 10);
 });
+// ---------- 字幕卡拉OK同步（播放到哪句，哪句高亮；点击句子跳播） ----------
+const SENTS = __SENTS__;
+const subsEl = document.getElementById("subs");
+let curS = -1;
+function fmtT(t){ t = Math.round(t); return String(Math.floor(t/60)).padStart(2,"0") + ":" + String(t%60).padStart(2,"0"); }
+if (subsEl && SENTS.length) {
+  const frag = document.createDocumentFragment();
+  SENTS.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "srow";
+    row.innerHTML = '<span class="tm">' + fmtT(s[0]) + '</span><span class="st">' + s[1] + '</span>';
+    row.onclick = () => { au.currentTime = s[0] + 0.01; if (au.paused) au.play().catch(()=>{}); };
+    frag.appendChild(row);
+  });
+  subsEl.appendChild(frag);
+  au.addEventListener("timeupdate", () => {
+    const t = au.currentTime;
+    if (t <= 0) return;
+    let i = curS < 0 ? 0 : curS;
+    while (i + 1 < SENTS.length && t >= SENTS[i+1][0]) i++;
+    while (i > 0 && t < SENTS[i][0]) i--;
+    if (i !== curS) {
+      curS = i;
+      const rows = subsEl.children;
+      for (let k = 0; k < rows.length; k++) rows[k].classList.toggle("cur", k === i);
+      rows[i].scrollIntoView({block: "center", behavior: "smooth"});
+    }
+  });
+}
 </script>
 </body>
 </html>"""
     pl_n = f"{len(playlist or [])} 首" if playlist else "0 首"
+    sents = list(sents or [])
+    if sents:
+        subs_box = ('<div class="card"><div class="bar" style="margin-bottom:8px">'
+                    '<b style="font-size:14px">📝 字幕（共 ' + str(len(sents)) + ' 句）</b>'
+                    '<span class="hint" style="margin:0">' + _esc(sub_source or "") + '</span>'
+                    '<span style="flex:1"></span>'
+                    '<span class="hint" style="margin:0">点击句子跳播 · 自动跟踪高亮</span></div>'
+                    '<div class="subs" id="subs"></div></div>')
+    else:
+        subs_box = ('<div class="hint" style="margin:4px 2px">📝 暂无字幕——抖音源多数作品无原生字幕。'
+                    '可在记录中心点「📝 转写」用本地 AI 生成（有原生字幕的作品采集时已自动抓取）。</div>')
+    sents_data = json.dumps([[t, x] for t, x in sents],
+                            ensure_ascii=False).replace("</", "<\\/")
     html = (html.replace("__TITLE__", _esc(title))
                 .replace("__AUTHOR__", _esc(author))
                 .replace("__MEDIA__", media_el)
                 .replace("__VID__", aweme_id)
                 .replace("__PL__", data)
                 .replace("__POSTER__", poster_json)
-                .replace("__PLN__", pl_n))
+                .replace("__PLN__", pl_n)
+                .replace("__SUBSBOX__", subs_box)
+                .replace("__SENTS__", sents_data))
     return 200, html
