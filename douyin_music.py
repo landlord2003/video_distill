@@ -48,14 +48,8 @@ _LRC_LINE = re.compile(r"^\[(\d+):(\d{1,2})(?:\.(\d{1,3}))?\](.*)$")
 
 
 def extract_id(url: str) -> str:
-    """抖音作品链接 → aweme_id。支持 /video/<id>、modal_id=<id>、纯数字 id。"""
-    u = (url or "").strip()
-    m = URL_ID_RE.search(u)
-    if m:
-        return m.group(1)
-    if u.isdigit():
-        return u
-    return ""
+    """抖音任意形态作品链接 → aweme_id（统一走 douyin_auto.resolve_aweme_id）。"""
+    return douyin_auto.resolve_aweme_id(url)
 
 
 def is_douyin_music(url: str) -> bool:

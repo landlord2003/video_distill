@@ -126,6 +126,39 @@ def _find_aweme(obj):
     return None
 
 
+_URL_ID_RE = re.compile(r"(?:video/|note/|slides/|modal_id=)(\d{5,})")
+_SHORT_URL_RE = re.compile(r"^https?://(?:v\.douyin\.com|www\.iesdouyin\.com/share)"
+                           r"/[\w\-./?=&%]*", re.I)
+
+
+def resolve_aweme_id(url: str) -> str:
+    """任意形态抖音链接 → aweme_id；解析不出返回 ''。
+
+    覆盖形态：/video/<id>、/note/<id>、/slides/<id>、share/*、modal_id=<id>、
+    纯数字 id、短链（v.douyin.com/xxx 跟随重定向取真实 id）。
+    """
+    u = (url or "").strip()
+    m = _URL_ID_RE.search(u)
+    if m:
+        return m.group(1)
+    if u.isdigit():
+        return u
+    if _SHORT_URL_RE.match(u):
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                u, headers={"User-Agent": UA,
+                            "Accept": "text/html,application/xhtml+xml"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                final = r.geturl()
+            m = _URL_ID_RE.search(final)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+    return ""
+
+
 def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
                      return_full=False):
     """playwright 打开视频页并拦截 aweme_detail，返回 (vid, 标题, 视频直链)。
@@ -134,13 +167,12 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
     music.play_url / 封面 / 作者 / 时长等字段）。
     失败抛 RuntimeError（含原因）。
     """
-    m = re.search(r"(?:video/|note/|modal_id=)(\d{5,})", arg or "")
-    if m:
-        vid = m.group(1)
-    else:
-        vid = arg.strip() if (arg or "").strip().isdigit() else None
+    vid = resolve_aweme_id(arg)
     if not vid:
-        raise RuntimeError(f"无法从参数解析出视频ID: {arg!r}")
+        raise RuntimeError(
+            f"无法从参数解析出作品ID: {arg!r}。"
+            "支持 /video/<id>、/note/<id>、/slides/<id>、modal_id=<id>、"
+            "纯数字 id、v.douyin.com 短链")
 
     cf = resolve_cookie_file(cookie_file)
     if not cf:
@@ -271,7 +303,9 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
             print("  调试: 共观察到", len(req_log), "条 aweme/douyin 相关请求")
             for r in req_log[:15]:
                 print("    -", r[:140])
-        raise RuntimeError("未拦截到 aweme_detail（可能页面被验证拦截或未登录）")
+        raise RuntimeError(
+            "未拦截到 aweme_detail（可能原因：①同 cookie 连续抓取触发风控限流，"
+            "请冷却几分钟再试；②作品已删除/仅自己可见；③cookie 过期需重新导出）")
 
     aw = detail["data"]
     if return_full:
