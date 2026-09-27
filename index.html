@@ -971,7 +971,7 @@ function recSub(x){
   if(x.type==='video') return [x.source_url, x.category?('分类 '+x.category):'', x.source||''].filter(Boolean).join(' · ');
   if(x.type==='article') return [_platLabel[x.platform]||x.platform||'', x.url].filter(Boolean).join(' · ');
   if(x.type==='voa') return [x.category?('栏目 '+x.category):'VOA', (String(x.url||'').match(/[?&]id=(\d+)/)||[])[1]?('#'+String(x.url).match(/[?&]id=(\d+)/)[1]):''].filter(Boolean).join(' · ');
-  if(x.type==='dymusic') return [x.source?('👤 '+x.source):'抖音音乐', (String(x.url||'').match(/\/video\/(\d+)/)||[])[1]?('#'+String(x.url).match(/\/video\/(\d+)/)[1]):''].filter(Boolean).join(' · ');
+  if(x.type==='dymusic') return [x.source?('🎵 '+x.source):'🎵 抖音音乐', (String(x.url||'').match(/\/video\/(\d+)/)||[])[1]?('#'+String(x.url).match(/\/video\/(\d+)/)[1]):''].filter(Boolean).join(' · ');
   if(x.type==='tts') return [x.voice, (x.chars?x.chars+'字':''), (x.chunks>1?x.chunks+'段':''), (x.seconds?x.seconds+'s':'')].filter(Boolean).join(' · ');
   return '';
 }
@@ -1006,7 +1006,7 @@ function renderRecords(){
         ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
         ${(x.type==='article'||x.type==='voa')&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
         ${x.type==='article'?`<span class="chip run" style="cursor:default">${esc(x.source||_platLabel[x.platform]||x.platform||'文章')}</span>`:''}
-        ${x.type==='dymusic'&&x.source?`<span class="chip run" style="cursor:default">👤 ${esc(x.source)}</span>`:''}
+        ${x.type==='dymusic'&&x.source?`<span class="chip run" style="cursor:default">🎵 ${esc(x.source)}</span>`:''}
         ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn pri" onclick="event.stopPropagation();window.open('/player/douyin/${escAttr(x.id)}')">▶ 播放</button>`:''}
         ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn" onclick="event.stopPropagation();dyTranscribe('${escAttr(x.id)}',this)" title="本地 whisper 补转写字幕（已有则跳过）">📝 转写</button>`:''}
         ${x.type==='dymusic'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','dymusic')">编辑</button>

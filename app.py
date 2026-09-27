@@ -1732,7 +1732,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"ok": True, "skipped": True,
                                      "msg": "已有字幕，无需重复转写"})
                     return
-                n = dm.transcribe_lrc(ART_VAULT, vid)
+                segs = dm.transcribe_lrc(ART_VAULT, vid)
+                n = len(segs)
+                # 歌词写进 md 笔记（无歌词区才补），便于识别歌名
+                with db() as c:
+                    r2 = c.execute("SELECT vault_path FROM articles "
+                                   "WHERE platform='douyin_music' AND url LIKE ?",
+                                   (f"%{vid}%",)).fetchone()
+                if r2 and r2[0] and os.path.isfile(r2[0]) and segs:
+                    import io as _io
+                    _txt = _io.open(r2[0], encoding="utf-8").read()
+                    if "## 🎙 歌词" not in _txt:
+                        _txt += ("## 🎙 歌词（来自字幕，AI 听写可能有误）\n\n"
+                                 + "\n".join(t for _s, _e, t in segs) + "\n\n")
+                        _io.open(r2[0], "w", encoding="utf-8").write(_txt)
                 self._send(200, {"ok": True, "sentences": n,
                                  "msg": f"转写完成：{n} 句（AI 听写，个别字可能有误）"})
             except Exception as e:

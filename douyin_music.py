@@ -117,12 +117,16 @@ def _meta_from_aw(aw: dict) -> dict:
             pass
     vurl, _src = extract_video_url(aw)
     caption = (aw.get("desc") or "").strip()
-    # 展示标题：曲库歌曲用「歌名 - 歌手」，原声用「文案（号主 原声）」兜底
+    # 文案清洗：去掉 #话题 标签与多余空白（话题不是歌名，只是噪音）
+    clean_caption = re.sub(r"#[^\s#]+", "", caption)
+    clean_caption = re.sub(r"\s{2,}", " ", clean_caption).strip()
+    # 展示标题：曲库歌曲用「歌名 - 歌手」，原声用「正文（号主 原声）」兜底
+    # （注：原声类抖音数据层无歌名，可从转写歌词/话题人工识别后改名）
     if song["kind"] == "song" and song["song"]:
         title = song["song"] + (f" - {song['artist']}" if song["artist"] else "")
     else:
         owner = song["orig_owner"] or author or "未知号主"
-        title = f"{caption}（{owner} 原声）" if caption else f"{owner} 原声"
+        title = f"{clean_caption}（{owner} 原声）" if clean_caption else f"{owner} 原声"
     return {
         "id": vid,
         "title": title or f"抖音 {vid}",
@@ -379,8 +383,8 @@ def _write_lrc(vault_root: str, aweme_id: str, segs: list) -> str:
     return os.path.relpath(dest, vault_root).replace("\\", "/")
 
 
-def transcribe_lrc(vault_root: str, aweme_id: str, verbose: bool = True) -> int:
-    """本地 whisper 转写已有音频 → 写 .lrc。返回句数；无音频/失败抛 RuntimeError。"""
+def transcribe_lrc(vault_root: str, aweme_id: str, verbose: bool = True) -> list:
+    """本地 whisper 转写已有音频 → 写 .lrc。返回 [(s,e,text), ...]；无音频/失败抛 RuntimeError。"""
     media_dir = os.path.join(vault_root, "media", "douyin")
     src = None
     for ext in (".m4a", ".mp3", ".mp4"):
@@ -399,7 +403,7 @@ def transcribe_lrc(vault_root: str, aweme_id: str, verbose: bool = True) -> int:
     if verbose:
         print(f"[douyin_music] whisper 转写 {aweme_id}: {len(segs)} 句", flush=True)
     _write_lrc(vault_root, aweme_id, segs)
-    return len(segs)
+    return segs
 
 
 def ingest(url: str, vault_root: str = None, with_video: bool = True,
@@ -407,7 +411,8 @@ def ingest(url: str, vault_root: str = None, with_video: bool = True,
     """单条抖音作品链接 → 下载媒体（视频+音频）+ 字幕（两级）+ 极简 Markdown。
 
     失败抛 RuntimeError。字幕：官方原生（自动字幕/创作者字幕）优先；
-    没有且 transcribe=True 时本地 whisper 转写（时间线真实、文字为 AI 听写）。
+    没有且 transcribe=True 时本地 whisper 转写（时间线真实、文字为 AI 听写，
+    歌词全文写入 md 便于人工识别歌名）。来源固定「抖音音乐」，号主另存 md。
     """
     if not vault_root:
         vault_root = ART_VAULT
@@ -431,17 +436,20 @@ def ingest(url: str, vault_root: str = None, with_video: bool = True,
 
     # 字幕两级取：官方原生 → whisper 本地转写
     sub_src = ""
+    lyric_lines = []  # 歌词/字幕纯文本（写入 md 方便识别歌名）
     try:
         segs = _native_captions(aw)
         if segs:
             _write_lrc(vault_root, vid, segs)
             sub_src = "官方字幕"
+            lyric_lines = [t for _s, _e, t in sorted(segs, key=lambda x: x[0])]
             if verbose:
                 print(f"[douyin_music] 官方原生字幕 {vid}: {len(segs)} 句", flush=True)
         elif transcribe:
             try:
-                n = transcribe_lrc(vault_root, vid, verbose=verbose)
-                sub_src = f"AI转写({n}句)"
+                segs2 = transcribe_lrc(vault_root, vid, verbose=verbose)
+                sub_src = f"AI转写({len(segs2)}句)"
+                lyric_lines = [t for _s, _e, t in segs2]
             except RuntimeError as te:
                 if verbose:
                     print(f"[douyin_music] 转写跳过: {te}", flush=True)
@@ -483,8 +491,12 @@ def ingest(url: str, vault_root: str = None, with_video: bool = True,
         f"- ▶️ 播放器：[在线播放](http://127.0.0.1:{PLAYER_PORT}/player/douyin/{vid})",
         f"- 🔗 原链：{meta['url']}", "",
     ])
+    # 歌词/字幕全文（原声类抖音数据层无歌名，贴出歌词便于人工识别歌名后改名）
+    if lyric_lines:
+        md += "## 🎙 歌词（来自字幕，AI 听写可能有误）\n\n" + "\n".join(lyric_lines) + "\n\n"
     return {"title": title, "md": md, "platform": "douyin_music",
-            "source": author, "aweme_id": vid, "subtitle": sub_src,
+            "source": "抖音音乐", "author": author, "aweme_id": vid,
+            "subtitle": sub_src,
             "media_rel": files["media_rel"], "video_rel": files.get("video_rel", ""),
             "cover_rel": files["cover_rel"],
             "duration_sec": dur_s, "url": meta["url"]}
