@@ -251,7 +251,13 @@ if (subsEl && SENTS.length) {
     frag.appendChild(row);
   });
   subsEl.appendChild(frag);
-  au.addEventListener("timeupdate", () => {
+  // 字幕容器内滚动：高亮句滚到容器中部，页面（含视频）保持不动
+function keepInView(box, el){
+  const br = box.getBoundingClientRect(), er = el.getBoundingClientRect();
+  if (er.top < br.top + 10 || er.bottom > br.bottom - 10)
+    box.scrollTop += er.top - br.top - (box.clientHeight - er.height) / 2;
+}
+au.addEventListener("timeupdate", () => {
     const t = au.currentTime;
     if (t <= 0) return;
     let i = curS < 0 ? 0 : curS;
@@ -261,7 +267,7 @@ if (subsEl && SENTS.length) {
       curS = i;
       const rows = subsEl.children;
       for (let k = 0; k < rows.length; k++) rows[k].classList.toggle("cur", k === i);
-      rows[i].scrollIntoView({block: "center", behavior: "smooth"});
+      keepInView(subsEl, rows[i]);
     }
   });
 }

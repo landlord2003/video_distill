@@ -107,7 +107,7 @@ button,.btn{border:1px solid var(--line);background:#fff;border-radius:8px;paddi
 button:hover{border-color:var(--acc);color:var(--acc)}
 button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px;background:#fff;color:var(--fg)}
-.sents{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.sents{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;max-height:56vh;overflow-y:auto}
 .row{display:flex;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;align-items:baseline}
 .row:last-child{border-bottom:0}
 .row:hover{background:#f0f4ff}
@@ -181,10 +181,16 @@ function seekTo(i){
   if (audio.paused) audio.play().catch(()=>{});
   paint();
 }
+// 字幕容器内滚动：高亮句滚到容器中部，页面（含视频）保持不动
+function keepInView(box, el){
+  const br = box.getBoundingClientRect(), er = el.getBoundingClientRect();
+  if (er.top < br.top + 10 || er.bottom > br.bottom - 10)
+    box.scrollTop += er.top - br.top - (box.clientHeight - er.height) / 2;
+}
 function paint(){
   const rows = list.children;
   for (let i = 0; i < rows.length; i++) rows[i].classList.toggle("cur", i === cur);
-  if (cur >= 0) rows[cur].scrollIntoView({block: "center", behavior: "smooth"});
+  if (cur >= 0) keepInView(list, rows[cur]);
 }
 function tick(){
   if (NO_MEDIA) return;
