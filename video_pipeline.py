@@ -3,10 +3,10 @@
 """
 视频号/抖音 视频整理流水线（本地优先 / 零 API 费）
 流程：本地视频(mp4) -> 抽音频 -> faster-whisper 转写全文(可用 GPU)
-     -> ffmpeg 抽关键帧 -> qwen3-vl:8b 视觉理解
-     -> qwen3:14b 结构化总结(标题/摘要/要点/章节/标签)
+     -> qwen3:14b 结构化总结(标题/摘要/要点/章节/标签)，摘要硬约束 >50 字
      -> 拼装 Markdown -> 写入 Obsidian 库(Claw/07-视频号整理)
 
+关键帧抓取与 qwen3-vl 视觉理解已取消（2026-10-14）：总结完全基于语音转写。
 所有模型调用走本机 Ollama(127.0.0.1:11434)，不外传。
 任何一环不可用都会优雅降级（标注缺失），不中断整条链路。
 """
@@ -389,18 +389,27 @@ def _split_transcript(transcript, size=DISTILL_CHUNK_CHARS):
 
 def _summarize_single(transcript_text, descs_text, source_meta):
     """单段直蒸（转写 ≤ DISTILL_CHUNK_CHARS 时走这里）。返回 JSON dict。"""
+    frames_block = ""
+    if descs_text and descs_text != "（无关键帧描述）":
+        frames_block = f"【关键帧画面描述】\n{descs_text}\n\n"
     prompt = (
-        "你是知识库整理助手。基于一段视频的【语音转写】与【关键帧画面描述】，"
-        "产出结构化笔记。请只输出一个 JSON 对象，字段如下（不要输出任何多余文字、不要 Markdown 代码块标记）：\n"
+        "你是知识库整理助手。基于一段视频的【语音转写】，产出结构化笔记。"
+        "请只输出一个 JSON 对象，字段如下（不要输出任何多余文字、不要 Markdown 代码块标记）：\n"
         "{\n"
         '  "标题": "一句话标题（15字内）",\n'
-        '  "摘要": "120字内的一句话摘要",\n'
+        '  "摘要": "60~160字的摘要（必须大于50字，见下方摘要规则）",\n'
         '  "制作流程": [{"步骤":"1","操作":"本步做什么","用料":"本步用到的原料/工具","参数":"温度/时间/比例等(无则空串)","要点":""}, ...],\n'
         '  "要点": ["要点1","要点2",...],\n'
         '  "章节": [{"时间":"","主题":""}, ...],\n'
         '  "标签": ["标签1","标签2",...],\n'
         '  "关键结论": "可执行的结论或金句（如有）"\n'
         "}\n\n"
+        "【摘要】填写规则（极重要）：\n"
+        "1. 摘要**必须大于50字**（60~160字为宜）。把视频最有价值的信息浓缩进去：\n"
+        "   讲了什么主题、核心观点/做法是什么、有哪些关键数据/人物/结论，读摘要即可了解全片。\n"
+        "2. 从【语音转写】中蒸馏，带具体人物/机构/数字/因果关系，\n"
+        "   **严禁**「这个视频聊了一个话题」式的空话；转写口语错误请自行纠正为规范书面语。\n"
+        "3. 唯一例外：【语音转写】全文本身不足50字时，才允许写更短的摘要。\n\n"
         "【要点】填写规则（极重要）：\n"
         "1. 给出 6~10 条要点；每条必须是一个信息完整的句子，从【语音转写】中蒸馏出**具体事实**：\n"
         "   人物、机构、金额、时间、数量、比例、因果关系等细节，缺一不可。\n"
@@ -411,10 +420,10 @@ def _summarize_single(transcript_text, descs_text, source_meta):
         "【制作流程】填写规则（极重要）：\n"
         "1. 若视频是制作方法/教程/工艺/实验类，请务必填写『制作流程』——按视频出现顺序，"
         "逐步还原每一步的具体操作、所用原料与工具、关键参数（温度/时间/配比/火候）、以及成败要点。\n"
-        "2. 每一步必须基于【关键帧画面描述】与【语音转写】中的真实信息，**严禁编造**；"
-        "信息不足的步骤请如实标注（画面/语音未明确展示），不要脑补步骤名或参数。\n"
+        "2. 每一步必须基于【语音转写】中的真实信息，**严禁编造**；"
+        "信息不足的步骤请如实标注（语音未明确说明），不要脑补步骤名或参数。\n"
         "3. 若为普通内容（非制作方法类），给空数组 []。\n\n"
-        f"【关键帧画面描述】\n{descs_text}\n\n"
+        f"{frames_block}"
         f"【语音转写】\n{transcript_text}\n"
     )
     raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1800, keep_alive="10m")
@@ -488,6 +497,33 @@ def _parse_reduce_output(raw):
     return data
 
 
+def _ensure_summary_len(data, summarize_text):
+    """摘要硬约束守卫（确定性，不依赖模型自觉）：
+
+    转写源文本 ≥50 字时，摘要必须 ≥50 字；不达标则依序补足——
+    ① 用要点拼接（含具体细节，质量最好）→ ② 取转写开头的完整句子。
+    转写源文本 <50 字时放行（源材料就那么多，摘要短情有可原）。
+    """
+    sm = (data.get("摘要") or "").strip()
+    src = re.sub(r"\s+", "", summarize_text or "")
+    if len(sm) >= 50 or len(src) < 50:
+        return data
+    # ① 要点拼接
+    pts = [p.strip() for p in (data.get("要点") or []) if len(p.strip()) >= 6]
+    fill = sm
+    for p in pts:
+        if len(fill) >= 50:
+            break
+        fill = f"{fill}；{p}" if fill else p
+    if len(fill) >= 50:
+        data["摘要"] = fill
+        return data
+    # ② 转写开头完整句兜底（切到最后一个句读符号，保语义完整）
+    m = re.match(r"(.{50,}?[。！？；.!?])", src)
+    data["摘要"] = m.group(1) if m else src[:80] + "……"
+    return data
+
+
 def _deterministic_summary(map_items, source_meta):
     """reduce 失败时的无模型兜底：直接用分段要点拼最终结构，绝不把原文塞进摘要。"""
     pts = []
@@ -498,7 +534,7 @@ def _deterministic_summary(map_items, source_meta):
                 for i, (th, _, _) in enumerate(map_items) if th]
     return {
         "标题": source_meta.get("title") or "未命名视频",
-        "摘要": ("；".join(pts[:3])[:150] if pts else "（蒸馏失败，请查看全文转写）"),
+        "摘要": ("。".join(pts[:6])[:200] if pts else "（蒸馏失败，请查看全文转写）"),
         "制作流程": [],
         "章节": chapters,
         "要点": pts[:15],
@@ -521,7 +557,7 @@ def summarize(transcript, frame_descs, source_meta):
     if n == 1:
         data = _summarize_single(transcript[:12000], descs_text, source_meta)
         data["_distill_chunks"] = 1
-        return data
+        return _ensure_summary_len(data, transcript)
 
     # ---- map：逐段蒸馏要点（纯文本协议，容错解析；不强迫模型吐 JSON） ----
     map_items = []   # [(主题, [要点...], 关键结论), ...]
@@ -547,7 +583,7 @@ def summarize(transcript, frame_descs, source_meta):
     if not map_items:
         data = _summarize_single(transcript[:12000], descs_text, source_meta)
         data["_distill_chunks"] = n
-        return data
+        return _ensure_summary_len(data, transcript)
 
     # ---- reduce：合并为最终结构（纯文本协议；失败则用分段要点直接拼装，绝不用原文） ----
     seg_text = "\n\n".join(
@@ -559,7 +595,8 @@ def summarize(transcript, frame_descs, source_meta):
         "你是知识库整理助手。下面是对一段长视频**分段蒸馏**后汇总的全部分段要点。"
         "请合并去重、按视频叙事顺序整理，输出纯文本（不要 JSON、不要代码块），格式严格如下：\n"
         "标题：<全片标题，15字内>\n"
-        "摘要：<120字内的整体摘要>\n"
+        "摘要：<60~160字的整体摘要，**必须大于50字**：主题+核心观点/做法+关键数据结论，"
+        "读摘要即可了解全片，严禁空话>\n"
         "要点：\n"
         "- <要点1，保留具体细节>\n"
         "- <要点2>\n"
@@ -579,7 +616,7 @@ def summarize(transcript, frame_descs, source_meta):
         # reduce 失败：用分段要点确定性拼装，不再依赖模型
         data = _deterministic_summary(map_items, source_meta)
     data["_distill_chunks"] = n
-    return data
+    return _ensure_summary_len(data, transcript)
 
 
 # ---------------- 拼装 Markdown ----------------
@@ -700,15 +737,13 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
 
     bilingual: 双语字幕模式——转写语言自动检测，非中文音频产出「原文/中文对照」表
                （中文翻译走本地 qwen3:14b）；中文音频自动退回普通模式并标注。
-    first_frame_only: 只抽开头 0.5s 一帧（视频首页/封面），不跑全片抽帧。
+    first_frame_only: 已废弃（关键帧抓取已取消），保留参数仅为兼容旧调用方。
     """
     video_path = str(video_path)
     if not os.path.exists(video_path):
         return {"ok": False, "error": f"视频不存在：{video_path}"}
     stem = Path(video_path).stem or "video"
     slug = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^\w一-鿿-]", "", stem)[:30]
-    frames_dir = os.path.join(FRAMES, slug)
-    os.makedirs(frames_dir, exist_ok=True)
 
     meta = {"source": source or "视频号/抖音", "url": url, "title": stem}
 
@@ -733,19 +768,10 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
     else:
         # 1) 转写
         transcript, terr = transcribe(video_path, model_size)
-    # 1.5) 纯音频文件（mp3/wav/m4a 等）：无画面可抽，跳过关键帧与视觉理解
-    AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
-    is_audio = Path(video_path).suffix.lower() in AUDIO_EXTS
-    if is_audio:
-        frames, frame_descs = [], []
-        meta["source"] = source or "音频文件"
-        meta["media"] = "audio"
-    else:
-        # 2) 关键帧（首页模式只取一帧）
-        frames = extract_keyframes(video_path, frames_dir, n=N_KEYFRAMES,
-                                   first_only=first_frame_only)
-        # 3) 视觉理解
-        frame_descs = describe_frames(frames)
+    # 1.5) 关键帧抓取已取消（2026-10-14 用户拍板）：不再抽帧、不再跑 qwen3-vl 视觉理解，
+    #      总结完全基于语音转写；extract_keyframes/describe_frames 函数保留但主流水线不再调用。
+    #      抽帧耗时大（长视频 ffmpeg 解码 + 逐帧 VL 请求），而转写文本已含全部信息量。
+    frames, frame_descs = [], []
     # 4) 结构化总结（双语模式喂中文翻译，总结质量更好）
     summarize_text = transcript
     if bilingual_blocks:

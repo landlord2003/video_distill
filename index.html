@@ -434,8 +434,7 @@ function renderSrc(){
   else if(s.kind==='video') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
     <label class="toggle" title="英文等外语视频：保留原文并逐段对照中文翻译（本地模型翻译）"><input type="checkbox" id="obilingual"> 🔤 双语字幕对照</label>
-    <label class="toggle" title="只抽视频开头一帧作配图，不做全片抽帧"><input type="checkbox" id="o1frame"> 🖼 只取首页一帧</label>
-    <div class="mut" style="font-size:12px;margin-top:4px">🧠 第三步解析为<b>标配</b>：转录后自动分段蒸馏（标题/摘要/要点/章节/标签，本机 qwen3:14b）</div>`;
+    <div class="mut" style="font-size:12px;margin-top:4px">🧠 第三步解析为<b>标配</b>：转录后自动分段蒸馏（标题/摘要/要点/章节/标签，本机 qwen3:14b），摘要保证大于50字</div>`;
   else if(s.kind==='article') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
     ${SRC==='twitter'?`<label class="toggle" title="推文常是长文的'指针'：自动跟进推文内的原文链接，抓取全文合并进笔记（约需 30~90 秒，需代理）"><input type="checkbox" id="ofollow" checked> 📎 跟进推文外链抓全文</label>`:''}
