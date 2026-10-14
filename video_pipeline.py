@@ -60,12 +60,20 @@ def get_ffmpeg():
 
 
 # ---------------- Ollama ----------------
-def _ollama_generate(model, prompt, images=None, timeout=180, keep_alive=None):
+def _ollama_generate(model, prompt, images=None, timeout=180, keep_alive=None, options=None, think=None):
     """调用本机 Ollama /api/generate，返回文本。images: 本地图片路径列表。
-    keep_alive: 模型驻留显存时长（如 "10m"/"5m"），用于避免大模型被反复冷加载。"""
+    keep_alive: 模型驻留显存时长（如 "10m"/"5m"），用于避免大模型被反复冷加载。
+    options: 透传 Ollama 采样参数（如 {"num_predict": 800} 硬限输出长度，
+             防 qwen3 无视格式指令写长篇大论）。
+    think: qwen3 思考模式开关（Ollama 顶层 think 字段）。False=禁用思考——
+           实测思考块会吃掉 num_predict 配额导致正文为空。"""
     payload = {"model": model, "prompt": prompt, "stream": False}
     if keep_alive is not None:
         payload["keep_alive"] = keep_alive
+    if options:
+        payload["options"] = options
+    if think is not None:
+        payload["think"] = think
     if images:
         payload["images"] = [b64(p) for p in images if p and os.path.exists(p)]
     data = json.dumps(payload).encode("utf-8")
@@ -409,7 +417,8 @@ def _summarize_single(transcript_text, descs_text, source_meta):
         "   讲了什么主题、核心观点/做法是什么、有哪些关键数据/人物/结论，读摘要即可了解全片。\n"
         "2. 从【语音转写】中蒸馏，带具体人物/机构/数字/因果关系，\n"
         "   **严禁**「这个视频聊了一个话题」式的空话；转写口语错误请自行纠正为规范书面语。\n"
-        "3. 唯一例外：【语音转写】全文本身不足50字时，才允许写更短的摘要。\n\n"
+        "3. 唯一例外：【语音转写】全文本身不足50字时，才允许写更短的摘要。\n"
+        "4. 转写可能为繁体/夹杂错别字（语音识别产物），输出一律用**规范简体中文书面语**。\n\n"
         "【要点】填写规则（极重要）：\n"
         "1. 给出 6~10 条要点；每条必须是一个信息完整的句子，从【语音转写】中蒸馏出**具体事实**：\n"
         "   人物、机构、金额、时间、数量、比例、因果关系等细节，缺一不可。\n"
@@ -431,7 +440,11 @@ def _summarize_single(transcript_text, descs_text, source_meta):
 
 
 def _parse_summary_json(raw, source_meta):
-    """容错解析 Ollama 输出的 JSON；先抽取 {...} 块再解析，失败退化为原始文本摘要。"""
+    """容错解析 Ollama 输出的 JSON；先抽取 {...} 块再解析，失败退化为原始文本摘要。
+
+    解析失败时打 _json_broken 标记并保存原始输出，由 summarize() 触发专用摘要重试，
+    绝不把模型回答的半截 Markdown 残片当摘要糊弄。
+    """
     m = re.search(r"\{.*\}", raw or "", re.S)
     if m:
         raw = m.group(0)
@@ -440,8 +453,60 @@ def _parse_summary_json(raw, source_meta):
         return json.loads(raw)
     except Exception:
         return {"标题": source_meta.get("title") or "未命名视频",
-                "摘要": raw[:200], "要点": [], "章节": [],
-                "标签": [], "关键结论": ""}
+                "摘要": "", "要点": [], "章节": [],
+                "标签": [], "关键结论": "",
+                "_json_broken": True, "_raw_output": (raw or "")[:3000]}
+
+
+def _quick_summary(transcript_text, max_chars=9000):
+    """专用摘要请求（结构化解析失败后的救援通道）。
+
+    实战教训（qwen3:14b 实测三轮）：
+    - 要 JSON 它输出 Markdown 分析文 → 解析失败；
+    - 要「150字一段摘要」它能写 2000 字分析文；
+    - think 开启时思考块吃光 num_predict 配额 → 正文为空；
+    - 「提取要点列表」类任务的服从性远高于「写一段话」类任务。
+    所以最终形态：提取式任务（8~12 条要点行）+ think 禁用 + num_predict 硬限
+    + 分段提取：把转写切成 ≤2500 字/段，每段独立提取 3~5 条要点后按序合并——
+    每一段都必然被模型看过，全片覆盖是结构保证，不赌单次长输入的服从性
+    （实测单次喂 6608 字时模型经常只总结前半）。产出 = 一段覆盖全片的完整摘要。
+    """
+    text = (transcript_text or "").strip()
+    if len(text) < 60:
+        return ""
+    chunks = _split_transcript(text, 2500)
+    all_pts = []
+    for i, ch in enumerate(chunks):
+        prompt = (
+            f"以下是一段视频语音转写稿的第 {i+1}/{len(chunks)} 部分。"
+            "请从这部分按顺序提取 3~5 个最重要的信息点，每行一条、以「- 」开头：\n"
+            "①改写为规范简体中文完整陈述句（转写为繁体口语稿、有错别字，请纠正）；\n"
+            "②保留具体人物、著作、数字、因果关系；\n"
+            "③除这些行外不要输出任何其他内容——不要建议、不要脚本、不要标题。\n\n"
+            f"【转写 第{i+1}/{len(chunks)}部分】\n{ch}\n"
+        )
+        raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1200, keep_alive="10m",
+                               options={"temperature": 0.6, "num_predict": 500},
+                               think=False)
+        if raw.startswith("[Ollama 调用失败"):
+            continue
+        for ln in raw.splitlines():
+            s = ln.strip()
+            m = re.match(r"^(?:[-*•]|\d{1,2}[.、:：)）])\s*(.+)$", s)
+            if m:
+                t = re.sub(r"[*_`#]+", "", m.group(1)).strip()
+                if len(t) >= 8:
+                    all_pts.append(t)
+    if not all_pts:
+        return ""
+    # 按序拼成一段完整摘要（每段 3~5 条 × 每段都被看过 → 自然覆盖全片）
+    out, total = [], 0
+    for t in all_pts:
+        out.append(t if t.endswith(("。", "！", "？")) else t + "。")
+        total += len(out[-1])
+        if total >= 500:
+            break
+    return "".join(out)
 
 
 def _parse_map_output(raw):
@@ -518,9 +583,37 @@ def _ensure_summary_len(data, summarize_text):
     if len(fill) >= 50:
         data["摘要"] = fill
         return data
-    # ② 转写开头完整句兜底（切到最后一个句读符号，保语义完整）
-    m = re.match(r"(.{50,}?[。！？；.!?])", src)
-    data["摘要"] = m.group(1) if m else src[:80] + "……"
+    # ② 转写均匀采样兜底：开头/中段/结尾各取完整句拼接（避免只概括开场白）
+    sents = [s.strip() for s in re.split(r"(?<=[。！？!?；;\n])", src)
+             if len(s.strip()) >= 15]
+    if sents:
+        step = max(1, len(sents) // 6)
+        picks, total = [], 0
+        for s in sents[::step]:
+            picks.append(s)
+            total += len(s)
+            if total >= 60:
+                break
+        data["摘要"] = "……".join(picks)
+    return data
+
+
+def _rescue_summary(data, transcript):
+    """结构化解析失败（JSON broken / 要点章节全空）时的救援：
+
+    用 _quick_summary 专门请求产出一段**完整摘要**（覆盖全片，非开头残片），
+    替代把模型回答的半截 Markdown 当摘要的旧行为。救援失败则留空交给守卫兜底。
+    """
+    broken = data.get("_json_broken")
+    structured = bool(data.get("要点") or data.get("章节"))
+    if not broken and structured:
+        return data
+    if not (data.get("摘要") or "").strip():
+        q = _quick_summary(transcript)
+        if q:
+            data["摘要"] = q
+    data.pop("_json_broken", None)
+    data.pop("_raw_output", None)
     return data
 
 
@@ -557,6 +650,7 @@ def summarize(transcript, frame_descs, source_meta):
     if n == 1:
         data = _summarize_single(transcript[:12000], descs_text, source_meta)
         data["_distill_chunks"] = 1
+        data = _rescue_summary(data, transcript)
         return _ensure_summary_len(data, transcript)
 
     # ---- map：逐段蒸馏要点（纯文本协议，容错解析；不强迫模型吐 JSON） ----
