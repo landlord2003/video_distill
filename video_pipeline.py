@@ -458,23 +458,25 @@ def _parse_summary_json(raw, source_meta):
                 "_json_broken": True, "_raw_output": (raw or "")[:3000]}
 
 
-def _quick_summary(transcript_text, max_chars=9000):
-    """专用摘要请求（结构化解析失败后的救援通道）。
+def _extract_points(transcript_text, max_chars=9000):
+    """分段提取式要点抽取（救援通道的核心）。
 
     实战教训（qwen3:14b 实测三轮）：
     - 要 JSON 它输出 Markdown 分析文 → 解析失败；
     - 要「150字一段摘要」它能写 2000 字分析文；
     - think 开启时思考块吃光 num_predict 配额 → 正文为空；
     - 「提取要点列表」类任务的服从性远高于「写一段话」类任务。
-    所以最终形态：提取式任务（8~12 条要点行）+ think 禁用 + num_predict 硬限
+    所以最终形态：提取式任务（每段 3~5 条要点行）+ think 禁用 + num_predict 硬限
     + 分段提取：把转写切成 ≤2500 字/段，每段独立提取 3~5 条要点后按序合并——
     每一段都必然被模型看过，全片覆盖是结构保证，不赌单次长输入的服从性
-    （实测单次喂 6608 字时模型经常只总结前半）。产出 = 一段覆盖全片的完整摘要。
+    （实测单次喂 6608 字时模型经常只总结前半）。
+
+    返回：按视频顺序的要点句列表（无句读补全）；转写过短或全部失败返回 []。
     """
     text = (transcript_text or "").strip()
     if len(text) < 60:
-        return ""
-    chunks = _split_transcript(text, 2500)
+        return []
+    chunks = _split_transcript(text[:max_chars], 2500)
     all_pts = []
     for i, ch in enumerate(chunks):
         prompt = (
@@ -497,16 +499,29 @@ def _quick_summary(transcript_text, max_chars=9000):
                 t = re.sub(r"[*_`#]+", "", m.group(1)).strip()
                 if len(t) >= 8:
                     all_pts.append(t)
-    if not all_pts:
-        return ""
-    # 按序拼成一段完整摘要（每段 3~5 条 × 每段都被看过 → 自然覆盖全片）
+    return all_pts
+
+
+def _points_to_paragraph(all_pts, max_len=500):
+    """要点句按序拼成一段完整摘要（句读补全 + 长度上限）。"""
     out, total = [], 0
     for t in all_pts:
         out.append(t if t.endswith(("。", "！", "？")) else t + "。")
         total += len(out[-1])
-        if total >= 500:
+        if total >= max_len:
             break
     return "".join(out)
+
+
+def _quick_summary(transcript_text, max_chars=9000):
+    """专用摘要请求（结构化解析失败后的救援通道）。
+
+    分段提取要点后拼成一段覆盖全片的完整摘要（详见 _extract_points）。
+    """
+    pts = _extract_points(transcript_text, max_chars)
+    if not pts:
+        return ""
+    return _points_to_paragraph(pts)
 
 
 def _parse_map_output(raw):
@@ -601,17 +616,23 @@ def _ensure_summary_len(data, summarize_text):
 def _rescue_summary(data, transcript):
     """结构化解析失败（JSON broken / 要点章节全空）时的救援：
 
-    用 _quick_summary 专门请求产出一段**完整摘要**（覆盖全片，非开头残片），
-    替代把模型回答的半截 Markdown 当摘要的旧行为。救援失败则留空交给守卫兜底。
+    用 _extract_points 分段提取产出**全片要点列表**，再拼成一段完整摘要
+    （覆盖全片，非开头残片）——摘要与要点一次同时产出，替代把模型回答的
+    半截 Markdown 当摘要的旧行为。救援失败则留空交给守卫兜底。
     """
     broken = data.get("_json_broken")
     structured = bool(data.get("要点") or data.get("章节"))
     if not broken and structured:
         return data
-    if not (data.get("摘要") or "").strip():
-        q = _quick_summary(transcript)
-        if q:
-            data["摘要"] = q
+    need_summary = not (data.get("摘要") or "").strip()
+    need_points = not data.get("要点")
+    if need_summary or need_points:
+        pts = _extract_points(transcript)
+        if pts:
+            if need_summary:
+                data["摘要"] = _points_to_paragraph(pts)
+            if need_points:
+                data["要点"] = pts
     data.pop("_json_broken", None)
     data.pop("_raw_output", None)
     return data
