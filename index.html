@@ -47,6 +47,11 @@
   .md-body table{border-collapse:collapse;margin:.7em 0;width:100%}
   .md-body th,.md-body td{border:1px solid var(--line);padding:6px 10px;text-align:left}
   .md-body hr{border:none;border-top:1px solid var(--line);margin:1.2em 0}
+  .md-body h2{position:relative;padding-right:64px}
+  .md-copy{position:absolute;right:0;top:50%;transform:translateY(-50%);font-size:12px;
+    line-height:1;padding:4px 10px;border:1px solid var(--line);border-radius:8px;
+    background:var(--panel2);color:inherit;cursor:pointer;opacity:.55;white-space:nowrap}
+  .md-copy:hover{opacity:1;color:var(--acc);border-color:var(--acc)}
   pre.json{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;
            overflow:auto;font-size:12px;color:var(--acc2)}
   .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:6px;
@@ -752,6 +757,43 @@ async function runWebPipe(){
   finally{ go.disabled = false; go.textContent = '▶ 运行流水线'; }
 }
 
+// ---------- 小节复制按钮：给 .md-body 内每个 h2 小节注入「复制」 ----------
+function addSectionCopy(mdEl, rawMd){
+  if(!mdEl || !rawMd) return;
+  const h2s = Array.from(mdEl.querySelectorAll('h2'));
+  if(!h2s.length) return;
+  // 从原始 Markdown 按顺序切出各 h2 小节正文（复制保真，非 HTML 抽取）
+  const secs = []; let cur = null;
+  for(const ln of rawMd.split('\n')){
+    const m = ln.match(/^##\s+(.*)$/);
+    if(m){ if(cur) secs.push(cur); cur = {body: []}; }
+    else if(cur) cur.body.push(ln);
+  }
+  if(cur) secs.push(cur);
+  h2s.forEach((h, i) => {
+    const s = secs[i]; if(!s) return;
+    const btn = document.createElement('button');
+    btn.className = 'md-copy'; btn.type = 'button';
+    btn.textContent = '复制'; btn.title = '复制本节内容';
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const txt = s.body.join('\n').trim();
+      const done = () => { btn.textContent = '✓ 已复制'; setTimeout(()=>btn.textContent='复制', 1500); };
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(txt).then(done).catch(()=>{ _copyFallback(txt); done(); });
+      } else { _copyFallback(txt); done(); }
+    };
+    h.appendChild(btn);
+  });
+}
+function _copyFallback(txt){
+  const ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  ta.remove();
+}
+
 // ---------- 产出卡片（视频/文章/网页 统一渲染） ----------
 let _lastResults = [];
 let _pCollapsed = new Set();
@@ -793,6 +835,11 @@ function renderResults(list){
       </div>
     </div>`;
   }).join('');
+  // 每张结果卡的各小节标题旁加「复制」按钮
+  list.forEach((x, idx) => {
+    const el = document.getElementById('pmd-'+idx);
+    if(el) addSectionCopy(el.querySelector('.md-body'), x.markdown||'');
+  });
 }
 function togglePCard(idx){
   const x = _lastResults[idx] || {};
@@ -1051,6 +1098,7 @@ async function recView(type, id){
         ${d.extracted?`<div class="row" style="margin-top:12px"><b>结构化抽取</b></div><pre class="json">${esc(typeof d.extracted==='string'?d.extracted:JSON.stringify(d.extracted,null,2))}</pre>`:''}</div></div>`;
       const box=$('#recmd');
       box.innerHTML = DOMPurify.sanitize(marked.parse(_currentMd||''));
+      addSectionCopy(box, _currentMd);
     } else if(type==='video'){
       const r = await fetch('/api/video/records/'+id); const d = await r.json();
       if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
@@ -1060,6 +1108,7 @@ async function recView(type, id){
           <div>${d.vault_path?`<a class="btn" href="file:///${encodeURIComponent(d.vault_path.replace(/\\\\/g,'/'))}" title="${escAttr(d.vault_path)}">Obsidian 笔记</a>`:''}
           <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
         <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div></div></div>`;
+      addSectionCopy(det.querySelector('.vcard-b .md-body'), md);
     } else if(type==='article' || type==='voa' || type==='dymusic'){
       const r = await fetch('/api/articles/'+id); const d = await r.json();
       if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
@@ -1072,6 +1121,7 @@ async function recView(type, id){
           ${d.vault_path?`<span class="mut" style="font-size:11px">${esc(d.vault_path.replace(/\\\\/g,'/'))}</span>`:''}
           <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
         <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(d.markdown||''))}</div></div></div>`;
+      addSectionCopy(det.querySelector('.vcard-b .md-body'), d.markdown||'');
     } else if(type==='tts'){
       const x = _recRows.find(r=>r.type==='tts'&&r.id===id)||{};
       if(x.file) recPlay(x.file);
@@ -1085,7 +1135,7 @@ function recToggleRaw(btn){
   const box = $('#recmd'); if(!box) return;
   const raw = box.classList.toggle('md-raw');
   if(raw){ box.classList.add('md-raw'); box.textContent = _currentMd||''; btn.textContent='渲染'; }
-  else { box.classList.remove('md-raw'); box.innerHTML = DOMPurify.sanitize(marked.parse(_currentMd||'')); btn.textContent='源码'; }
+  else { box.classList.remove('md-raw'); box.innerHTML = DOMPurify.sanitize(marked.parse(_currentMd||'')); addSectionCopy(box, _currentMd); btn.textContent='源码'; }
 }
 async function dyTranscribe(id, btn){
   if(btn){ btn.disabled = true; btn.textContent = '⏳ 转写中…'; }
