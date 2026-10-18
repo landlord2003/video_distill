@@ -197,12 +197,10 @@
               <div id="m-account" style="display:none">
                 <div style="display:flex;gap:6px">
                   <input type="text" id="accurl" class="tin" placeholder="" onkeydown="if(event.key==='Enter')collectAcc()">
-                  <select id="acccount" style="flex-shrink:0">
-                    <option value="50" selected>前 50 条</option>
-                    <option value="100">前 100 条</option>
-                    <option value="200">前 200 条</option>
-                    <option value="0">全部作品</option>
-                  </select>
+                  <input type="text" id="acccount" class="tin" style="flex-shrink:0;width:150px"
+                         value="50" placeholder="50 / 1-20 / 20-70 / 70-"
+                         title="数量：前 N 条填 50；范围填 1-20、20-70、70-（到末尾）；全部填 0"
+                         onkeydown="if(event.key==='Enter')collectAcc()">
                   <button id="accbtn" class="btn pri" onclick="collectAcc()" style="flex-shrink:0">🔍 采集</button>
                 </div>
                 <div id="accstatus" class="mut" style="margin-top:6px">先采内容清单 → 勾选 → 「填入下方清单」→ 回到 🔗 链接清单运行</div>
@@ -470,13 +468,18 @@ async function collectAcc(){
   if(!s.account) return;
   const url = $('#accurl').value.trim();
   if(!url){ $('#accstatus').textContent = '✗ 请先粘贴' + s.account.label; return; }
+  const spec = ($('#acccount').value || '').trim();
+  if(!/^\d+(\s*-\s*\d*)?$/.test(spec)){
+    $('#accstatus').textContent = '✗ 数量格式：50 / 0（全部）/ 1-20 / 20-70 / 70-（到末尾）';
+    return;
+  }
   const btn = $('#accbtn'); btn.disabled = true; btn.textContent = '采集中…';
   $('#acclist').innerHTML = `<div class="empty" style="padding:14px">正在采集清单（${esc(s.account.slow)}）…</div>`;
   $('#accstatus').textContent = '';
   try{
     const r = await fetch(s.account.api, {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({url, max_count:parseInt($('#acccount').value,10)})});
+      body:JSON.stringify({url, count_spec: spec.replace(/\s+/g,'')})});
     const d = await r.json();
     if(!r.ok){
       $('#acclist').innerHTML = `<div class="vcard" style="border-color:var(--red)"><div class="vcard-b">✗ 采集失败：${esc(d.error||r.status)}</div></div>`;

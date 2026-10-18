@@ -59,8 +59,10 @@ def resolve_profile_url(arg: str) -> str:
 
 
 def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
-                         max_count=50, max_scrolls=60, deadline_secs=240):
+                         max_count=50, max_scrolls=60, deadline_secs=240,
+                         offset=0):
     """主页链接 -> {"nickname", "videos":[{"id","title","url"}]}。
+    offset：跳过前 N 条（配合 max_count 实现范围选择，如 20-70 = offset 19 + max_count 70）。
     失败抛 RuntimeError（含原因与已收集数量）。
     """
     profile_url = resolve_profile_url(profile_arg)
@@ -196,6 +198,8 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
             it["title"] = f"视频 {it['id']}"
     if max_count:
         items = items[:max_count]
+    if offset:
+        items = items[offset:]
     return {"nickname": nickname["v"] or "未知昵称",
             "profile": profile_url,
             "count": len(items), "videos": items}
@@ -233,9 +237,11 @@ def resolve_collection_url(arg: str) -> str:
 
 
 def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
-                            max_count=50, max_scrolls=60, deadline_secs=240):
+                            max_count=50, max_scrolls=60, deadline_secs=240,
+                            offset=0):
     """合集页链接 -> {"nickname": 合集名, "collection": url,
     "videos":[{"id","title","url"}]}。结构对齐 fetch_profile_videos，UI 流程复用。
+    offset：跳过前 N 条（范围选择，见 fetch_profile_videos）。
 
     原理：playwright 打开合集页，滚动翻页，拦截列表接口。
     抖音有两套合集体系，响应结构相同（aweme_list + has_more + cursor）：
@@ -438,6 +444,8 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
             it["title"] = f"视频 {it['id']}"
     if max_count:
         items = items[:max_count]
+    if offset:
+        items = items[offset:]
     return {"nickname": coll_title["v"] or "未知合集",
             "collection": collection_url,
             "count": len(items), "videos": items}

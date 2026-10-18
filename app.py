@@ -324,6 +324,31 @@ def do_video_pipeline(source_url, video_path, write_vault, bilingual=False, firs
     return rec
 
 
+def _parse_count_spec(spec, default=50):
+    """账号采集数量语法解析 -> (抓取上限 max_count, 跳过条数 offset)。
+
+    支持：'50'（前 50 条）/ '0'（全部）/ '1-20'（第 1~20 条）/
+          '20-70'（第 20~70 条）/ '70-'（第 70 条到末尾）。均为 1-based 闭区间。
+    返回 max_count=0 表示不限量（抓到接口自然结束）。
+    """
+    s = str(spec if spec is not None else "").strip()
+    if not s:
+        return default, 0
+    m = re.match(r"^(\d+)\s*-\s*(\d*)$", s)
+    if m:
+        start = int(m.group(1))
+        end = int(m.group(2)) if m.group(2) else 0
+        if start < 1:
+            raise ValueError("范围起点从 1 开始（如 1-20 / 20-70 / 70-）")
+        if end and end < start:
+            raise ValueError(f"范围终点({end})不能小于起点({start})")
+        return (end or 0), (start - 1)
+    try:
+        return max(0, int(s)), 0
+    except ValueError:
+        raise ValueError(f"数量格式不识别：{s}（支持 50 / 0 / 1-20 / 20-70 / 70-）")
+
+
 def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint=""):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
 
@@ -1832,21 +1857,28 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", 0))
                 data = json.loads(self.rfile.read(length).decode("utf-8"))
                 url = (data.get("url") or "").strip()
-                # max_count: 0/缺省语义区分——None 才用默认 50，显式 0 表示不限量
-                mc = data.get("max_count", None)
-                max_count = 50 if mc is None else max(0, int(mc))
+                # 数量：新语法 count_spec（'50'/'0'/'1-20'/'20-70'/'70-'），
+                # 兼容旧 max_count 数字（缺省 50）
+                if data.get("count_spec") is not None:
+                    max_count, offset = _parse_count_spec(data.get("count_spec"))
+                else:
+                    mc = data.get("max_count", None)
+                    max_count = 50 if mc is None else max(0, int(mc))
+                    offset = 0
                 if not url:
-                    self._send(400, {"error": "url required（抖音用户主页链接）"})
+                    self._send(400, {"error": "url required（抖音用户主页/合集链接）"})
                     return
                 # 采集比较慢（要滚动翻页），与视频流水线互不抢资源但自身串行
                 with _profile_lock:
                     if dp.is_collection_url(url):
                         # 合集页：输出结构对齐主页采集（nickname=合集名），UI 流程复用
                         out = dp.fetch_collection_videos(url, verbose=False,
-                                                         max_count=max_count)
+                                                         max_count=max_count,
+                                                         offset=offset)
                     else:
                         out = dp.fetch_profile_videos(url, verbose=False,
-                                                      max_count=max_count)
+                                                      max_count=max_count,
+                                                      offset=offset)
                 self._send(200, out)
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
@@ -1859,13 +1891,17 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", 0))
                 data = json.loads(self.rfile.read(length).decode("utf-8"))
                 url = (data.get("url") or "").strip()
-                mc = data.get("max_count", None)
-                max_count = 50 if mc is None else max(0, int(mc))
+                if data.get("count_spec") is not None:
+                    max_count, offset = _parse_count_spec(data.get("count_spec"))
+                else:
+                    mc = data.get("max_count", None)
+                    max_count = 50 if mc is None else max(0, int(mc))
+                    offset = 0
                 if not url:
                     self._send(400, {"error": "url required（Twitter 主页链接或 @handle）"})
                     return
                 # 纯网络抓取（syndication/guest 通道 + fxtwitter 补文本），不占 playwright
-                self._send(200, twi.list_user_tweets(url, max_count))
+                self._send(200, twi.list_user_tweets(url, max_count, offset=offset))
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
             return

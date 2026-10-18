@@ -827,10 +827,11 @@ def _guest_timeline_ids(handle: str, max_count: int):
     return [str(t.get("id_str") or t.get("id")) for t in data if t.get("id_str") or t.get("id")]
 
 
-def list_user_tweets(handle_or_url: str, max_count: int = 50) -> dict:
-    """账号推文清单（先清单、人工勾选后批量入库）。返回 {handle, count, tweets}。"""
+def list_user_tweets(handle_or_url: str, max_count: int = 50, offset: int = 0) -> dict:
+    """账号推文清单（先清单、人工勾选后批量入库）。返回 {handle, count, tweets}。
+    offset：跳过前 N 条（范围选择，如 20-70 = offset 19 + max_count 70）。"""
     handle = extract_handle(handle_or_url)
-    max_count = max(1, min(int(max_count or 50), 200))
+    max_count = max(0, min(int(max_count or 50), 200))
     ids, errs = [], []
     # L0 syndication timeline（免 cookie，IP 级限流常见 429）
     try:
@@ -863,7 +864,7 @@ def list_user_tweets(handle_or_url: str, max_count: int = 50) -> dict:
             "可靠方案：浏览器登录 x.com 后复制 cookie，设为环境变量 TWITTER_COOKIE"
             "（需含 auth_token 与 ct0）再重启本服务；"
             "单条推文抓取无需任何配置——把推文链接粘贴到「链接清单」即可。")
-    ids = ids[:max_count]
+    ids = ids[:max_count] if max_count else ids
 
     def _one(tid):
         if tid in _TWIKIT_CACHE:
@@ -879,6 +880,8 @@ def list_user_tweets(handle_or_url: str, max_count: int = 50) -> dict:
 
     with ThreadPoolExecutor(8) as ex:
         tweets = list(ex.map(_one, ids))
+    if offset:
+        tweets = tweets[offset:]
     return {"handle": handle, "count": len(tweets), "tweets": tweets}
 
 
