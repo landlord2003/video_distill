@@ -264,6 +264,7 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
     coll_title = {"v": ""}
     list_state = {"has_more": 1, "cursor": -1}
     req_log = []
+    template_url = {"v": ""}     # 首屏列表接口完整 URL（含签名），供页面内翻页重放
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -284,6 +285,8 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
             if "mix/aweme/" not in u and "series/aweme/" not in u:
                 return
             req_log.append(u[:140])
+            if not template_url["v"]:
+                template_url["v"] = u
             try:
                 j = resp.json()
             except Exception:
@@ -318,21 +321,85 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
                 print(f"[collection] 页面打开异常(继续等拦截): {e}")
 
         t0 = time.time()
+
+        # ---------- 阶段A：页面内 fetch 循环翻页（主路径） ----------
+        # 背景：合集播放页滚动在主区域只翻"集"，不触发列表翻页（列表是右侧
+        # 独立懒加载容器，225 条的合集实测只发 cursor=0 一页）。
+        # 实测突破：服务端对改 cursor 后的旧 X-Bogus 不校验，可在页面上下文里
+        # 用首屏拦截到的签名 URL 重放翻页（cursor=max_cursor 链）。
+        # 等首屏请求落地（偶尔要交互触发），最长 40s，15s 时点一下播放器。
+        for i in range(40):
+            if template_url["v"] or videos:
+                break
+            if i == 15:
+                try:
+                    page.mouse.click(690, 450)
+                except Exception:
+                    pass
+            time.sleep(1)
+        on_dom()
+
+        fetch_pages_err = ""
+        if template_url["v"] and (len(videos) < (max_count or 10**9)):
+            budget_ms = int(min(max(deadline_secs - (time.time() - t0), 60), 900)) * 1000
+            try:
+                items_js = page.evaluate(
+                    """async ([u0, maxCount, timeBudgetMs]) => {
+                        const out = [];
+                        const seen = new Set();
+                        const t0 = Date.now();
+                        let cursor = '0', hasMore = true, guard = 0;
+                        const u = new URL(u0);
+                        while (hasMore && guard < 500) {
+                            guard++;
+                            if (Date.now() - t0 > timeBudgetMs) break;
+                            u.searchParams.set('cursor', cursor);
+                            let j;
+                            try {
+                                const resp = await fetch(u.toString(), {credentials: 'include'});
+                                j = await resp.json();
+                            } catch (e) { break; }
+                            const list = j.aweme_list || [];
+                            for (const aw of list) {
+                                const id = String(aw.aweme_id || '').trim();
+                                if (id && !seen.has(id)) {
+                                    seen.add(id);
+                                    out.push({id: id, title: (aw.desc || '').trim(),
+                                              url: 'https://www.douyin.com/video/' + id});
+                                }
+                            }
+                            hasMore = !!j.has_more;
+                            const mc = j.max_cursor;
+                            if (!list.length || mc === null || mc === undefined) break;
+                            cursor = String(mc);
+                            if (maxCount && out.length >= maxCount) break;
+                            await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
+                        }
+                        return out;
+                    }""",
+                    [template_url["v"], max_count or 0, budget_ms])
+                for it in items_js or []:
+                    if it["id"] not in videos:
+                        videos[it["id"]] = it
+                if verbose:
+                    print(f"[collection] 页内翻页采集 {len(videos)} 条"
+                          f"（has_more 走完或达 max_count）")
+            except Exception as e:
+                fetch_pages_err = f"{type(e).__name__}: {str(e)[:120]}"
+                if verbose:
+                    print(f"[collection] 页内翻页异常(转滚动兜底): {fetch_pages_err}")
+
+        # ---------- 阶段B：滚动兜底（阶段A 失败/不足时；普通小合集也够用） ----------
         empty_rounds = 0
         scrolls = 0
-        while time.time() - t0 < deadline_secs:
-            on_dom()
-            if videos:
-                break
-            if time.time() - t0 > 25:
-                break
-            time.sleep(1)
-
-        while time.time() - t0 < deadline_secs and scrolls < max_scrolls:
+        while (time.time() - t0 < deadline_secs and scrolls < max_scrolls
+               and (not fetch_pages_err or not videos)):
             if max_count and len(videos) >= max_count:
                 break
             if list_state["has_more"] == 0 and videos:
                 break
+            if not fetch_pages_err and videos:
+                break   # 阶段A 成功就没必要再滚
             before = len(videos)
             try:
                 page.mouse.move(random.uniform(300, 900), random.uniform(200, 600))
