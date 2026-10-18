@@ -27,6 +27,15 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
            "ALL_PROXY", "all_proxy", "no_proxy"):
     os.environ.pop(_k, None)
 
+# ---------- stdio 强制 UTF-8 ----------
+# pythonw + cmd 重定向到 server.log 时，stdout 默认跟随系统 GBK 编码，
+# 打印 ✓ 等非 GBK 字符会抛 UnicodeEncodeError（曾炸掉 playwright 拦截兜底）。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ---------- 子进程全局静默（不弹 cmd 黑窗） ----------
 # 服务以 pythonw（无控制台）运行时，yt-dlp/ffmpeg 等控制台子进程会各自弹
 # 新控制台窗口（闪现）。这里给 subprocess.run 打全局补丁：默认加
