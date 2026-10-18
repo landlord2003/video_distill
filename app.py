@@ -27,6 +27,36 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
            "ALL_PROXY", "all_proxy", "no_proxy"):
     os.environ.pop(_k, None)
 
+# ---------- 子进程全局静默（不弹 cmd 黑窗） ----------
+# 服务以 pythonw（无控制台）运行时，yt-dlp/ffmpeg 等控制台子进程会各自弹
+# 新控制台窗口（闪现）。这里给 subprocess.run 打全局补丁：默认加
+# CREATE_NO_WINDOW，子进程继承不可见控制台，输出照常捕获。
+import subprocess as _subprocess
+if os.name == "nt":
+    _orig_subprocess_run = _subprocess.run
+    _CREATE_NO_WINDOW = 0x08000000
+
+    def _quiet_run(*args, **kwargs):
+        kwargs.setdefault("creationflags", _CREATE_NO_WINDOW)
+        return _orig_subprocess_run(*args, **kwargs)
+
+    _subprocess.run = _quiet_run
+
+    # playwright 的 node 驱动走 asyncio 子进程，同样静默
+    _orig_cse = asyncio.create_subprocess_exec
+    _orig_css = asyncio.create_subprocess_shell
+
+    def _quiet_cse(*args, **kwargs):
+        kwargs["creationflags"] = _CREATE_NO_WINDOW | kwargs.get("creationflags", 0)
+        return _orig_cse(*args, **kwargs)
+
+    def _quiet_css(*args, **kwargs):
+        kwargs["creationflags"] = _CREATE_NO_WINDOW | kwargs.get("creationflags", 0)
+        return _orig_css(*args, **kwargs)
+
+    asyncio.create_subprocess_exec = _quiet_cse
+    asyncio.create_subprocess_shell = _quiet_css
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 CRAWLS_DIR = os.path.join(BASE, "crawls")
 DB = os.path.join(BASE, "crawls.db")

@@ -251,6 +251,11 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
                         if aw:
                             detail["data"] = aw
                             _log(verbose, "  [拦截] 抓到 aweme_detail")
+                        elif j.get("filter_detail"):
+                            fd = j["filter_detail"]
+                            reason = fd.get("filter_reason") or "unknown"
+                            detail["filtered"] = reason
+                            _log(verbose, f"  [resp] 作品被抖音过滤: filter_reason={reason}")
                         else:
                             _log(verbose, "  [resp] 无 aweme_detail 字段, body前160: "
                                  + str(j)[:160])
@@ -298,7 +303,18 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
             time.sleep(1)
         browser.close()
 
-    if not detail:
+    if not detail.get("data"):
+        if detail.get("filtered"):
+            reason = detail["filtered"]
+            mapping = {
+                "core_dep": "作品不存在（已删除或链接有误）",
+                "status_self_see": "作品仅作者自己可见",
+                "status_review": "作品审核中，暂不可见",
+            }
+            human = mapping.get(reason, f"作品被抖音过滤（{reason}），"
+                                        "通常是已删除/仅自己可见/地区限制")
+            raise RuntimeError(f"抖音接口明确拒绝：{human}。不是 cookie/风控问题，"
+                               "换链接即可")
         if verbose:
             print("  调试: 共观察到", len(req_log), "条 aweme/douyin 相关请求")
             for r in req_log[:15]:
