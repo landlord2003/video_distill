@@ -149,6 +149,7 @@ def _extract_audio(mp4_path: str, m4a_path: str) -> bool:
         cmd = [ff, "-y", "-i", mp4_path, "-vn", *extra, m4a_path]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
                                timeout=300, env=env)
             if r.returncode == 0 and os.path.isfile(m4a_path) \
                     and os.path.getsize(m4a_path) > 10 * 1024:

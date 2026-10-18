@@ -340,12 +340,16 @@ def download(vurl, out_path):
     headers = f"Referer: https://www.douyin.com/\r\nUser-Agent: {UA}"
     cmd = [get_ffmpeg(), "-y", "-headers", headers, "-i", vurl, "-c", "copy", out_path]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=300, env=env)
         if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             return True
         # 兜底：不带 header 重试
         cmd2 = [get_ffmpeg(), "-y", "-i", vurl, "-c", "copy", out_path]
-        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=300, env=env)
+        r2 = subprocess.run(cmd2, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace",
+                            timeout=300, env=env)
         return r2.returncode == 0 and os.path.exists(out_path) \
             and os.path.getsize(out_path) > 0
     except Exception:
@@ -356,7 +360,10 @@ def download_douyin_playwright(arg, out_dir, cookie_file=None, verbose=True):
     """对外主接口：抖音链接/ID -> 本地 mp4。成功返回文件路径，失败抛 RuntimeError。"""
     os.makedirs(out_dir, exist_ok=True)
     vid, title, vurl = fetch_direct_url(arg, cookie_file=cookie_file, verbose=verbose)
-    safe = re.sub(r'[\\/:*?"<>|]', "_", title)[:60]
+    # 标题清洗：desc 常含 \r\n（话题标签换行），换行进路径会让 ffmpeg 打不开输出文件；
+    # 先压空白为单空格，再替换 Windows 非法字符，最后去掉尾部空格/点
+    safe = re.sub(r"\s+", " ", title).strip()
+    safe = re.sub(r'[\\/:*?"<>|]', "_", safe)[:60].strip(" .")
     out_path = os.path.join(out_dir, f"{vid}_{safe}.mp4")
     _log(verbose, f"开始下载 -> {out_path}")
     if download(vurl, out_path):
