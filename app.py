@@ -1840,8 +1840,13 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 # 采集比较慢（要滚动翻页），与视频流水线互不抢资源但自身串行
                 with _profile_lock:
-                    out = dp.fetch_profile_videos(url, verbose=False,
-                                                  max_count=max_count)
+                    if dp.is_collection_url(url):
+                        # 合集页：输出结构对齐主页采集（nickname=合集名），UI 流程复用
+                        out = dp.fetch_collection_videos(url, verbose=False,
+                                                         max_count=max_count)
+                    else:
+                        out = dp.fetch_profile_videos(url, verbose=False,
+                                                      max_count=max_count)
                 self._send(200, out)
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})

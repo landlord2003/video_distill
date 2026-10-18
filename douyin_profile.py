@@ -13,6 +13,11 @@ douyin_profile.py — 抖音用户主页采集：进入主页，滚动加载，�
   - https://www.douyin.com/user/MS4wLjABAAAAxxxx?...（主页链接，带参数也行）
   - https://v.douyin.com/xxxx/（分享短链，自动跟随重定向拿真实地址）
 输出：{"nickname": 昵称, "videos": [{"id","title","url"}...]}
+
+合集采集（fetch_collection_videos，同一滚动拦截骨架）：
+  - https://www.douyin.com/collection/<id>（合集页链接）
+  - 输出 {"nickname": 合集名, "collection": url, "videos": [...]}，结构对齐主页采集，
+    UI 勾选流程完全复用
 """
 import os
 import re
@@ -23,6 +28,7 @@ import urllib.request
 from douyin_auto import (UA, _no_proxy_env, resolve_cookie_file, parse_netscape)
 
 SEC_UID_RE = re.compile(r"/user/([A-Za-z0-9_-]{20,})")
+COLLECTION_RE = re.compile(r"/(?:collection|mix)/(\d{5,})")
 
 
 def resolve_profile_url(arg: str) -> str:
@@ -195,12 +201,187 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
             "count": len(items), "videos": items}
 
 
+def is_collection_url(arg: str) -> bool:
+    """本地快速判断（不发网络请求）：是否合集页链接。短链不做判断（交给 profile 解析）。"""
+    return bool(COLLECTION_RE.search((arg or "").strip()))
+
+
+def resolve_collection_url(arg: str) -> str:
+    """把输入规整成 https://www.douyin.com/collection/<id> 形式。
+    支持 /mix/<id>（老形态）与 v.douyin.com 短链（跟随重定向）。
+    """
+    u = (arg or "").strip()
+    m = COLLECTION_RE.search(u)
+    if m:
+        return f"https://www.douyin.com/collection/{m.group(1)}"
+    if "v.douyin.com" in u:
+        req = urllib.request.Request(u, headers={"User-Agent": UA})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                final = resp.geturl()
+            m = COLLECTION_RE.search(final)
+            if m:
+                return f"https://www.douyin.com/collection/{m.group(1)}"
+            raise RuntimeError(f"短链跳转后不是合集页: {final[:120]}")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"短链解析失败: {type(e).__name__}: {e}")
+    raise RuntimeError(
+        "无法识别抖音合集链接：需要形如 https://www.douyin.com/collection/<id> 的合集页地址"
+        "（抖音 App 里进合集 → 右上角分享 → 复制链接，或网页版合集页地址栏直贴）")
+
+
+def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
+                            max_count=50, max_scrolls=60, deadline_secs=240):
+    """合集页链接 -> {"nickname": 合集名, "collection": url,
+    "videos":[{"id","title","url"}]}。结构对齐 fetch_profile_videos，UI 流程复用。
+
+    原理：playwright 打开合集页，滚动翻页，拦截 mix/aweme/ 列表接口
+    （响应结构与 aweme/post 相同：aweme_list + has_more + cursor）。
+    """
+    collection_url = resolve_collection_url(collection_arg)
+
+    if not max_count:
+        max_scrolls = max(max_scrolls, 300)
+        deadline_secs = max(deadline_secs, 900)
+
+    cf = resolve_cookie_file(cookie_file)
+    cookies = parse_netscape(cf) if cf else []
+    if verbose:
+        print(f"[collection] 目标: {collection_url} | cookie: "
+              f"{len(cookies)} 个" + ("" if cf else "（未找到 cookies.txt，无登录态，大概率抓不全）"))
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise RuntimeError(f"playwright 未安装：{e}")
+
+    videos = {}          # aweme_id -> {"id","title","url"}
+    coll_title = {"v": ""}
+    list_state = {"has_more": 1, "cursor": -1}
+    req_log = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            channel="msedge", headless=True,
+            args=["--no-proxy-server", "--no-sandbox",
+                  "--disable-blink-features=AutomationControlled"],
+        )
+        context = browser.new_context(user_agent=UA, ignore_https_errors=True,
+                                      viewport={"width": 1380, "height": 900})
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
+        if cookies:
+            context.add_cookies(cookies)
+        page = context.new_page()
+
+        def on_response(resp):
+            u = resp.url
+            if "mix/aweme/" not in u:
+                return
+            req_log.append(u[:140])
+            try:
+                j = resp.json()
+            except Exception:
+                return
+            for aw in j.get("aweme_list") or []:
+                vid = str(aw.get("aweme_id") or "").strip()
+                if not vid:
+                    continue
+                if vid not in videos:
+                    title = (aw.get("desc") or "").strip()
+                    videos[vid] = {
+                        "id": vid,
+                        "title": title,
+                        "url": f"https://www.douyin.com/video/{vid}",
+                    }
+            list_state["has_more"] = int(j.get("has_more") or 0)
+            list_state["cursor"] = j.get("cursor", j.get("max_cursor", -1))
+
+        def on_dom():
+            try:
+                t = page.title() or ""
+                if t:
+                    coll_title["v"] = re.sub(r" - 抖音.*|的抖音.*|的主页.*", "", t).strip()
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+        try:
+            page.goto(collection_url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            if verbose:
+                print(f"[collection] 页面打开异常(继续等拦截): {e}")
+
+        t0 = time.time()
+        empty_rounds = 0
+        scrolls = 0
+        while time.time() - t0 < deadline_secs:
+            on_dom()
+            if videos:
+                break
+            if time.time() - t0 > 25:
+                break
+            time.sleep(1)
+
+        while time.time() - t0 < deadline_secs and scrolls < max_scrolls:
+            if max_count and len(videos) >= max_count:
+                break
+            if list_state["has_more"] == 0 and videos:
+                break
+            before = len(videos)
+            try:
+                page.mouse.move(random.uniform(300, 900), random.uniform(200, 600))
+                page.mouse.wheel(0, random.randint(2400, 4200))
+            except Exception:
+                try:
+                    page.evaluate("window.scrollBy(0, 3200)")
+                except Exception:
+                    pass
+            scrolls += 1
+            for _ in range(14):
+                time.sleep(0.5)
+                if len(videos) > before:
+                    break
+            gained = len(videos) - before
+            empty_rounds = empty_rounds + 1 if gained == 0 else 0
+            if verbose:
+                print(f"[collection] 滚动#{scrolls} +{gained} 共{len(videos)} "
+                      f"has_more={list_state['has_more']} 空转{empty_rounds}")
+            if empty_rounds >= 6:
+                break
+
+        on_dom()
+        browser.close()
+
+    if not videos:
+        hint = (f"共观察到 {len(req_log)} 条合集列表请求" if req_log
+                else "一条合集列表请求都没拦到（页面可能被登录墙/验证码拦截，或不是合集页）")
+        raise RuntimeError(
+            f"未采集到任何视频（{hint}）。"
+            "请确认链接是合集页、cookies.txt 来自已登录抖音的浏览器且未过期，稍后重试。")
+
+    items = list(videos.values())
+    for it in items:
+        if not it["title"]:
+            it["title"] = f"视频 {it['id']}"
+    if max_count:
+        items = items[:max_count]
+    return {"nickname": coll_title["v"] or "未知合集",
+            "collection": collection_url,
+            "count": len(items), "videos": items}
+
+
 if __name__ == "__main__":
     import sys as _sys
     import json as _json
     if len(_sys.argv) < 2:
-        print("用法: python douyin_profile.py <主页链接或短链> [max_count]")
+        print("用法: python douyin_profile.py <主页/合集链接或短链> [max_count]")
         _sys.exit(1)
     n = int(_sys.argv[2]) if len(_sys.argv) > 2 else 50
-    out = fetch_profile_videos(_sys.argv[1], verbose=True, max_count=n)
+    if is_collection_url(_sys.argv[1]):
+        out = fetch_collection_videos(_sys.argv[1], verbose=True, max_count=n)
+    else:
+        out = fetch_profile_videos(_sys.argv[1], verbose=True, max_count=n)
     print(_json.dumps(out, ensure_ascii=False, indent=2))
