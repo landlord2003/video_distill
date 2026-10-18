@@ -207,6 +207,10 @@ def do_crawl(url: str, use_llm: bool, proxy: str = ""):
     run_conf = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         page_timeout=120000,
+        # 等 fetch/XHR 全部静默再取 HTML（SPA/动态加载站点必须：
+        # 否则 DOM 一好就收工，异步加载的正文拿不到，只剩页面壳）
+        wait_until="networkidle",
+        delay_before_return_html=2.0,
     )
     extracted = None
     if use_llm:
@@ -745,7 +749,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
         except ImportError:
             pass
     img_dir = None
-    if write_vault and plat in ("xhs", "twitter", "wechat", "voa"):
+    if write_vault and plat in ("xhs", "twitter", "wechat", "voa", "zhihu"):
         # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token/防盗链，会失效）
         img_dir = os.path.join(ART_VAULT, "images", plat)
     out = ai.ingest(url, img_dir=img_dir if img_dir else None, meta=meta)
@@ -1281,7 +1285,15 @@ class Handler(BaseHTTPRequestHandler):
                 health["tools"]["faster_whisper"] = {
                     "ok": True, "local_model": local_ok,
                     "model": vp.TRANSCRIBE_MODEL if local_ok else "tiny(回退)",
-                    "model_dir": ws_dir if local_ok else ""}
+                    "model_dir": ws_dir if local_ok else "",
+                    # 转写设备：auto 时的实际结果（GPU 优先，失败/显存不足自动降级 CPU）
+                    "device_pref": getattr(vp, "WHISPER_DEVICE", "?"),
+                    "device_used": vp._WHISPER_CACHE.get("device") or "(未加载，首次转写时决定)",
+                    "compute_type": vp._WHISPER_CACHE.get("compute") or "",
+                    "cuda_dll_dirs": getattr(vp, "_CUDA_DLLS", {}).get("dirs") or [],
+                    "cuda_downgrade": getattr(vp, "_CUDA_DISABLED", {}).get("why") or "",
+                    "vram_free_mb": vp._vram_free_mb(),
+                }
             except Exception as e:
                 health["tools"]["faster_whisper"] = {"ok": False,
                                                      "error": "未安装（转写将降级）"}

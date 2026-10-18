@@ -29,6 +29,9 @@ def detect_platform(url: str):
     # VOA 英语听力（爱语吧 iyuba，国内直连）
     if "iyuba.cn" in u and "/voas/" in u:
         return "voa"
+    # 知乎专栏文章
+    if re.search(r"zhuanlan\.zhihu\.com/p/\d+", u) or re.search(r"zhihu\.com/p/\d+", u):
+        return "zhihu"
     return None
 
 
@@ -190,9 +193,13 @@ def ingest(url: str, platform: str = "", img_dir: str = None,
     elif plat == "voa":
         import voa_ingest
         out = voa_ingest.ingest(url, img_dir=img_dir, item=meta)
+    elif plat == "zhihu":
+        import zhihu_ingest
+        out = zhihu_ingest.ingest_article(url, img_dir=img_dir)
     else:
         raise RuntimeError("无法识别平台（支持：公众号 mp.weixin.qq.com / 小红书 xiaohongshu.com"
-                           " / Twitter 推文 x.com/*/status/* / VOA iyuba.cn/voaS）")
+                           " / Twitter 推文 x.com/*/status/* / 知乎专栏 zhuanlan.zhihu.com/p/*"
+                           " / VOA iyuba.cn/voaS）")
     out["platform"] = plat
     out["filename"] = _sanitize(out["title"]) + ".md"
     return out
