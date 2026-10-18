@@ -237,8 +237,11 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
     """合集页链接 -> {"nickname": 合集名, "collection": url,
     "videos":[{"id","title","url"}]}。结构对齐 fetch_profile_videos，UI 流程复用。
 
-    原理：playwright 打开合集页，滚动翻页，拦截 mix/aweme/ 列表接口
-    （响应结构与 aweme/post 相同：aweme_list + has_more + cursor）。
+    原理：playwright 打开合集页，滚动翻页，拦截列表接口。
+    抖音有两套合集体系，响应结构相同（aweme_list + has_more + cursor）：
+      - mix/aweme/   普通「合集」（多数情况）
+      - series/aweme/ 「系列」类合集（部分老链接/课程短剧类）
+    两类都拦，谁出现用谁。
     """
     collection_url = resolve_collection_url(collection_arg)
 
@@ -278,7 +281,7 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
 
         def on_response(resp):
             u = resp.url
-            if "mix/aweme/" not in u:
+            if "mix/aweme/" not in u and "series/aweme/" not in u:
                 return
             req_log.append(u[:140])
             try:
