@@ -130,6 +130,10 @@
   .vcard-b{border-top:1px solid var(--line);padding:12px 16px}
   .rec{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
   .rec:hover{background:var(--panel2)}
+  .rec.sel{background:rgba(79,157,255,.10);box-shadow:inset 3px 0 0 var(--acc)}
+  .rec .ck{width:15px;height:15px;cursor:pointer;flex-shrink:0;accent-color:var(--acc)}
+  #rec-batchbar{display:none;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;margin-bottom:8px;
+    background:var(--panel2);border:1px solid var(--acc);border-radius:10px;font-size:13px}
   .rec .ic{width:34px;height:34px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);
            display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
   .rec .bd{min-width:0;flex:1}
@@ -330,6 +334,7 @@
           <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <input type="text" id="vhq" placeholder="🔍 搜索全部记录（标题 / 来源 / 链接）…" style="margin-bottom:12px;width:100%" oninput="renderRecords()">
+          <div id="rec-batchbar"></div>
           <div id="rec-detail"></div>
           <div id="rec-list"><div class="empty" style="padding:14px">加载中…</div></div>
         </div>
@@ -981,6 +986,7 @@ async function loadRecords(force){
   renderRecTypeChips();
   renderCatChips(); renderSrcChips();
   renderRecords();
+  renderBatchBar();
 }
 function renderRecTypeChips(){
   const box = $('#rectypes'); if(!box) return;
@@ -1047,7 +1053,8 @@ function renderRecords(){
     return;
   }
   box.innerHTML = rows.map(x=>`
-    <div class="rec" onclick="recView('${x.type}','${escAttr(x.id)}')">
+    <div class="rec ${_selRecs[_selKey(x.type,x.id)]?'sel':''}" onclick="recView('${x.type}','${escAttr(x.id)}')">
+      ${_selManaged(x)?`<input type="checkbox" class="ck" title="选中以便批量归类" ${_selRecs[_selKey(x.type,x.id)]?'checked':''} onclick="event.stopPropagation()" onchange="recSel('${x.type}','${escAttr(x.id)}',this.checked,this)">`:''}
       <div class="ic">${_recTypeMeta[x.type].icon}</div>
       <div class="bd">
         <div class="t">${esc(String(recTitle(x)).slice(0,80))}</div>
@@ -1166,6 +1173,112 @@ async function recDel(type, id){
     if(r.ok){ $('#rec-detail').innerHTML=''; loadRecords(); }
     else { const e=await r.json().catch(()=>({})); alert('删除失败：'+(e.error||r.status)); }
   }catch(e){ alert('删除异常：'+e.message); }
+}
+// ---------- 记录中心：批量多选归类 ----------
+let _selRecs = {};   // 'type:id' -> true（仅 video/article/voa/dymusic 可选，web/tts 无分类字段）
+function _selKey(t,i){ return t+':'+i; }
+function _selManaged(x){ return x.type==='video'||x.type==='article'||x.type==='voa'||x.type==='dymusic'; }
+function recSel(type,id,chk,el){
+  const k = _selKey(type,id);
+  if(chk) _selRecs[k] = true; else delete _selRecs[k];
+  if(el){ const row = el.closest('.rec'); if(row) row.classList.toggle('sel', !!chk); }
+  renderBatchBar();
+}
+function _selCount(){ return Object.keys(_selRecs).length; }
+function renderBatchBar(){
+  const el = $('#rec-batchbar'); if(!el) return;
+  const n = _selCount();
+  if(!n){ el.style.display='none'; el.innerHTML=''; return; }
+  el.style.display='flex';
+  el.innerHTML = `<span style="font-weight:700;color:var(--acc)">已选 ${n} 条</span>
+    <button class="btn" onclick="recSelAll()">全选当前列表</button>
+    <button class="btn pri" onclick="batchClassify()">🏷 批量分类/来源</button>
+    <button class="btn del" onclick="batchDelete()">🗑 批量删除</button>
+    <button class="btn" onclick="recSelClear()">清空选择</button>`;
+}
+function recSelAll(){
+  recRowsFiltered().forEach(x=>{ if(_selManaged(x)) _selRecs[_selKey(x.type,x.id)]=true; });
+  renderRecords(); renderBatchBar();
+}
+function recSelClear(){ _selRecs = {}; renderRecords(); renderBatchBar(); }
+function _selItems(){
+  return Object.keys(_selRecs).map(k=>{ const i=k.indexOf(':');
+    return {type:k.slice(0,i), id:k.slice(i+1)}; });
+}
+function batchClassify(){
+  const items = _selItems();
+  if(!items.length) return;
+  const {keys: cats} = catCountsAll();
+  const {keys: srcs} = srcCountsAll();
+  showModal(`<h3>🏷 批量归类（${items.length} 条）</h3>
+    <p style="font-size:12px;color:var(--mut);margin:0 0 8px">选「不修改」保持原值；选「未分类/未标来源」则清空该字段。视频与文章/VOA/抖音音乐共用一套分类池。</p>
+    <label>分类</label>
+    <select id="bc-cat" onchange="document.getElementById('bc-newcat').style.display=this.value==='__new__'?'block':'none'">
+      <option value="__keep__">不修改</option>
+      <option value="">未分类（清空）</option>
+      ${cats.map(c=>`<option value="${escAttr(c)}">${esc(c)}</option>`).join('')}
+      <option value="__new__">➕ 新建分类…</option>
+    </select>
+    <input type="text" id="bc-newcat" placeholder="输入新分类名（填写则优先使用）" maxlength="30"
+           style="display:none;margin-top:6px">
+    <label>来源</label>
+    <select id="bc-src" onchange="document.getElementById('bc-newsrc').style.display=this.value==='__newsrc__'?'block':'none'">
+      <option value="__keep__">不修改</option>
+      <option value="">未标来源（清空）</option>
+      ${srcs.map(s=>`<option value="${escAttr(s)}">${esc(s)}</option>`).join('')}
+      <option value="__newsrc__">➕ 新建来源…</option>
+    </select>
+    <input type="text" id="bc-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
+           style="display:none;margin-top:6px">
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn" onclick="hideModal()">取消</button>
+      <button class="btn pri" onclick="batchApply()">应用到 ${items.length} 条</button>
+    </div>`);
+}
+async function batchApply(){
+  const items = _selItems();
+  if(!items.length) return;
+  const body = {items};
+  const cv = $('#bc-cat').value;
+  if(cv!=='__keep__'){
+    const ni = $('#bc-newcat');
+    body.category = (ni && ni.style.display!=='none' && ni.value.trim()) ? ni.value.trim() : cv;
+  }
+  const sv = $('#bc-src').value;
+  if(sv!=='__keep__'){
+    const ni = $('#bc-newsrc');
+    body.source = (ni && ni.style.display!=='none' && ni.value.trim()) ? ni.value.trim() : sv;
+  }
+  if(body.category===undefined && body.source===undefined){ alert('分类和来源都选了「不修改」，没有要改的。'); return; }
+  try{
+    const r = await fetch('/api/records/batch',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const d = await r.json();
+    if(r.ok && d.ok){
+      hideModal(); _selRecs = {};
+      const miss = (d.missing&&d.missing.length)?('，'+d.missing.length+' 条未找到'):''; 
+      alert(`✓ 已更新 ${d.updated} 条${miss}`);
+      loadRecords();
+    } else { alert('批量归类失败：'+(d.error||r.status)); }
+  }catch(e){ alert('批量归类异常：'+e.message); }
+}
+async function batchDelete(){
+  const keys = Object.keys(_selRecs);
+  if(!keys.length) return;
+  if(!confirm(`⚠️ 确定批量删除选中的 ${keys.length} 条记录？\n相关笔记/音频文件会一并删除，不可恢复！`)) return;
+  const ep = {web:'/api/crawls/', video:'/api/video/', article:'/api/articles/',
+              voa:'/api/articles/', dymusic:'/api/articles/', tts:'/api/tts/history/'};
+  let ok=0, fail=0;
+  for(const k of keys){
+    const i=k.indexOf(':'), t=k.slice(0,i), id=k.slice(i+1);
+    try{
+      const r = await fetch((ep[t]||'')+encodeURIComponent(id), {method:'DELETE'});
+      if(r.ok) ok++; else fail++;
+    }catch(e){ fail++; }
+  }
+  _selRecs = {};
+  alert(`批量删除完成：成功 ${ok} 条${fail?('，失败 '+fail+' 条'):''}`);
+  loadRecords();
 }
 // ---------- 记录中心：分类/来源 chips（视频+文章共用一套池） ----------
 let _vcatFilter = '';      // ''=全部 '__uncat__'=未分类 其他=分类名

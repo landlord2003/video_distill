@@ -1607,6 +1607,57 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        # 批量归类：items=[{type,id},…] + category/source（键存在才修改；''=清空）
+        # type: video->videos 表；article/voa/dymusic->articles 表（共用一套分类/来源池）
+        if self.path == "/api/records/batch":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            items = data.get("items") or []
+            if not isinstance(items, list) or not items:
+                self._send(400, {"error": "items required（[{type,id},…]）"})
+                return
+            set_cat = "category" in data
+            set_src = "source" in data
+            if not set_cat and not set_src:
+                self._send(400, {"error": "category/source 至少给一个（不修改的字段不要传）"})
+                return
+            cat = (str(data.get("category") or "")).strip()[:30] if set_cat else None
+            src = (str(data.get("source") or "")).strip()[:30] if set_src else None
+            sets = []
+            vals0 = []
+            if set_cat:
+                sets.append("category=?"); vals0.append(cat)
+            if set_src:
+                sets.append("source=?"); vals0.append(src)
+            updated, missing = 0, []
+            with _lock:
+                with db() as c:
+                    for it in items:
+                        if not isinstance(it, dict):
+                            continue
+                        typ = (it.get("type") or "").strip()
+                        rid = (it.get("id") or "").strip()
+                        if typ == "video":
+                            table = "videos"
+                        elif typ in ("article", "voa", "dymusic"):
+                            table = "articles"
+                        else:
+                            missing.append(f"{typ}:{rid}")
+                            continue
+                        if not rid or not c.execute(
+                                f"SELECT 1 FROM {table} WHERE id=?", (rid,)).fetchone():
+                            missing.append(f"{typ}:{rid}")
+                            continue
+                        c.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE id=?",
+                                  vals0 + [rid])
+                        updated += 1
+                    c.commit()
+            self._send(200, {"ok": True, "updated": updated, "missing": missing})
+            return
         if self.path == "/api/video/cats/rename":
             try:
                 length = int(self.headers.get("Content-Length", 0))
