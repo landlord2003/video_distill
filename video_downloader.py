@@ -303,6 +303,12 @@ def download_douyin(url: str, out_dir: str) -> str:
     except ImportError:
         tried.append("playwright拦截(未安装 playwright，跳过)")
 
+    # 抖音接口的精确判决（作品不存在/仅自己可见/审核中）优先原样上抛——
+    # 这类情况换 cookie 也没用，cookie 建议只会误导
+    if last_err and any(k in last_err for k in
+                        ("作品不存在", "仅自己可见", "审核中")):
+        raise FileNotFoundError(last_err)
+
     raise FileNotFoundError(
         f"抖音下载失败：已依次尝试 [{', '.join(tried)}] 均失败。\n"
         f"最后错误：{last_err}\n\n"
