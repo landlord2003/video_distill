@@ -161,6 +161,11 @@ def init_db():
             c.execute("ALTER TABLE videos ADD COLUMN source TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 列已存在
+        # 迁移：videos 增加 author 列（作者维度，''=无作者）
+        try:
+            c.execute("ALTER TABLE videos ADD COLUMN author TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         # 文章/笔记采集（公众号 / 小红书）
         c.execute("""CREATE TABLE IF NOT EXISTS articles (
             id TEXT PRIMARY KEY,
@@ -173,8 +178,8 @@ def init_db():
             vault_path TEXT,
             error TEXT
         )""")
-        # 迁移：articles 增加 category/source 列（与 videos 同一套分类/来源池，''=未分类/未标来源）
-        for _col in ("category", "source"):
+        # 迁移：articles 增加 category/source/author 列（与 videos 同一套分类/来源/作者池，''=未分类/未标来源/无作者）
+        for _col in ("category", "source", "author"):
             try:
                 c.execute(f"ALTER TABLE articles ADD COLUMN {_col} TEXT DEFAULT ''")
             except sqlite3.OperationalError:
@@ -1234,18 +1239,18 @@ class Handler(BaseHTTPRequestHandler):
                     like = f"%{q}%"
                     cur = c.execute(
                         "SELECT id,url,platform,title,created_at,md_len,status,vault_path,"
-                        "category,source "
+                        "category,source,author "
                         "FROM articles WHERE url LIKE ? OR title LIKE ? "
                         "ORDER BY created_at DESC LIMIT 200", (like, like))
                 else:
                     cur = c.execute(
                         "SELECT id,url,platform,title,created_at,md_len,status,vault_path,"
-                        "category,source "
+                        "category,source,author "
                         "FROM articles ORDER BY created_at DESC LIMIT 200")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "url", "platform", "title", "created_at",
-                         "md_len", "status", "vault_path", "category", "source"], r)))
+                         "md_len", "status", "vault_path", "category", "source", "author"], r)))
             self._send(200, rows)
             return
         m = re.match(r"^/api/articles/([^/]+)$", p)
@@ -1254,14 +1259,14 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 row = c.execute(
                     "SELECT id,url,platform,title,created_at,md_len,status,vault_path,error,"
-                    "category,source "
+                    "category,source,author "
                     "FROM articles WHERE id=?", (aid,)).fetchone()
             if not row:
                 self._send(404, {"error": "not found"})
                 return
             rec = dict(zip(["id", "url", "platform", "title", "created_at",
                             "md_len", "status", "vault_path", "error",
-                            "category", "source"], row))
+                            "category", "source", "author"], row))
             md = ""
             vpath = rec.get("vault_path") or ""
             if vpath and os.path.isfile(vpath):
@@ -1318,12 +1323,12 @@ class Handler(BaseHTTPRequestHandler):
             rows = []
             with db() as c:
                 cur = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,category,source "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,category,source,author "
                     "FROM videos ORDER BY created_at DESC LIMIT 200")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "source_url", "title", "created_at",
-                         "md_len", "status", "vault_path", "category", "source"], r)))
+                         "md_len", "status", "vault_path", "category", "source", "author"], r)))
             self._send(200, rows)
             return
         if p == "/api/video/health":
@@ -1369,13 +1374,13 @@ class Handler(BaseHTTPRequestHandler):
             vid = m.group(1)
             with db() as c:
                 row = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error,category,source "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error,category,source,author "
                     "FROM videos WHERE id=?", (vid,)).fetchone()
             if not row:
                 self._send(404, {"error": "not found"})
                 return
             rec = dict(zip(["id", "source_url", "title", "created_at", "md_len",
-                            "status", "vault_path", "error", "category", "source"], row))
+                            "status", "vault_path", "error", "category", "source", "author"], row))
             md = ""
             vpath = rec.get("vault_path") or ""
             if vpath and os.path.isfile(vpath):
@@ -1412,9 +1417,10 @@ class Handler(BaseHTTPRequestHandler):
                         pass
             self._send(200, {"ok": True})
             return
-        # 删除分类/来源：该值下的记录回落（记录本身不动）；?dim=source 表示操作来源列
+        # 删除分类/来源/作者：该值下的记录回落（记录本身不动）；?dim=source / ?dim=author 指定列
         _path_only, _, _query = self.path.partition("?")
-        _dim_col = "source" if "dim=source" in _query else "category"
+        _dim_col = ("author" if "dim=author" in _query
+                    else "source" if "dim=source" in _query else "category")
         m = re.match(r"^/api/video/cats/(.+)$", _path_only)
         if m:
             cat = urllib.parse.unquote(m.group(1)).strip()
@@ -1552,6 +1558,9 @@ class Handler(BaseHTTPRequestHandler):
                     if new_src is not None:
                         sv = (str(new_src) or "").strip()[:30]
                         c.execute("UPDATE videos SET source=? WHERE id=?", (sv, vid))
+                    if data.get("author") is not None:
+                        aut = (str(data.get("author")) or "").strip()[:30]
+                        c.execute("UPDATE videos SET author=? WHERE id=?", (aut, vid))
                     c.commit()
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
@@ -1600,6 +1609,9 @@ class Handler(BaseHTTPRequestHandler):
                     if new_src is not None:
                         c.execute("UPDATE articles SET source=? WHERE id=?",
                                   ((str(new_src) or "").strip()[:30], aid))
+                    if data.get("author") is not None:
+                        c.execute("UPDATE articles SET author=? WHERE id=?",
+                                  ((str(data.get("author")) or "").strip()[:30], aid))
                     c.commit()
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
@@ -1622,17 +1634,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             set_cat = "category" in data
             set_src = "source" in data
-            if not set_cat and not set_src:
-                self._send(400, {"error": "category/source 至少给一个（不修改的字段不要传）"})
+            set_aut = "author" in data
+            if not set_cat and not set_src and not set_aut:
+                self._send(400, {"error": "category/source/author 至少给一个（不修改的字段不要传）"})
                 return
             cat = (str(data.get("category") or "")).strip()[:30] if set_cat else None
             src = (str(data.get("source") or "")).strip()[:30] if set_src else None
+            aut = (str(data.get("author") or "")).strip()[:30] if set_aut else None
             sets = []
             vals0 = []
             if set_cat:
                 sets.append("category=?"); vals0.append(cat)
             if set_src:
                 sets.append("source=?"); vals0.append(src)
+            if set_aut:
+                sets.append("author=?"); vals0.append(aut)
             updated, missing = 0, []
             with _lock:
                 with db() as c:
@@ -1658,7 +1674,8 @@ class Handler(BaseHTTPRequestHandler):
                     c.commit()
             self._send(200, {"ok": True, "updated": updated, "missing": missing})
             return
-        if self.path == "/api/video/cats/rename":
+        _rename_p, _, _rename_q = self.path.partition("?")
+        if _rename_p == "/api/video/cats/rename":
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 data = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -1670,7 +1687,8 @@ class Handler(BaseHTTPRequestHandler):
             if not old or not new:
                 self._send(400, {"error": "分类名不能为空"})
                 return
-            _col = "source" if "dim=source" in self.path else "category"
+            _col = ("author" if "dim=author" in self.path
+                    else "source" if "dim=source" in self.path else "category")
             with _lock:
                 with db() as c:
                     n = c.execute(f"UPDATE videos SET {_col}=? WHERE {_col}=?",

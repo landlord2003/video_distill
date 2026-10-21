@@ -333,6 +333,7 @@
           </div>
           <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+          <div id="vauthors" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <input type="text" id="vhq" placeholder="🔍 搜索全部记录（标题 / 来源 / 链接）…" style="margin-bottom:12px;width:100%" oninput="renderRecords()">
           <div id="rec-batchbar"></div>
           <div id="rec-detail"></div>
@@ -984,7 +985,7 @@ async function loadRecords(force){
     _recLoaded = true;
   }catch(e){ _recRows = []; }
   renderRecTypeChips();
-  renderCatChips(); renderSrcChips();
+  renderCatChips(); renderSrcChips(); renderAuthorChips();
   renderRecords();
   renderBatchBar();
 }
@@ -997,7 +998,7 @@ function renderRecTypeChips(){
   box.innerHTML = mk('', '📚 全部', _recRows.length)
     + Object.keys(_recTypeMeta).map(k=>mk(k, _recTypeMeta[k].label, counts[k]||0)).join('');
 }
-function _setRecType(k){ _recType = k; _vcatFilter=''; _vSrcFilter=''; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderRecords(); }
+function _setRecType(k){ _recType = k; _vcatFilter=''; _vSrcFilter=''; _vAutFilter=''; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderAuthorChips(); renderRecords(); }
 function recRowsFiltered(){
   const q = ($('#vhq')?.value||'').toLowerCase();
   return _recRows.filter(x=>{
@@ -1011,6 +1012,10 @@ function recRowsFiltered(){
       if(_vSrcFilter){
         const s = (x.source||'').trim();
         if(_vSrcFilter==='__nosrc__' ? s!=='' : s!==_vSrcFilter) return false;
+      }
+      if(_vAutFilter){
+        const a = (x.author||'').trim();
+        if(_vAutFilter==='__noaut__' ? a!=='' : a!==_vAutFilter) return false;
       }
     }
     if(!q) return true;
@@ -1064,6 +1069,7 @@ function renderRecords(){
         ${x.type==='video'&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
         ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
         ${(x.type==='article'||x.type==='voa')&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
+        ${_selManaged(x)&&x.author?`<span class="chip" style="cursor:default;color:var(--acc)">👤 ${esc(x.author)}</span>`:''}
         ${x.type==='article'?`<span class="chip run" style="cursor:default">${esc(x.source||_platLabel[x.platform]||x.platform||'文章')}</span>`:''}
         ${x.type==='dymusic'&&x.source?`<span class="chip run" style="cursor:default">🎵 ${esc(x.source)}</span>`:''}
         ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn pri" onclick="event.stopPropagation();window.open('/player/douyin/${escAttr(x.id)}')">▶ 播放</button>`:''}
@@ -1230,6 +1236,16 @@ function batchClassify(){
     </select>
     <input type="text" id="bc-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
+    <label>作者（批量填入：所有选中条目统一写为同一作者）</label>
+    <select id="bc-aut" onchange="document.getElementById('bc-newaut').style.display=this.value==='__new__'?'block':'none'">
+      <option value="__keep__">不修改</option>
+      <option value="">清空作者</option>
+      ${autCountsAll().keys.map(a=>`<option value="${escAttr(a)}">${esc(a)}</option>`).join('')}
+      <option value="__new__">✍️ 输入作者…</option>
+    </select>
+    <input type="text" id="bc-newaut" placeholder="输入作者名（应用到全部选中条目）" maxlength="30"
+           style="display:none;margin-top:6px" list="bc-autlist">
+    <datalist id="bc-autlist">${autCountsAll().keys.map(a=>`<option value="${escAttr(a)}">`).join('')}</datalist>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn" onclick="hideModal()">取消</button>
       <button class="btn pri" onclick="batchApply()">应用到 ${items.length} 条</button>
@@ -1249,7 +1265,13 @@ async function batchApply(){
     const ni = $('#bc-newsrc');
     body.source = (ni && ni.style.display!=='none' && ni.value.trim()) ? ni.value.trim() : sv;
   }
-  if(body.category===undefined && body.source===undefined){ alert('分类和来源都选了「不修改」，没有要改的。'); return; }
+  const av = $('#bc-aut').value;
+  if(av!=='__keep__'){
+    const ni = $('#bc-newaut');
+    body.author = (ni && ni.style.display!=='none' && ni.value.trim()) ? ni.value.trim() : av;
+  }
+  if(body.category===undefined && body.source===undefined && body.author===undefined){
+    alert('分类/来源/作者都选了「不修改」，没有要改的。'); return; }
   try{
     const r = await fetch('/api/records/batch',{method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -1354,11 +1376,30 @@ function renderSrcChips(){
 }
 function _setSrc(k){ _vSrcFilter = k; renderSrcChips(); renderRecords(); }
 function _setCat(k){ _vcatFilter = k; renderCatChips(); renderRecords(); }
+// ---------- 作者维度（视频+文章/VOA/抖音音乐共用一套池，自由文本） ----------
+let _vAutFilter = '', _autKeys = [];
+function autCountsAll(){ return _countDim(_managedRows(), 'author'); }
+function renderAuthorChips(){
+  const el = $('#vauthors'); if(!el) return;
+  if(!(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa' || _recType==='dymusic')){ el.style.display='none'; return; }
+  el.style.display='flex';
+  const r = _countDim(_chipRows(), 'author');
+  _autKeys = r.keys;
+  const chips = [['', '全部作者']];
+  if(r.none) chips.push(['__noaut__', '无作者 '+r.none]);
+  r.keys.forEach(a=>chips.push([a, '👤 '+esc(a)+' '+r.counts[a]]));
+  el.innerHTML = chips.map(([k,label])=>
+    `<span class="chip ${_vAutFilter===k?'on':''}" style="cursor:pointer" onclick="_setAut('${escAttr(k)}')">${label}</span>`
+  ).join('')
+  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats('author')">⚙ 管理作者</span>`;
+}
+function _setAut(k){ _vAutFilter = k; renderAuthorChips(); renderRecords(); }
 // 编辑记录：改名（同步重命名库内笔记文件）+ 归类（分类/来源：视频+文章共用一套池）
 function _mgLinks(){
   return `<div style="display:flex;gap:8px;margin-top:6px">
     <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('category')">⚙ 管理分类</button>
     <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('source')">⚙ 管理来源</button>
+    <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('author')">👤 管理作者</button>
   </div>`;
 }
 function editRec(id, type){
@@ -1368,7 +1409,8 @@ function editRec(id, type){
   const {keys: cats} = catCountsAll();
   if(type==='article' || type==='voa' || type==='dymusic'){
     const {keys: srcs} = srcCountsAll();
-    const cat = (x.category||'').trim(), src = (x.source||'').trim();
+    const {keys: auts} = autCountsAll();
+    const cat = (x.category||'').trim(), src = (x.source||'').trim(), aut = (x.author||'').trim();
     showModal(`<h3>✏️ 编辑${type==='voa'?'VOA':(type==='dymusic'?'抖音音乐':'文章')}记录</h3>
       <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
       <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
@@ -1388,6 +1430,9 @@ function editRec(id, type){
       </select>
       <input type="text" id="me-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
              style="display:none;margin-top:6px">
+      <label>作者</label>
+      <input type="text" id="me-aut" list="me-autlist" value="${escAttr(aut)}" maxlength="30" placeholder="填写作者（可选，已有作者自动联想）">
+      <datalist id="me-autlist">${auts.map(a=>`<option value="${escAttr(a)}">`).join('')}</datalist>
       ${_mgLinks()}
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
         <button class="btn" onclick="hideModal()">取消</button>
@@ -1396,8 +1441,10 @@ function editRec(id, type){
     return;
   }
   const {keys: srcs} = srcCountsAll();
+  const {keys: auts} = autCountsAll();
   const cat = (x.category||'').trim();
   const src = (x.source||'').trim();
+  const aut = (x.author||'').trim();
   showModal(`<h3>✏️ 编辑记录</h3>
     <label>标题（保存后同步重命名 Obsidian 笔记文件）</label>
     <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
@@ -1417,6 +1464,9 @@ function editRec(id, type){
     </select>
     <input type="text" id="me-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
+    <label>作者</label>
+    <input type="text" id="me-aut" list="me-autlist" value="${escAttr(aut)}" maxlength="30" placeholder="填写作者（可选，已有作者自动联想）">
+    <datalist id="me-autlist">${auts.map(a=>`<option value="${escAttr(a)}">`).join('')}</datalist>
     ${_mgLinks()}
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn" onclick="hideModal()">取消</button>
@@ -1434,16 +1484,18 @@ async function saveRec(id, type){
     const newSrcInput = $('#me-newsrc');
     const src = (newSrcInput && newSrcInput.style.display!=='none' && newSrcInput.value.trim())
       ? newSrcInput.value.trim() : ($('#me-src')?.value || '');
+    const aut = $('#me-aut')?.value.trim() || '';
     try{
       const r = await fetch('/api/articles/'+encodeURIComponent(id), {method:'PATCH',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({title, category:cat, source:src})});
+        body:JSON.stringify({title, category:cat, source:src, author:aut})});
       const d = await r.json();
       if(r.ok && d.ok){
         hideModal();
         if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
         if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
-        renderCatChips(); renderSrcChips();
+        if(_vAutFilter && _vAutFilter!=='__noaut__' && _vAutFilter!==aut) _vAutFilter='';
+        renderCatChips(); renderSrcChips(); renderAuthorChips();
         loadRecords();
       }
       else { alert('保存失败：'+(d.error||r.status)); }
@@ -1456,15 +1508,17 @@ async function saveRec(id, type){
   const newSrcInput = $('#me-newsrc');
   const src = (newSrcInput.style.display!=='none' && newSrcInput.value.trim())
     ? newSrcInput.value.trim() : $('#me-src').value;
+  const aut = $('#me-aut').value.trim() || '';
   try{
     const r = await fetch('/api/video/'+id, {method:'PATCH',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({title, category:cat, source:src})});
+      body:JSON.stringify({title, category:cat, source:src, author:aut})});
     const d = await r.json();
     if(r.ok && d.ok){
       hideModal();
       if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
       if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
+      if(_vAutFilter && _vAutFilter!=='__noaut__' && _vAutFilter!==aut) _vAutFilter='';
       loadRecords();
     } else { alert('保存失败：'+(d.error||r.status)); }
   }catch(e){ alert('保存异常：'+e.message); }
@@ -1473,15 +1527,18 @@ async function saveRec(id, type){
 let _mgDim = 'category', _mgKeys = [];
 function manageCats(dim){
   _mgDim = dim || 'category';
-  const isSrc = _mgDim === 'source';
+  const isSrc = _mgDim === 'source', isAut = _mgDim === 'author';
   let counts, keys;
   if(isSrc){ const s = srcCountsAll(); counts = s.counts; keys = s.keys; }
+  else if(isAut){ const a = autCountsAll(); counts = a.counts; keys = a.keys; }
   else { const c = catCountsAll(); counts = c.counts; keys = c.keys; }
   _mgKeys = keys;
-  const label = isSrc ? '来源' : '分类';
-  const fallback = isSrc ? '「未标来源」' : '「未分类」';
+  const label = isAut ? '作者' : (isSrc ? '来源' : '分类');
+  const fallback = isAut ? '「无作者」' : (isSrc ? '「未标来源」' : '「未分类」');
+  const hint = isAut ? '新建作者请在某条记录的「编辑」里填写，或选中多条后在批量工具条里「批量分类/来源」统一填入。'
+                     : `新建${label}请在某条记录的「编辑」里选「➕ 新建${label}」。`;
   showModal(`<h3>⚙ 管理${label}</h3>
-    <div class="mut" style="margin-bottom:8px">删除${label}不会删除记录，其中的记录将回落到${fallback}。新建${label}请在某条记录的「编辑」里选「➕ 新建${label}」。</div>
+    <div class="mut" style="margin-bottom:8px">删除${label}不会删除记录，其中的记录将回落到${fallback}。${hint}</div>
     ${keys.length ? keys.map((c,i)=>`
       <div class="catrow">
         <input type="text" id="mc-${i}" value="${escAttr(c)}" maxlength="30" style="flex:1">
@@ -1494,18 +1551,19 @@ function manageCats(dim){
       <button class="btn" onclick="hideModal()">关闭</button>
     </div>`);
 }
+function _mgDimParam(){ return _mgDim==='source' ? '?dim=source' : (_mgDim==='author' ? '?dim=author' : ''); }
 async function renCat(i){
   const nv = document.getElementById('mc-'+i).value.trim();
   if(!nv){ alert('名称不能为空'); return; }
   const old = _mgKeys[i];
-  const isSrc = _mgDim === 'source';
   try{
-    const r = await fetch('/api/video/cats/rename'+(isSrc?'?dim=source':''), {method:'POST',
+    const r = await fetch('/api/video/cats/rename'+_mgDimParam(), {method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({old, new:nv})});
     const d = await r.json();
     if(r.ok && d.ok){
-      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=nv; }
+      if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=nv; }
+      else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=nv; }
       else if(_vcatFilter===old) _vcatFilter = nv;
       hideModal();
       loadRecords();
@@ -1514,15 +1572,16 @@ async function renCat(i){
 }
 async function delCat(i){
   const old = _mgKeys[i];
-  const isSrc = _mgDim === 'source';
-  const n = (_managedRows().filter(x=>((isSrc?x.source:x.category)||'').trim()===old)).length;
-  const fb = isSrc ? '未标来源' : '未分类';
-  if(!confirm(`删除${isSrc?'来源':'分类'}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`)) return;
+  const dimName = _mgDim==='source' ? 'source' : (_mgDim==='author' ? 'author' : 'category');
+  const n = (_managedRows().filter(x=>((x[dimName])||'').trim()===old)).length;
+  const fb = _mgDim==='source' ? '未标来源' : (_mgDim==='author' ? '无作者' : '未分类');
+  if(!confirm(`删除${_mgDim==='author'?'作者':(_mgDim==='source'?'来源':'分类')}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`)) return;
   try{
-    const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+(isSrc?'?dim=source':''), {method:'DELETE'});
+    const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+_mgDimParam(), {method:'DELETE'});
     const d = await r.json();
     if(r.ok && d.ok){
-      if(isSrc){ if(_vSrcFilter===old) _vSrcFilter=''; }
+      if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=''; }
+      else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=''; }
       else if(_vcatFilter===old) _vcatFilter='';
       hideModal();
       loadRecords();
