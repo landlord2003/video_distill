@@ -967,12 +967,14 @@ const _recTypeMeta = {
 const _platLabel = {wechat:'公众号', xhs:'小红书', twitter:'🐦 Twitter', voa:'🎧 VOA', dymusic:'🎵 抖音音乐'};
 async function loadRecords(force){
   try{
-    const [cw, vd, ar, tt] = await Promise.all([
+    const [cw, vd, ar, tt, dm] = await Promise.all([
       fetch('/api/history').then(r=>r.json()).catch(()=>[]),
       fetch('/api/video/history').then(r=>r.json()).catch(()=>[]),
       fetch('/api/articles').then(r=>r.json()).catch(()=>[]),
       fetch('/api/tts/history').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/dims').then(r=>r.json()).catch(()=>({})),
     ]);
+    _dimPool = {category:(dm&&dm.category)||[], source:(dm&&dm.source)||[], author:(dm&&dm.author)||[]};
     _recRows = [
       ...(cw||[]).map(x=>({...x, type:'web'})),
       ...(vd||[]).map(x=>({...x, type:'video'})),
@@ -1319,8 +1321,15 @@ function _chipRows(){
   return _managedRows();
 }
 // 全量并集口径：编辑弹窗分类/来源下拉、管理弹窗（重命名/删除作用于视频+文章）
-function catCountsAll(){ return _countDim(_managedRows(), 'category'); }
-function srcCountsAll(){ return _countDim(_managedRows(), 'source'); }
+// 合并维度池（管理弹窗预先添加、0 条记录也保留的名字）
+let _dimPool = {category:[], source:[], author:[]};
+function _mergePool(r, dim){
+  const counts = {...r.counts};
+  (_dimPool[dim]||[]).forEach(n=>{ if(!(n in counts)) counts[n]=0; });
+  return {counts, none:r.none, keys: Object.keys(counts).sort()};
+}
+function catCountsAll(){ return _mergePool(_countDim(_managedRows(), 'category'), 'category'); }
+function srcCountsAll(){ return _mergePool(_countDim(_managedRows(), 'source'), 'source'); }
 function _countDim(rows, dim){
   const counts = {}; let none = 0;
   rows.forEach(x=>{
@@ -1378,7 +1387,7 @@ function _setSrc(k){ _vSrcFilter = k; renderSrcChips(); renderRecords(); }
 function _setCat(k){ _vcatFilter = k; renderCatChips(); renderRecords(); }
 // ---------- 作者维度（视频+文章/VOA/抖音音乐共用一套池，自由文本） ----------
 let _vAutFilter = '', _autKeys = [];
-function autCountsAll(){ return _countDim(_managedRows(), 'author'); }
+function autCountsAll(){ return _mergePool(_countDim(_managedRows(), 'author'), 'author'); }
 function renderAuthorChips(){
   const el = $('#vauthors'); if(!el) return;
   if(!(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa' || _recType==='dymusic')){ el.style.display='none'; return; }
@@ -1535,10 +1544,14 @@ function manageCats(dim){
   _mgKeys = keys;
   const label = isAut ? '作者' : (isSrc ? '来源' : '分类');
   const fallback = isAut ? '「无作者」' : (isSrc ? '「未标来源」' : '「未分类」');
-  const hint = isAut ? '新建作者请在某条记录的「编辑」里填写，或选中多条后在批量工具条里「批量分类/来源」统一填入。'
-                     : `新建${label}请在某条记录的「编辑」里选「➕ 新建${label}」。`;
   showModal(`<h3>⚙ 管理${label}</h3>
-    <div class="mut" style="margin-bottom:8px">删除${label}不会删除记录，其中的记录将回落到${fallback}。${hint}</div>
+    <div class="mut" style="margin-bottom:8px">➕ 新添加的${label}会进入${label}池（0 条记录也保留），可在「编辑」或批量工具条里直接选用。删除${label}不会删除记录，其中的记录将回落到${fallback}。</div>
+    <div class="catrow">
+      <input type="text" id="mc-new" placeholder="输入新${label}名…" maxlength="30" style="flex:1"
+             onkeydown="if(event.key==='Enter')addCat()">
+      <button class="btn pri" onclick="addCat()">➕ 添加${label}</button>
+    </div>
+    <div style="height:8px"></div>
     ${keys.length ? keys.map((c,i)=>`
       <div class="catrow">
         <input type="text" id="mc-${i}" value="${escAttr(c)}" maxlength="30" style="flex:1">
@@ -1546,10 +1559,24 @@ function manageCats(dim){
         <button class="btn" onclick="renCat(${i})">重命名</button>
         <button class="btn del" onclick="delCat(${i})">删除</button>
       </div>`).join('')
-    : `<div class="empty" style="padding:14px">还没有${label}</div>`}
+    : `<div class="empty" style="padding:14px">${label}池为空，先在上面添加</div>`}
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="hideModal()">关闭</button>
     </div>`);
+}
+async function addCat(){
+  const name = document.getElementById('mc-new').value.trim();
+  if(!name){ alert('名称不能为空'); return; }
+  try{
+    const r = await fetch('/api/video/cats/add'+_mgDimParam(), {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name})});
+    const d = await r.json();
+    if(r.ok && d.ok){
+      await loadRecords();          // 刷新池与列表
+      manageCats(_mgDim);           // 重开弹窗（保留在管理界面连续操作）
+    } else { alert('添加失败：'+(d.error||r.status)); }
+  }catch(e){ alert('异常：'+e.message); }
 }
 function _mgDimParam(){ return _mgDim==='source' ? '?dim=source' : (_mgDim==='author' ? '?dim=author' : ''); }
 async function renCat(i){

@@ -166,6 +166,12 @@ def init_db():
             c.execute("ALTER TABLE videos ADD COLUMN author TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 列已存在
+        # 维度池：预先建好的分类/来源/作者名（0 条记录也保留，供管理弹窗直接添加）
+        c.execute("""CREATE TABLE IF NOT EXISTS dim_pool (
+            dim TEXT NOT NULL,
+            name TEXT NOT NULL,
+            UNIQUE(dim, name)
+        )""")
         # 文章/笔记采集（公众号 / 小红书）
         c.execute("""CREATE TABLE IF NOT EXISTS articles (
             id TEXT PRIMARY KEY,
@@ -1331,6 +1337,15 @@ class Handler(BaseHTTPRequestHandler):
                          "md_len", "status", "vault_path", "category", "source", "author"], r)))
             self._send(200, rows)
             return
+        if p == "/api/dims":
+            # 维度池（管理弹窗预先添加的分类/来源/作者名，0 条记录也保留）
+            out = {}
+            with db() as c:
+                for d in ("category", "source", "author"):
+                    out[d] = [r[0] for r in c.execute(
+                        "SELECT name FROM dim_pool WHERE dim=? ORDER BY name", (d,)).fetchall()]
+            self._send(200, out)
+            return
         if p == "/api/video/health":
             # 工具可用性自诊断：确认当前进程加载的是新代码、依赖齐全
             health = {"python": sys.executable, "tools": {}}
@@ -1434,6 +1449,8 @@ class Handler(BaseHTTPRequestHandler):
                     # 文章记录共用同一套分类/来源池，联动清空
                     n += c.execute(f"UPDATE articles SET {_dim_col}='' WHERE {_dim_col}=?",
                                    (cat,)).rowcount
+                    # 维度池里的同名项一并删除（0 条记录的池项也能删）
+                    c.execute("DELETE FROM dim_pool WHERE dim=? AND name=?", (_dim_col, cat))
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return
@@ -1675,6 +1692,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "updated": updated, "missing": missing})
             return
         _rename_p, _, _rename_q = self.path.partition("?")
+        _mg_dim = ("author" if "dim=author" in _rename_q
+                   else "source" if "dim=source" in _rename_q else "category")
+        # 添加分类/来源/作者：写入维度池（0 条记录也保留，供批量归类/编辑下拉选用）
+        if _rename_p == "/api/video/cats/add":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            name = (data.get("name") or "").strip()[:30]
+            if not name:
+                self._send(400, {"error": "名称不能为空"})
+                return
+            with _lock:
+                with db() as c:
+                    cur = c.execute("INSERT OR IGNORE INTO dim_pool(dim,name) VALUES(?,?)",
+                                    (_mg_dim, name))
+                    c.commit()
+            self._send(200, {"ok": True, "added": cur.rowcount})
+            return
         if _rename_p == "/api/video/cats/rename":
             try:
                 length = int(self.headers.get("Content-Length", 0))
@@ -1687,15 +1725,17 @@ class Handler(BaseHTTPRequestHandler):
             if not old or not new:
                 self._send(400, {"error": "分类名不能为空"})
                 return
-            _col = ("author" if "dim=author" in self.path
-                    else "source" if "dim=source" in self.path else "category")
+            _col = _mg_dim
             with _lock:
                 with db() as c:
                     n = c.execute(f"UPDATE videos SET {_col}=? WHERE {_col}=?",
                                   (new, old)).rowcount
-                    # 文章记录共用同一套分类/来源池，联动更新
+                    # 文章记录共用同一套分类/来源/作者池，联动更新
                     n += c.execute(f"UPDATE articles SET {_col}=? WHERE {_col}=?",
                                    (new, old)).rowcount
+                    # 维度池里的同名项一并改名（0 条记录的池项也能重命名）
+                    c.execute("UPDATE dim_pool SET name=? WHERE dim=? AND name=?",
+                              (new, _mg_dim, old))
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return
