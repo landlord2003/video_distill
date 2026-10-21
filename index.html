@@ -70,9 +70,14 @@
   .chip.ok{color:var(--acc2);border-color:rgba(43,212,164,.4)}
   .chip.err{color:var(--red);border-color:rgba(255,95,110,.4)}
   .chip.run{color:var(--acc);border-color:rgba(79,157,255,.4)}
-  /* 记录中心：分类/来源栏红色大字号 */
-  #vcats .chip,#vsrcs .chip{color:var(--red);font-size:14px;padding:2px 10px}
-  #vcats .chip.on,#vsrcs .chip.on{background:rgba(255,95,110,.18);border-color:var(--red)}
+  /* 记录中心：分类/来源/作者三行筛选 chips 统一外观
+     （默认灰 / 悬停亮 / 选中蓝底白字 / ⚙管理=蓝描边） */
+  #vcats .chip,#vsrcs .chip,#vauthors .chip,#rectypes .chip{font-size:12px;padding:3px 10px;cursor:pointer}
+  #vcats .chip:hover,#vsrcs .chip:hover,#vauthors .chip:hover,#rectypes .chip:hover{color:var(--txt);border-color:var(--acc)}
+  #vcats .chip.on,#vsrcs .chip.on,#vauthors .chip.on,#rectypes .chip.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+  #vcats .chip.mgchip,#vsrcs .chip.mgchip,#vauthors .chip.mgchip{margin-left:auto;color:var(--acc);
+    border-color:rgba(79,157,255,.45)}
+  #vcats .chip.mgchip:hover,#vsrcs .chip.mgchip:hover,#vauthors .chip.mgchip:hover{border-color:var(--acc);color:var(--acc)}
   /* ===== 页面骨架：左操作流 / 右产出区 ===== */
   #pipe-panel,#tts-panel,#rec-panel{display:none;flex-direction:column;overflow:hidden;flex:1}
   .layoutA{flex:1;display:flex;min-height:0}
@@ -995,7 +1000,7 @@ function renderRecTypeChips(){
   const box = $('#rectypes'); if(!box) return;
   const counts = {};
   _recRows.forEach(x=>counts[x.type]=(counts[x.type]||0)+1);
-  const mk = (k,label,n)=>`<span class="chip ${_recType===k?'on':''}" style="cursor:pointer;font-size:13px;padding:3px 12px"
+  const mk = (k,label,n)=>`<span class="chip ${_recType===k?'on':''}"
       onclick="_setRecType('${k}')">${label}${n?(' '+n):''}</span>`;
   box.innerHTML = mk('', '📚 全部', _recRows.length)
     + Object.keys(_recTypeMeta).map(k=>mk(k, _recTypeMeta[k].label, counts[k]||0)).join('');
@@ -1361,7 +1366,7 @@ function renderCatChips(){
   el.innerHTML = chips.map(([k,label])=>
     `<span class="chip ${_vcatFilter===k?'on':''}" style="cursor:pointer" onclick="_setCat('${escAttr(k)}')">${label}</span>`
   ).join('')
-  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats()">⚙ 管理分类</span>`;
+  + `<span class="chip mgchip" onclick="manageCats()">⚙ 管理分类</span>`;
 }
 // ---------- 来源分类（抖音视频/YouTube视频…可增可管理） ----------
 let _vSrcFilter = '', _srcKeys = [];
@@ -1374,7 +1379,7 @@ function _srcChips(filter, setter){
   return chips.map(([k,label])=>
     `<span class="chip ${filter===k?'on':''}" style="cursor:pointer" onclick="${setter}('${escAttr(k)}')">${label}</span>`
   ).join('')
-  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats('source')">⚙ 管理来源</span>`;
+  + `<span class="chip mgchip" onclick="manageCats('source')">⚙ 管理来源</span>`;
 }
 function renderSrcChips(){
   const el = document.getElementById('vsrcs');
@@ -1400,7 +1405,7 @@ function renderAuthorChips(){
   el.innerHTML = chips.map(([k,label])=>
     `<span class="chip ${_vAutFilter===k?'on':''}" style="cursor:pointer" onclick="_setAut('${escAttr(k)}')">${label}</span>`
   ).join('')
-  + `<span class="chip" style="cursor:pointer;margin-left:auto" onclick="manageCats('author')">⚙ 管理作者</span>`;
+  + `<span class="chip mgchip" onclick="manageCats('author')">⚙ 管理作者</span>`;
 }
 function _setAut(k){ _vAutFilter = k; renderAuthorChips(); renderRecords(); }
 // 编辑记录：改名（同步重命名库内笔记文件）+ 归类（分类/来源：视频+文章共用一套池）
