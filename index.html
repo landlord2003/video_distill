@@ -227,9 +227,12 @@
               <span class="sub" id="s3sub">随来源自动切换</span></div>
             <div class="step-b">
               <div class="segbtns" id="popts"></div>
-              <div class="segbtns" style="margin-top:10px">
-                <span style="flex:1"></span>
-                <button id="prun" class="btn pri" onclick="runPipe()" style="padding:8px 22px">▶ 运行流水线</button>
+              <div class="segbtns" style="margin-top:10px;justify-content:center;gap:14px">
+                <button id="prun" class="btn pri" onclick="runPipe()"
+                        style="padding:8px 22px;min-width:168px">▶ 运行流水线</button>
+                <button class="btn" onclick="clearPipeAll()"
+                        title="清空链接清单、采集清单与处理进度（不影响已入库记录）"
+                        style="padding:8px 16px">🧹 清空重置</button>
               </div>
             </div>
           </div>
@@ -245,9 +248,6 @@
             </div>
           </div>
           <div id="vhealth" class="vhealth">工具状态：检测中…</div>
-          <div style="display:flex;justify-content:flex-end;margin-top:6px">
-            <button class="btn" onclick="clearPipeAll()" title="清空链接清单、采集清单与处理进度（不影响已入库记录）">🧹 清空重置</button>
-          </div>
         </div>
         <div id="psplit" title="拖动调整宽度"></div>
         <!-- 右：产出区 -->
