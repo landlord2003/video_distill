@@ -14,6 +14,8 @@ import os
 import io
 import re
 import json
+import time
+import glob
 import base64
 import subprocess
 import threading
@@ -115,30 +117,195 @@ def _resolve_whisper_source(model_size):
     return model_size
 
 
-# 转写设备：固定 CPU int8。
-# 历史教训：device="auto" 先试 GPU，12GB 显存被 Ollama(keep_alive) 占住时
-# ctranslate2 的 CUDA 初始化会零 CPU 永久挂死（且不抛异常，except 兜不住）。
-# 短视频 CPU small int8 速度足够，确定性优先。可用环境变量 WHISPER_DEVICE 覆盖。
-WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
+# ---- 转写设备（2026-10-14 起：GPU 优先 + 自动降级）----
+# 实测（60s 中文音频 / small / beam5）：
+#   cuda int8_float16 = 2.0s（~30x 实时，显存 ~465MB）
+#   cpu  int8         = 11.0s（~5.4x 实时）
+# 即 GPU 快约 5 倍；28 分钟视频 CPU 要 ~5 分钟，GPU 只要 ~1 分钟。
+#
+# 🔴 历史教训（仍在生效，别删守卫）：显存被 Ollama(keep_alive) 占满时，
+#    ctranslate2 的 CUDA 初始化会**静默挂死**（不抛异常，except 兜不住）。
+#    所以：① 加载走看门狗线程；② 显存不足先卸载 Ollama 腾地方；③ 仍不足就退 CPU。
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto").strip().lower()  # auto|cuda|cpu
 # 单条转写总超时（含模型加载），超时报错放行，绝不让批量无限挂死。
-# 1800s：兼容 YouTube 长视频（1小时+ 讲座/播客类）在 CPU small int8 下的转写耗时
 WHISPER_TIMEOUT = int(os.environ.get("WHISPER_TIMEOUT", "1800"))
+# 模型加载看门狗：GPU 正常 0.7s，给 180s 已经很宽松；挂死时尽早脱身
+WHISPER_LOAD_TIMEOUT = int(os.environ.get("WHISPER_LOAD_TIMEOUT", "180"))
+# 走 GPU 所需的最小空闲显存(MB)；低于此值先腾显存，再不够就退 CPU。0 = 关闭检查
+# 1200MB：whisper small int8_float16 实测占 ~465MB，再留 CT2 workspace 余量
+WHISPER_MIN_FREE_MB = int(os.environ.get("WHISPER_MIN_FREE_MB", "1200"))
+# 显存不足时是否先让 Ollama 释放驻留模型（摘要步骤会按需自动重载）
+WHISPER_FREE_OLLAMA = os.environ.get("WHISPER_FREE_OLLAMA", "1").lower() not in ("0", "false", "no")
 
-_WHISPER_CACHE = {"model": None, "size": None}
+# 计算类型：GPU 用 int8_float16（int8 权重省显存 + fp16 计算），CPU 用 int8
+_COMPUTE_BY_DEVICE = {"cuda": "int8_float16", "cpu": "int8"}
+
+_WHISPER_CACHE = {"model": None, "size": None, "device": None, "compute": None}
+_CUDA_DISABLED = {"why": ""}      # 一旦 GPU 这条路失败，本进程内不再重试
+_CUDA_DLLS = {"done": False, "dirs": []}
 
 
-def _load_whisper_model(src, timeout=300):
+def _cuda_dll_dirs():
+    """找出可用的 CUDA 12 运行库目录（含 cublas64_12.dll）。
+
+    🔴 为什么不用 `pip install nvidia-cublas-cu12`：Windows 版 wheel 在常用国内镜像
+       上时有时无（清华源能查到文件、pip 却解析不到）。而**本机 Ollama 自带一整套**
+       cuda_v12 运行库（cublas64_12 / cublasLt64_12 / cudart64_12），直接借用，
+       零下载、零版本冲突。实测 ctranslate2 4.8.2 + faster-whisper 1.2.1 直接可用。
+    ⚠️ 必须挑**确实含 cublas64_12.dll** 的目录：Ollama 同时带 cuda_v13（cublas64_13），
+       喂错目录照样报 "cublas64_12.dll is not found"。
+    ⚠️ **不需要 cuDNN**（Whisper 用不到卷积核走 cuDNN 的路径）——省了 ~800MB 下载。
+    """
+    cands = []
+    env = os.environ.get("WHISPER_CUDA_DLL_DIR")
+    if env:
+        cands.append(env)
+    for root in (os.environ.get("LOCALAPPDATA"), os.environ.get("ProgramFiles"),
+                 os.environ.get("ProgramFiles(x86)")):
+        if not root:
+            continue
+        for sub in ("Programs/Ollama/lib/ollama", "Ollama/lib/ollama"):
+            base = os.path.join(root, *sub.split("/"))
+            if os.path.isdir(base):
+                try:
+                    cands += [os.path.join(base, v) for v in sorted(os.listdir(base))
+                              if v.startswith("cuda_v")]
+                except OSError:
+                    pass
+    # 万一以后 pip 装上了 nvidia-*-cu12，也认
+    for sp in (os.path.join(BASE, "venv", "Lib", "site-packages"),
+               os.path.join(os.path.dirname(os.__file__), "site-packages")):
+        cands += glob.glob(os.path.join(sp, "nvidia", "*", "bin"))
+    out = []
+    for d in cands:
+        try:
+            if os.path.isdir(d) and os.path.isfile(os.path.join(d, "cublas64_12.dll")):
+                out.append(d)
+        except OSError:
+            pass
+    return out
+
+
+def _prepare_cuda_dlls():
+    """把 CUDA 运行库目录挂进 DLL 搜索路径（幂等）。
+
+    🔴 踩过的坑：只调 `os.add_dll_directory()` **不够** —— CTranslate2 是通过
+       PATH 去 LoadLibrary 的，必须同时改 `PATH`。实测只设前者，
+       模型能加载（0.7s）但一到 encode 就报 cublas64_12.dll not found。
+    """
+    if _CUDA_DLLS["done"]:
+        return _CUDA_DLLS["dirs"]
+    dirs = _cuda_dll_dirs()
+    for d in dirs:
+        try:
+            os.add_dll_directory(d)
+        except Exception:
+            pass
+    if dirs:
+        os.environ["PATH"] = os.pathsep.join(dirs) + os.pathsep + os.environ.get("PATH", "")
+        print("[video] CUDA 运行库就绪: %s" % "; ".join(dirs), flush=True)
+    _CUDA_DLLS.update({"done": True, "dirs": dirs})
+    return dirs
+
+
+def _vram_free_mb():
+    """查空闲显存(MB)。取不到返回 None（不因此阻断流程）。"""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=15)
+        if out.returncode == 0 and (out.stdout or "").strip():
+            return int(out.stdout.strip().splitlines()[0])
+    except Exception:
+        pass
+    return None
+
+
+def _ollama_unload_all():
+    """让 Ollama 立刻释放驻留显存（keep_alive=0）。返回被卸载的模型名列表。
+
+    转写阶段用不到 LLM，腾出来的显存给 CUDA；后面的摘要步骤 Ollama 会自动重载
+    （qwen3:14b 冷启约十几秒，远比 CPU 转写省下的几分钟划算）。
+    """
+    try:
+        with urllib.request.urlopen(OLLAMA + "/api/ps", timeout=10) as r:
+            models = (json.loads(r.read().decode("utf-8")) or {}).get("models") or []
+    except Exception:
+        return []
+    freed = []
+    for m in models:
+        name = m.get("name") or m.get("model")
+        if not name:
+            continue
+        try:
+            data = json.dumps({"model": name, "keep_alive": 0}).encode("utf-8")
+            req = urllib.request.Request(OLLAMA + "/api/generate", data=data,
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=20).read()
+            freed.append(name)
+        except Exception:
+            pass
+    return freed
+
+
+def _resolve_device():
+    """决定 (device, compute_type)，并说明理由。
+
+    auto：优先进 GPU；缺 CUDA 库 / 显存不足 / 曾经失败 → 退 CPU。
+    cuda：**强制**尝试 GPU（跳过显存守卫，仅缺库时警告）。
+    cpu ：强制 CPU。
+    """
+    want = WHISPER_DEVICE
+    if want == "cpu":
+        return "cpu", _COMPUTE_BY_DEVICE["cpu"], "WHISPER_DEVICE=cpu 强制"
+    if _CUDA_DISABLED["why"]:
+        return "cpu", _COMPUTE_BY_DEVICE["cpu"], "本进程内 GPU 已降级（%s）" % _CUDA_DISABLED["why"]
+
+    dirs = _prepare_cuda_dlls()
+    if not dirs:
+        why = "未发现 CUDA 运行库(cublas64_12.dll)"
+        if want == "cuda":
+            print("[video] %s，但仍按 WHISPER_DEVICE=cuda 硬试" % why, flush=True)
+            return "cuda", _COMPUTE_BY_DEVICE["cuda"], why
+        _CUDA_DISABLED["why"] = why
+        return "cpu", _COMPUTE_BY_DEVICE["cpu"], why
+
+    free = _vram_free_mb()
+    if free is not None and WHISPER_MIN_FREE_MB > 0 and free < WHISPER_MIN_FREE_MB:
+        freed = _ollama_unload_all() if WHISPER_FREE_OLLAMA else []
+        if freed:
+            time.sleep(1.5)                 # 等显存真正还给驱动
+            free = _vram_free_mb()
+            print("[video] 显存不足，已让 Ollama 卸载 %s，现空闲 %sMB"
+                  % (", ".join(freed), free), flush=True)
+        if free is not None and free < WHISPER_MIN_FREE_MB:
+            why = "空闲显存 %sMB < %dMB" % (free, WHISPER_MIN_FREE_MB)
+            if want == "cuda":
+                print("[video] %s，但仍按 WHISPER_DEVICE=cuda 硬试" % why, flush=True)
+            else:
+                # ⚠️ 这里**故意不写 _CUDA_DISABLED**：显存不足是"软条件"，
+                #    服务是长驻的，下次 Ollama 卸载后显存就回来了 → 下次要重新判定。
+                #    只有加载报错/推理挂死这类"硬失败"才永久降级。
+                print("[video] %s → 本次转写用 CPU（下次会重新判定）" % why, flush=True)
+                return "cpu", _COMPUTE_BY_DEVICE["cpu"], why
+
+    return "cuda", _COMPUTE_BY_DEVICE["cuda"], "auto"
+
+
+def _load_whisper_model(src, device, compute_type, timeout=None):
     """在子线程加载 Whisper 模型（带看门狗）。
 
     ctranslate2 在 GPU/资源初始化挂死时不抛异常，主线程会永远等——
     所以放到 daemon 线程加载，超时即中止等待并报错。
     """
     from faster_whisper import WhisperModel
+    timeout = timeout or WHISPER_LOAD_TIMEOUT
     result = {}
 
     def _load():
         try:
-            result["m"] = WhisperModel(src, device=WHISPER_DEVICE, compute_type="int8")
+            result["m"] = WhisperModel(src, device=device, compute_type=compute_type)
         except Exception as e:
             result["err"] = e
 
@@ -146,20 +313,60 @@ def _load_whisper_model(src, timeout=300):
     th.start()
     th.join(timeout)
     if th.is_alive():
-        raise RuntimeError(f"Whisper 模型加载超过 {timeout}s 未完成，疑似初始化挂死，已中止")
+        raise RuntimeError(f"Whisper 模型加载({device}/{compute_type})超过 {timeout}s 未完成，疑似初始化挂死，已中止")
     if "err" in result:
         raise result["err"]
     return result["m"]
 
 
 def _get_whisper(model_size):
-    """全局单例：模型只加载一次，后续转写零加载开销。"""
-    if _WHISPER_CACHE["model"] is None or _WHISPER_CACHE["size"] != model_size:
-        src = _resolve_whisper_source(model_size)
-        _WHISPER_CACHE["model"] = _load_whisper_model(src)
-        _WHISPER_CACHE["size"] = model_size
-        print(f"[video] whisper 模型就绪: {src} (device={WHISPER_DEVICE})", flush=True)
+    """全局单例：同尺寸 + 同设备则复用，否则重建。
+
+    🔴 设备判定**不做粘性缓存**：本服务是长驻进程，Ollama 驻留模型会让显存时多时少，
+       某一次显存不够退了 CPU，不代表下次还得退 → 每次调用重新判定。
+       只有"硬失败"（加载报错 / 推理挂死）才写进 _CUDA_DISABLED 永久降级，
+       避免反复撞同一堵墙。代价是每条任务多一次 nvidia-smi（~0.2s），可忽略。
+    """
+    src = _resolve_whisper_source(model_size)
+
+    # 已在 GPU 且尺寸对 → 直接复用：显存早占住了，没必要再跑一遍显存守卫
+    # （否则会因为"剩余显存不足"把 Ollama 的摘要模型白白卸载又重载）
+    if (_WHISPER_CACHE["model"] is not None
+            and _WHISPER_CACHE["size"] == model_size
+            and _WHISPER_CACHE["device"] == "cuda"):
+        return _WHISPER_CACHE["model"]
+
+    device, compute, why = _resolve_device()
+
+    if (_WHISPER_CACHE["model"] is not None
+            and _WHISPER_CACHE["size"] == model_size
+            and _WHISPER_CACHE["device"] == device):
+        return _WHISPER_CACHE["model"]
+
+    try:
+        model = _load_whisper_model(src, device, compute)
+    except Exception as e:
+        if device == "cpu":
+            raise
+        _CUDA_DISABLED["why"] = "%s: %s" % (type(e).__name__, e)
+        print("[video] GPU 加载失败 %r → 回退 CPU 重试" % (e,), flush=True)
+        device, compute = "cpu", _COMPUTE_BY_DEVICE["cpu"]
+        model = _load_whisper_model(src, device, compute)
+
+    _WHISPER_CACHE.update({"model": model, "size": model_size,
+                           "device": device, "compute": compute})
+    print("[video] whisper 模型就绪: %s (device=%s compute=%s%s)"
+          % (src, device, compute, ("｜" + why) if why else ""), flush=True)
     return _WHISPER_CACHE["model"]
+
+
+def _note_timeout(kind="转写"):
+    """转写/解码在 GPU 上挂死 → 本进程内永久降级 CPU，别让下一条再撞同一堵墙。"""
+    if _WHISPER_CACHE.get("device") != "cuda":
+        return
+    _CUDA_DISABLED["why"] = "%s在 GPU 上超时挂死" % kind
+    _WHISPER_CACHE["model"] = None      # 丢掉可疑句柄，下次按新设备重建
+    print("[video] ⚠ GPU %s超时 → 本进程后续转写降级 CPU" % kind, flush=True)
 
 
 def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
@@ -186,7 +393,10 @@ def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
     th.start()
     th.join(WHISPER_TIMEOUT)
     if th.is_alive():
-        return "", f"转写超时（>{WHISPER_TIMEOUT}s 未完成，模型或解码疑似挂死），已中止本条"
+        was_cuda = _WHISPER_CACHE.get("device") == "cuda"
+        _note_timeout()
+        return "", (f"转写超时（>{WHISPER_TIMEOUT}s 未完成，模型或解码疑似挂死），已中止本条"
+                    + ("；本进程后续转写改用 CPU" if was_cuda else ""))
     return result.get("text", ""), result.get("err")
 
 
@@ -220,7 +430,10 @@ def transcribe_segments(video_path, model_size=TRANSCRIBE_MODEL):
     th.start()
     th.join(WHISPER_TIMEOUT)
     if th.is_alive():
-        return [], "", f"转写超时（>{WHISPER_TIMEOUT}s 未完成），已中止本条"
+        was_cuda = _WHISPER_CACHE.get("device") == "cuda"
+        _note_timeout("分段转写")
+        return [], "", (f"转写超时（>{WHISPER_TIMEOUT}s 未完成）"
+                        + ("；本进程后续转写改用 CPU" if was_cuda else ""))
     return result.get("segs", []), result.get("lang", ""), result.get("err")
 
 
@@ -847,12 +1060,15 @@ def build_markdown(meta, transcript, frame_descs, summary, frames, bilingual_blo
 
 
 def process_video(video_path, url="", source="", write_vault=True, model_size=TRANSCRIBE_MODEL,
-                  bilingual=False, first_frame_only=False):
+                  bilingual=False, first_frame_only=False, skill_distill=False):
     """主流程：单视频 -> Markdown + 落库。返回结果 dict。
 
     bilingual: 双语字幕模式——转写语言自动检测，非中文音频产出「原文/中文对照」表
                （中文翻译走本地 qwen3:14b）；中文音频自动退回普通模式并标注。
     first_frame_only: 已废弃（关键帧抓取已取消），保留参数仅为兼容旧调用方。
+    skill_distill: 仓颉技能包蒸馏分支（嫁接 cangjie-skill）——总结完成后对转写做
+                   方法论判定，命中则额外产出 <slug>_技能包.md（RIA 能力卡），
+                   并同步 LifeQA/knowledge/skillpacks/ 供 RAG 问答。
     """
     video_path = str(video_path)
     if not os.path.exists(video_path):
@@ -921,6 +1137,17 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
         "distill_chunks": summary.get("_distill_chunks", 1),
         "markdown": md,
     }
+
+    # 6) 仓颉技能包蒸馏分支（仅勾选时跑；判定不通过自动跳过，不浪费算力）
+    if skill_distill:
+        try:
+            import skill_distill as sd
+            meta_sd = dict(meta)
+            meta_sd["slug"] = slug
+            r = sd.distill(transcript, meta_sd, write_vault=write_vault)
+            result["skillpack"] = {k: v for k, v in r.items() if k != "markdown"}
+        except Exception as e:
+            result["skillpack"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     if write_vault:
         try:

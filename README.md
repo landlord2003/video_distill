@@ -257,6 +257,51 @@ venv\Scripts\python.exe video_pipeline.py videos_inbox/xxxxx.mp4
 - **语音转写已可用**：faster-whisper 通过 ModelScope 镜像模型解决 HuggingFace CDN 拉不到的问题，
   全量转写（不分段截断），语言自动检测（不强制中文）。普通/YouTube 页签共用同一转写实现，
   长视频转写超时默认 1800s（`WHISPER_TIMEOUT`）。
+
+### 10.1 转写跑 GPU 还是 CPU（2026-10-14 起：GPU 优先 + 自动降级）
+
+本机实测（small 模型 / 中文 / `beam_size=5`，同一段 60s 音频）：
+
+| 设备 | 60s 音频耗时 | 实时倍率 | 显存 | 换算 28 分钟视频 |
+|---|---|---|---|---|
+| `cuda` / `int8_float16` | **2.0 s** | **~30x** | ~465 MB | **~1 分钟** |
+| `cpu` / `int8` | 11.0 s | ~5.4x | — | ~5 分钟 |
+
+即 **GPU 快约 5 倍**。默认 `WHISPER_DEVICE=auto` 自动选，无需配置。
+
+**CUDA 运行库从哪来**：本机 **Ollama 自带一整套 cuda_v12 运行库**
+（`%LOCALAPPDATA%\Programs\Ollama\lib\ollama\cuda_v12\`，含 `cublas64_12.dll` /
+`cublasLt64_12.dll` / `cudart64_12.dll`），代码自动借用，**零下载**。
+- ⚠️ 该目录里还并列着 `cuda_v13`（`cublas64_13.dll`），而 CTranslate2 4.8 要的是 **12** ——
+  代码按「目录里是否有 `cublas64_12.dll`」筛选，别手工指到 v13。
+- ⚠️ **不需要 cuDNN**（Whisper 不走 cuDNN 那条路径），省掉 ~800MB 下载。
+- ⚠️ 只调 `os.add_dll_directory()` **不够**：CTranslate2 是通过 `PATH` 找 DLL 的，
+  两个都要设，否则模型能加载但一 encode 就报 `cublas64_12.dll is not found`。
+
+**显存守卫（重要）**：显存被 Ollama 占满时，CTranslate2 的 CUDA 初始化会**静默挂死**
+（不抛异常，`except` 兜不住）。所以：
+1. 空闲显存 < `WHISPER_MIN_FREE_MB`（默认 1200） → 先调 Ollama `/api/ps` + `keep_alive:0`
+   卸载驻留模型腾显存（摘要步骤会按需自动重载）；
+2. 仍不够 → 本次转写用 CPU（**软降级，不留痕**，下次重新判定）；
+3. 只有加载报错 / 推理超时这类**硬失败**才永久降级 CPU，避免反复撞墙。
+
+**可用环境变量**：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WHISPER_DEVICE` | `auto` | `auto` / `cuda`（强制，跳过显存守卫）/ `cpu` |
+| `WHISPER_MIN_FREE_MB` | `1200` | 走 GPU 所需最小空闲显存；`0` 关闭检查 |
+| `WHISPER_FREE_OLLAMA` | `1` | 显存不足时是否先让 Ollama 释放驻留模型 |
+| `WHISPER_CUDA_DLL_DIR` | 空 | 手指定 CUDA 运行库目录（留空自动找 Ollama） |
+| `WHISPER_LOAD_TIMEOUT` | `180` | 模型加载看门狗（秒），挂死时尽早脱身 |
+| `WHISPER_TIMEOUT` | `1800` | 单条转写总超时（秒） |
+| `VIDEO_WHISPER` | `small` | 模型尺寸 |
+
+**排错**：`GET /api/video/health` 的 `tools.faster_whisper` 会给出
+`device_pref` / `device_used` / `compute_type` / `cuda_dll_dirs` / `cuda_downgrade` / `vram_free_mb`；
+服务日志里应有 `[video] CUDA 运行库就绪: ...` 与 `device=cuda compute=int8_float16`。
+怀疑没走 GPU 时跑 `venv\Scripts\python.exe _bench_whisper.py` 看真实倍率。
+
 - **视觉理解必须逐张发图**：`qwen3-vl` 单次请求超过 3 张图会返回 HTTP 400。代码已改为逐张单图请求，
   若你换用其它视觉模型，可重新评估是否批量发送。
 - **制作流程还原依赖帧密度 + 画面字幕**：无转写时，步骤还原来自 10 帧画面及其字幕文字

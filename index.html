@@ -135,6 +135,7 @@
   .vcard-b{border-top:1px solid var(--line);padding:12px 16px}
   .rec{display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer}
   .rec:hover{background:var(--panel2)}
+  .dcard{background:var(--panel);border:1px solid var(--line);border-radius:10px}
   .rec.sel{background:rgba(79,157,255,.10);box-shadow:inset 3px 0 0 var(--acc)}
   .rec .ck{width:15px;height:15px;cursor:pointer;flex-shrink:0;accent-color:var(--acc)}
   #rec-batchbar{display:none;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;margin-bottom:8px;
@@ -176,7 +177,8 @@
       <button class="tab active" onclick="switchTab('pipe',this)">🚚 采集流水线</button>
       <button class="tab" onclick="switchTab('tts',this)">🔊 配音 TTS</button>
       <button class="tab" onclick="switchTab('rec',this)">📚 记录中心</button>
-      <span class="ver">v4.2 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · X长文全文抓取 · 三步要点解析</span>
+      <button class="tab" onclick="switchTab('dsp',this)">⚡ 技能包蒸馏</button>
+      <span class="ver">v4.3 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · X长文全文抓取 · 三步要点解析 · 技能包蒸馏✓</span>
     </div>
 
     <!-- ================= 采集流水线：所有来源共用同一套 流程 ================= -->
@@ -346,6 +348,25 @@
         </div>
       </div>
     </div>
+    <!-- ================= ⚡ 技能包蒸馏：对已存档笔记选择性蒸馏 ================= -->
+    <div id="dsp-panel" style="display:none;flex-direction:column;gap:12px;overflow:auto;padding:14px">
+      <div class="dcard" style="padding:12px 14px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <b>⚡ 技能包蒸馏</b>
+          <span class="mut" style="font-size:11px">把存档笔记的「语音转写全文」判定为方法论后，提取 RIA 能力卡（触发/步骤/案例/验收/避坑）→ 产出 <i>原名_技能包.md</i> 并同步 LifeQA 知识库。每条 20~90s，判定不过的秒过。</span>
+          <span style="flex:1"></span>
+          <button class="btn" onclick="loadDistillCands()">↻ 刷新候选</button>
+          <button class="btn" onclick="dspSelAll()">全选可蒸馏</button>
+          <button class="btn" onclick="dspClear()">清空选择</button>
+          <button id="dsp-run" class="btn pri" onclick="dspRun()" disabled style="padding:8px 18px">⚡ 蒸馏选中 0 条</button>
+        </div>
+        <div id="dsp-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
+      </div>
+      <div class="dcard" style="padding:0">
+        <div id="dsp-list"><div class="empty" style="padding:14px">切换到本页签自动扫描存档笔记…</div></div>
+      </div>
+      <div id="dsp-results"></div>
+    </div>
   </main>
 </div>
 <!-- 通用模态弹窗 -->
@@ -451,6 +472,7 @@ function renderSrc(){
   else if(s.kind==='video') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
     <label class="toggle" title="英文等外语视频：保留原文并逐段对照中文翻译（本地模型翻译）"><input type="checkbox" id="obilingual"> 🔤 双语字幕对照</label>
+    <label class="toggle" title="仓颉蒸馏：判定为方法论/教程内容时，额外产出可执行技能包（能力卡），并同步 LifeQA 知识库"><input type="checkbox" id="oskill"> ⚡ 技能包蒸馏</label>
     <div class="mut" style="font-size:12px;margin-top:4px">🧠 第三步解析为<b>标配</b>：转录后自动分段蒸馏（标题/摘要/要点/章节/标签，本机 qwen3:14b），摘要保证大于50字</div>`;
   else if(s.kind==='article') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
@@ -563,7 +585,8 @@ function _pipeOpts(){
           llm: !!($('#ollm') && $('#ollm').checked),
           analyze: !!($('#oanalyze') && $('#oanalyze').checked),
           follow: !!($('#ofollow') && $('#ofollow').checked),
-          withVideo: !!($('#owithvideo') && $('#owithvideo').checked)};
+          withVideo: !!($('#owithvideo') && $('#owithvideo').checked),
+          skill: !!($('#oskill') && $('#oskill').checked)};
 }
 
 // --- 视频类来源（抖音/YouTube/B站）：逐条 下载→转写→蒸馏→入库 ---
@@ -598,6 +621,7 @@ async function runVideoPipe(){
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({urls:[urls[i]], write_vault:o.vault,
             bilingual:o.bilingual, first_frame:o.firstFrame,
+            skill:!!o.skill,
             source_hint:s.srcName})});
         const d = await r.json();
         results = results.concat((d.results||[]).map(x=>({...x, _icon:s.icon})));
@@ -623,7 +647,7 @@ async function runVideoPipe(){
       const itemT0 = Date.now();
       const fd = new FormData();
       fd.append('file', f, f.name);
-      const r = await fetch('/api/video/upload?source_hint='+encodeURIComponent(s.srcName),{method:'POST',body:fd});
+      const r = await fetch('/api/video/upload?source_hint='+encodeURIComponent(s.srcName)+'&skill='+(o.skill?1:0),{method:'POST',body:fd});
       const d = await r.json();
       results = results.concat((d.results||[]).map(x=>({...x, _icon:s.icon})));
       const last = results[results.length-1] || {};
@@ -943,9 +967,11 @@ function switchTab(t, btn){
   $('#pipe-panel').style.display = t==='pipe'?'flex':'none';
   $('#tts-panel').style.display = t==='tts'?'flex':'none';
   $('#rec-panel').style.display = t==='rec'?'flex':'none';
+  $('#dsp-panel').style.display = t==='dsp'?'flex':'none';
   if(t!=='tts'){ checkVideoHealth(); }
   if(t==='tts'){ ttsCheck(); ttsLoadVoices(); }
   if(t==='rec'){ loadRecords(); }
+  if(t==='dsp'){ loadDistillCands(); pollDistill(); }
 }
 
 // ---------- 折叠 ----------
@@ -1698,9 +1724,93 @@ function addTtsResult(d){
   box.prepend(el);
 }
 
+// ---------- ⚡ 技能包蒸馏（独立功能卡） ----------
+let _dspCands = [], _dspSel = new Set(), _dspTimer = null;
+async function loadDistillCands(){
+  const box = $('#dsp-list');
+  box.innerHTML = '<div class="empty" style="padding:14px">扫描存档笔记…</div>';
+  try{
+    const d = await (await fetch('/api/skillpack/candidates')).json();
+    _dspCands = d.candidates || [];
+    _dspSel = new Set([..._dspSel].filter(f => _dspCands.some(c => c.file === f)));
+  }catch(e){ _dspCands = []; }
+  renderDistillList();
+}
+function renderDistillList(){
+  const box = $('#dsp-list');
+  if(!_dspCands.length){
+    box.innerHTML = '<div class="empty" style="padding:14px">存档里没有可蒸馏的笔记（需要含 ≥500 字「语音转写全文」）</div>';
+    _updDspRun(); return;
+  }
+  box.innerHTML = _dspCands.map((c,i)=>`
+    <div class="rec ${_dspSel.has(c.file)?'sel':''}" style="${c.has_tr?'':'opacity:.45;cursor:default'}" onclick="dspClick(${i})">
+      <div class="ic">${c.has_tr?'⚡':'·'}</div>
+      <div style="flex:1;min-width:0">
+        <div class="t">${esc(c.title)}${_dspSel.has(c.file)?'<span class="chip on" style="margin-left:6px">已选</span>':''}</div>
+        <div class="mut" style="font-size:11px">${esc(c.dir)} · ${c.mtime} · ${c.has_tr?('转写 '+c.tr_len.toLocaleString()+' 字'):'无转写全文'}</div>
+      </div>
+      ${c.has_tr?`<input type="checkbox" ${_dspSel.has(c.file)?'checked':''} onclick="event.stopPropagation();dspClick(${i})" style="flex-shrink:0">`:''}
+    </div>`).join('');
+  _updDspRun();
+}
+function _updDspRun(){
+  const btn = $('#dsp-run');
+  btn.textContent = `⚡ 蒸馏选中 ${_dspSel.size} 条`;
+  btn.disabled = !_dspSel.size || _dspTimer;
+}
+function dspClick(i){
+  const c = _dspCands[i];
+  if(!c.has_tr) return;
+  _dspSel.has(c.file) ? _dspSel.delete(c.file) : _dspSel.add(c.file);
+  renderDistillList();
+}
+function dspSelAll(){ _dspCands.filter(c=>c.has_tr).forEach(c=>_dspSel.add(c.file)); renderDistillList(); }
+function dspClear(){ _dspSel.clear(); renderDistillList(); }
+async function dspRun(){
+  if(!_dspSel.size || _dspTimer) return;
+  try{
+    const r = await fetch('/api/skillpack/run', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({files:[..._dspSel]})});
+    const d = await r.json();
+    if(!r.ok){ alert(d.error || ('HTTP '+r.status)); return; }
+    _updDspRun();
+    pollDistill();
+  }catch(e){ alert('异常：'+e.message); }
+}
+async function pollDistill(){
+  try{
+    const d = await (await fetch('/api/skillpack/status')).json();
+    $('#dsp-status').textContent = d.running
+      ? `蒸馏中 ${d.done}/${d.total}，当前：${d.current || '…'}（可切到其他页签，进度不会丢）`
+      : (d.total ? `批次完成：${d.done}/${d.total}` : '');
+    if(d.results.length){
+      $('#dsp-results').innerHTML = `
+        <div class="dcard"><div class="mut" style="padding:8px 14px 4px;font-size:11px">本批结果</div>
+        ${d.results.map(x=>`
+        <div class="rec" style="cursor:default" title="${escAttr(x.vault_path || x.lifeqa_path || '')}">
+          <div class="ic">${x.ok?'✅':(x.reason?'⏭':'❌')}</div>
+          <div style="flex:1;min-width:0">
+            <div class="t">${esc(x.title || x.name || '')}</div>
+            <div class="mut" style="font-size:11px">${esc(x.ok ?
+              (`判定：${x.verdict || ''} · 能力卡 ${x.cards || 0} 张`) :
+              (x.reason || x.error || '失败'))}</div>
+          </div>
+          ${x.vault_path ? '<span class="chip ok">已落库+同步LifeQA</span>' :
+            (x.lifeqa_error ? `<span class="chip err">LifeQA同步失败</span>` : '')}
+        </div>`).join('')}</div>`;
+    }
+    if(d.running && !_dspTimer){ _dspTimer = setInterval(pollDistill, 2000); }
+    if(!d.running && _dspTimer){ clearInterval(_dspTimer); _dspTimer = null; _updDspRun(); }
+  }catch(e){}
+}
+
 // ---------- 初始化 ----------
 const _h = (location.hash||'').replace('#','');
-switchTab(['pipe','tts','rec'].includes(_h) ? _h : 'pipe', $('#tabs .tab' + (['pipe','tts','rec'].includes(_h) && _h!=='pipe' ? ':nth-child('+(_h==='tts'?2:3)+')' : '')));
+const _tabNames = ['pipe','tts','rec','dsp'];
+switchTab(_tabNames.includes(_h) ? _h : 'pipe',
+  $('#tabs .tab' + (_tabNames.includes(_h) && _h!=='pipe'
+    ? `:nth-child(${_tabNames.indexOf(_h)+1})` : '')));
 renderSrc();
 checkVideoHealth();
 loadRecords();

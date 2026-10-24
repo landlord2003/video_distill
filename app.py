@@ -123,6 +123,73 @@ except Exception as _twe:
 
 _profile_lock = threading.Lock()   # 主页采集互斥：playwright 实例只跑一个
 
+# ---------- 技能包蒸馏（独立功能卡：对已存档笔记选择性蒸馏） ----------
+_distill_state = {"running": False, "total": 0, "done": 0, "current": "", "results": []}
+_distill_lock = threading.Lock()   # 蒸馏互斥：Ollama 串行，防打爆
+
+def _skillpack_vault_dirs():
+    """候选笔记的两个来源目录（视频 vault + 文章 vault）"""
+    return [d for d in dict.fromkeys([vp.VAULT, ART_VAULT]) if os.path.isdir(d)]
+
+def _skillpack_candidates():
+    """扫描 vault 存档笔记，判定哪些带≥500字转写全文（可蒸馏）"""
+    import skill_distill as sd
+    out = []
+    for d in _skillpack_vault_dirs():
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".md") or "技能包" in fn:
+                continue
+            fp = os.path.join(d, fn)
+            try:
+                with io.open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    md = f.read()
+            except Exception:
+                continue
+            tr, _kind = sd.extract_transcript_from_note(md)
+            m1 = re.search(r"^# (.+)$", md, re.M)
+            m2 = re.search(r"^> 来源：(.+)$", md, re.M)
+            st = os.stat(fp)
+            out.append({
+                "file": fp, "dir": os.path.basename(d),
+                "title": (m1.group(1).strip() if m1 else fn[:-3])[:90],
+                "url": m2.group(1).strip() if m2 else "",
+                "has_tr": bool(tr), "tr_len": len(tr),
+                "mtime": datetime.datetime.fromtimestamp(st.st_mtime).strftime("%m-%d %H:%M"),
+            })
+    return out
+
+def _distill_worker(files):
+    """后台串行蒸馏：读存档 md → 抽转写 → sd.distill（判定/能力卡/落库/同步 LifeQA）"""
+    import skill_distill as sd
+    try:
+        for fp in files:
+            _distill_state["current"] = os.path.basename(fp)
+            item = {"file": fp, "name": os.path.basename(fp)}
+            try:
+                with io.open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    md = f.read()
+                tr, _kind = sd.extract_transcript_from_note(md)
+                if not tr:
+                    item.update(ok=False, reason="无≥500字转写全文，跳过")
+                else:
+                    m1 = re.search(r"^# (.+)$", md, re.M)
+                    m2 = re.search(r"^> 来源：(.+)$", md, re.M)
+                    meta = {"title": (m1.group(1).strip() if m1 else
+                                      os.path.basename(fp)[:-3]),
+                            "url": (m2.group(1).strip() if m2 else ""),
+                            "source": "manual",
+                            "slug": os.path.splitext(os.path.basename(fp))[0]}
+                    r = sd.distill(tr, meta, write_vault=True, sync_lifeqa=True)
+                    item.update(r)
+                    item["title"] = meta["title"]
+            except Exception as e:
+                item.update(ok=False, error=f"{type(e).__name__}: {e}")
+            _distill_state["results"].append(item)
+            _distill_state["done"] += 1
+    finally:
+        _distill_state["running"] = False
+        _distill_state["current"] = ""
+
 # ---------- DB ----------
 _lock = threading.Lock()
 _video_lock = threading.Lock()   # 视频流水线全局互斥：多请求串行，防 Ollama/CPU 争抢
@@ -308,14 +375,15 @@ def detect_source_name(url):
 
 
 def do_video_pipeline(source_url, video_path, write_vault, bilingual=False, first_frame_only=False,
-                      source=""):
+                      source="", skill_distill=False):
     """处理单个已下载/已上传的视频：转写->总结->Markdown->落库。"""
     rec = {"source_url": source_url, "video_path": video_path, "source": source or ""}
     try:
         r = vp.process_video(video_path, url=source_url,
                              source=source or "视频号/抖音",
                              write_vault=write_vault,
-                             bilingual=bilingual, first_frame_only=first_frame_only)
+                             bilingual=bilingual, first_frame_only=first_frame_only,
+                             skill_distill=skill_distill)
         rec.update({
             "ok": r.get("ok", False),
             "title": r.get("title", os.path.basename(video_path)),
@@ -326,6 +394,7 @@ def do_video_pipeline(source_url, video_path, write_vault, bilingual=False, firs
             "tags": r.get("tags", []),
             "lang": r.get("lang", ""),
             "bilingual": r.get("bilingual", False),
+            "skillpack": r.get("skillpack", None),
             "error": r.get("vault_error") or r.get("transcript_error") or "",
         })
     except Exception as e:
@@ -360,7 +429,8 @@ def _parse_count_spec(spec, default=50):
         raise ValueError(f"数量格式不识别：{s}（支持 50 / 0 / 1-20 / 20-70 / 70-）")
 
 
-def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint=""):
+def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint="",
+                   skill_distill=False):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
 
     设计要点（防止一条卡死拖垮整批）：
@@ -385,7 +455,8 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
                     rec = do_video_pipeline(url, path, write_vault,
                                             bilingual=bilingual,
                                             first_frame_only=first_frame_only,
-                                            source=rec_src)
+                                            source=rec_src,
+                                            skill_distill=skill_distill)
                     rec["source_url"] = url
             except Exception as e:
                 rec = {"source_url": url, "ok": False,
@@ -1346,6 +1417,17 @@ class Handler(BaseHTTPRequestHandler):
                         "SELECT name FROM dim_pool WHERE dim=? ORDER BY name", (d,)).fetchall()]
             self._send(200, out)
             return
+        if p == "/api/skillpack/candidates":
+            try:
+                cands = _skillpack_candidates()
+            except Exception as e:
+                self._send(500, {"error": f"{type(e).__name__}: {e}"})
+                return
+            self._send(200, {"candidates": cands})
+            return
+        if p == "/api/skillpack/status":
+            self._send(200, _distill_state)
+            return
         if p == "/api/video/health":
             # 工具可用性自诊断：确认当前进程加载的是新代码、依赖齐全
             health = {"python": sys.executable, "tools": {}}
@@ -1691,6 +1773,37 @@ class Handler(BaseHTTPRequestHandler):
                     c.commit()
             self._send(200, {"ok": True, "updated": updated, "missing": missing})
             return
+        if self.path == "/api/skillpack/run":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            files = data.get("files") or []
+            allowed = {os.path.realpath(d) for d in _skillpack_vault_dirs()}
+            safe = []
+            for fp in files:
+                fp = str(fp)
+                rp = os.path.realpath(fp)
+                if not fp.endswith(".md") or "技能包" in os.path.basename(fp):
+                    continue
+                if not any(rp == a or rp.startswith(a + os.sep) for a in allowed):
+                    continue
+                if os.path.isfile(rp):
+                    safe.append(rp)
+            if not safe:
+                self._send(400, {"error": "没有有效的候选文件（须为存档笔记 md）"})
+                return
+            with _distill_lock:
+                if _distill_state["running"]:
+                    self._send(409, {"error": "蒸馏已在进行中，请等当前批次完成"})
+                    return
+                _distill_state.update(running=True, total=len(safe), done=0,
+                                      current="", results=[])
+            threading.Thread(target=_distill_worker, args=(safe,), daemon=True).start()
+            self._send(200, {"ok": True, "total": len(safe)})
+            return
         _rename_p, _, _rename_q = self.path.partition("?")
         _mg_dim = ("author" if "dim=author" in _rename_q
                    else "source" if "dim=source" in _rename_q else "category")
@@ -1946,6 +2059,7 @@ class Handler(BaseHTTPRequestHandler):
                 write_vault = bool(data.get("write_vault", True))
                 bilingual = bool(data.get("bilingual", False))
                 first_frame_only = bool(data.get("first_frame", False))
+                skill_distill = bool(data.get("skill", False))
                 source_hint = (data.get("source_hint") or "").strip()[:30]
                 if not urls:
                     self._send(400, {"error": "urls 不能为空"})
@@ -1953,7 +2067,8 @@ class Handler(BaseHTTPRequestHandler):
                 results = do_video_batch(urls, write_vault,
                                          bilingual=bilingual,
                                          first_frame_only=first_frame_only,
-                                         source_hint=source_hint)
+                                         source_hint=source_hint,
+                                         skill_distill=skill_distill)
                 self._send(200, {"results": results})
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
@@ -2036,7 +2151,8 @@ class Handler(BaseHTTPRequestHandler):
                     with open(outp, "wb") as f:
                         f.write(fdata)
                     with _video_lock:
-                        rec = do_video_pipeline("", outp, write_vault)
+                        rec = do_video_pipeline("", outp, write_vault,
+                                                skill_distill=bool(_q.get("skill", ["0"])[0] in ("1", "true")))
                     rec["source_url"] = "(本地文件) " + fname
                     vid, _ = save_video(rec)
                     rec["id"] = vid
