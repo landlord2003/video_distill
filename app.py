@@ -114,6 +114,13 @@ except Exception as _dpe:  # 依赖缺失不让整个服务挂掉
     dp = None
     print("[warn] douyin_profile 加载失败:", _dpe, file=sys.stderr)
 
+# ---------- 抖音评论采集（MediaCrawler 评论接口设计借鉴） ----------
+try:
+    import douyin_comments as dcm
+except Exception as _dcme:
+    dcm = None
+    print("[warn] douyin_comments 加载失败:", _dcme, file=sys.stderr)
+
 # ---------- Twitter/X 采集（单条推文 + 账号推文清单） ----------
 try:
     import twitter_ingest as twi
@@ -2103,6 +2110,30 @@ class Handler(BaseHTTPRequestHandler):
                         out = dp.fetch_profile_videos(url, verbose=False,
                                                       max_count=max_count,
                                                       offset=offset)
+                self._send(200, out)
+            except Exception as e:
+                self._send(500, {"error": str(e)[:500]})
+            return
+        if self.path == "/api/comments/fetch":
+            try:
+                if dcm is None:
+                    self._send(500, {"error": "douyin_comments 模块未加载（看服务日志）"})
+                    return
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8"))
+                url = (data.get("url") or "").strip()
+                try:
+                    max_count = max(1, min(500, int(data.get("max_count", 200))))
+                except (TypeError, ValueError):
+                    max_count = 200
+                if not url:
+                    self._send(400, {"error": "url required（抖音视频链接或ID）"})
+                    return
+                # 占用 playwright 采集锁（同一时刻只跑一个浏览器会话）
+                # 采集可能 30~90s（含页内翻页/CDP 兜底），调用方耐心等响应
+                with _profile_lock:
+                    out = dcm.fetch_comments(url, verbose=False,
+                                             max_count=max_count)
                 self._send(200, out)
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})

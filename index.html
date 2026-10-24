@@ -169,6 +169,7 @@
 </style>
 <script src="/vendor/marked.min.js"></script>
 <script src="/vendor/purify.min.js"></script>
+<link rel="stylesheet" href="/vendor/theme.css">
 </head>
 <body>
 <div id="app">
@@ -1155,11 +1156,14 @@ async function recView(type, id){
       const r = await fetch('/api/video/records/'+id); const d = await r.json();
       if(!r.ok) throw new Error(d.error||'HTTP '+r.status);
       const md = d.markdown||'';
+      const isDy = /douyin\.com|iesdouyin/.test(d.source_url||'') || /^\d{15,}$/.test((d.source_url||'').trim());
+      const cmtBox = 'cmt-'+escAttr(id);
       det.innerHTML = `<div class="vcard"><div class="vcard-h"><div>🎬 ${esc(d.title||id)}
           ${d.category?`<span class="chip">${esc(d.category)}</span>`:''}${d.source?`<span class="chip" style="color:var(--red)">${esc(d.source)}</span>`:''}</div>
           <div>${d.vault_path?`<a class="btn" href="file:///${encodeURIComponent(d.vault_path.replace(/\\\\/g,'/'))}" title="${escAttr(d.vault_path)}">Obsidian 笔记</a>`:''}
+          ${isDy?`<button class="btn" onclick="loadComments('${escAttr(d.source_url).replace(/'/g,"\\'")}','${cmtBox}',this)">💬 评论</button>`:''}
           <button class="btn" onclick="recClose()">✕ 收起</button></div></div>
-        <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div></div></div>`;
+        <div class="vcard-b"><div class="md-body">${DOMPurify.sanitize(marked.parse(md))}</div><div id="${cmtBox}"></div></div></div>`;
       addSectionCopy(det.querySelector('.vcard-b .md-body'), md);
     } else if(type==='article' || type==='voa' || type==='dymusic'){
       const r = await fetch('/api/articles/'+id); const d = await r.json();
@@ -1188,6 +1192,29 @@ function recToggleRaw(btn){
   const raw = box.classList.toggle('md-raw');
   if(raw){ box.classList.add('md-raw'); box.textContent = _currentMd||''; btn.textContent='渲染'; }
   else { box.classList.remove('md-raw'); box.innerHTML = DOMPurify.sanitize(marked.parse(_currentMd||'')); addSectionCopy(box, _currentMd); btn.textContent='源码'; }
+}
+async function loadComments(url, boxId, btn){
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ 抓取中…'; }
+  const box = document.getElementById(boxId);
+  if(box) box.innerHTML = `<div class="empty" style="padding:10px"><span class="spinner"></span> 正在采集评论（无头失败会自动转真实浏览器兜底，最长约 2 分钟）…</div>`;
+  try{
+    const r = await fetch('/api/comments/fetch', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({url: url})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error||('HTTP '+r.status));
+    if(box){
+      const rows = (d.comments||[]).map(c=>`<div style="padding:8px 0;border-bottom:1px solid var(--line)">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+          <b style="font-size:12px">${esc(c.user||'匿名')}</b>
+          <span class="mut" style="font-size:11px;flex-shrink:0">👍 ${c.likes||0} · ${esc(c.time||'')}${c.replies?` · 回复${c.replies}`:''}</span></div>
+        <div style="font-size:13px;margin-top:2px;white-space:pre-wrap">${esc(c.text)}</div></div>`).join('');
+      box.innerHTML = `<div style="margin-top:14px;margin-bottom:4px"><b>💬 评论 ${d.count} 条（${esc(d.title||'')}）</b></div>${rows||'<div class="empty">无评论</div>'}`;
+    }
+  }catch(e){
+    if(box) box.innerHTML = `<div class="empty" style="color:var(--red)">评论采集失败：${esc(e.message)}</div>`;
+  }
+  if(btn){ btn.disabled = false; btn.textContent = '💬 评论'; }
 }
 async function dyTranscribe(id, btn){
   if(btn){ btn.disabled = true; btn.textContent = '⏳ 转写中…'; }

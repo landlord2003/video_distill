@@ -31,6 +31,46 @@ SEC_UID_RE = re.compile(r"/user/([A-Za-z0-9_-]{20,})")
 COLLECTION_RE = re.compile(r"/(?:collection|mix)/(\d{5,})")
 
 
+def _is_degrade(msg: str) -> bool:
+    """疑似风控「可见性降级」而非精确判决：换真实浏览器（CDP）重试有意义。
+    采集类失败的报错均含「未采集到任何视频」。"""
+    return "未采集到任何视频" in (msg or "")
+
+
+def _open_ctx(p, cdp, cookies, verbose, viewport=True):
+    """按模式创建 (browser, context)。cdp=True 走 CDP 真实浏览器
+    （douyin_cdp：真实 Edge/Chrome 有头 + 持久 profile，登录态已内置）；
+    否则无头 Edge + 注入 cookies。"""
+    if cdp:
+        import douyin_cdp
+        browser = douyin_cdp.connect(p, verbose=verbose)
+        context = douyin_cdp.default_context(browser)
+    else:
+        browser = p.chromium.launch(
+            channel="msedge", headless=True,
+            args=["--no-proxy-server", "--no-sandbox",
+                  "--disable-blink-features=AutomationControlled"],
+        )
+        kw = {"user_agent": UA, "ignore_https_errors": True}
+        if viewport:
+            kw["viewport"] = {"width": 1380, "height": 900}
+        context = browser.new_context(**kw)
+        if cookies:
+            context.add_cookies(cookies)
+    context.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
+    return browser, context
+
+
+def _close_ctx(browser, cdp):
+    """关闭资源：CDP 浏览器是常驻复用的，不能关。"""
+    if not cdp:
+        try:
+            browser.close()
+        except Exception:
+            pass
+
+
 def resolve_profile_url(arg: str) -> str:
     """把输入规整成 https://www.douyin.com/user/<sec_uid> 形式。
     支持 v.douyin.com 短链（跟随重定向）。解析不出 sec_uid 抛 RuntimeError。
@@ -60,11 +100,28 @@ def resolve_profile_url(arg: str) -> str:
 
 def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
                          max_count=50, max_scrolls=60, deadline_secs=240,
-                         offset=0):
+                         offset=0, cdp_fallback=True):
     """主页链接 -> {"nickname", "videos":[{"id","title","url"}]}。
     offset：跳过前 N 条（配合 max_count 实现范围选择，如 20-70 = offset 19 + max_count 70）。
     失败抛 RuntimeError（含原因与已收集数量）。
+
+    cdp_fallback：无头采集失败疑似风控降级时，自动转 CDP 真实浏览器
+    重试一次（真实指纹+持久登录态，对症「200 成功但列表为空」形态）。
     """
+    try:
+        return _profile_impl(profile_arg, cookie_file, verbose, max_count,
+                             max_scrolls, deadline_secs, offset, cdp=False)
+    except RuntimeError as e:
+        if not (cdp_fallback and _is_degrade(str(e))):
+            raise
+        if verbose:
+            print("[profile] 无头未取到数据，疑似风控降级 -> 转 CDP 真实浏览器重试")
+        return _profile_impl(profile_arg, cookie_file, verbose, max_count,
+                             max_scrolls, deadline_secs, offset, cdp=True)
+
+
+def _profile_impl(profile_arg, cookie_file=None, verbose=True, max_count=50,
+                  max_scrolls=60, deadline_secs=240, offset=0, cdp=False):
     profile_url = resolve_profile_url(profile_arg)
 
     # 不限量模式：放宽滚动次数与总时长兜底（仍受接口 has_more=0 自然终止）
@@ -75,7 +132,8 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
     cf = resolve_cookie_file(cookie_file)
     cookies = parse_netscape(cf) if cf else []
     if verbose:
-        print(f"[profile] 目标: {profile_url} | cookie: "
+        print(f"[profile] 目标: {profile_url} | 模式: "
+              f"{'CDP真实浏览器' if cdp else '无头'} | cookie: "
               f"{len(cookies)} 个" + ("" if cf else "（未找到 cookies.txt，无登录态，大概率抓不全）"))
 
     try:
@@ -87,19 +145,10 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
     nickname = {"v": ""}
     list_state = {"has_more": 1, "cursor": -1}
     req_log = []
+    template_url = {"v": ""}     # 首屏列表接口完整 URL（含签名），供页内翻页重放
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="msedge", headless=True,
-            args=["--no-proxy-server", "--no-sandbox",
-                  "--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(user_agent=UA, ignore_https_errors=True,
-                                      viewport={"width": 1380, "height": 900})
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
-        if cookies:
-            context.add_cookies(cookies)
+        browser, context = _open_ctx(p, cdp, cookies, verbose)
         page = context.new_page()
 
         def on_response(resp):
@@ -107,6 +156,8 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
             if "aweme/post/" not in u and "aweme/favorite/" not in u:
                 return
             req_log.append(u[:140])
+            if not template_url["v"] and "aweme/post/" in u:
+                template_url["v"] = u
             try:
                 j = resp.json()
             except Exception:
@@ -153,11 +204,68 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
                 break
             time.sleep(1)
 
+        # ---------- 阶段A：页内 fetch 循环翻页（主路径，签名重放） ----------
+        # 借鉴 MediaCrawler 思路 + 本项目合集采集已验证的突破：服务端对改
+        # cursor 后的旧 X-Bogus 不校验，可在页面上下文用首屏拦截到的签名
+        # URL 重放翻页（cursor=max_cursor 链），比滚动更稳更快。
+        fetch_pages_err = ""
+        if template_url["v"] and (len(videos) < (max_count or 10**9)):
+            budget_ms = int(min(max(deadline_secs - (time.time() - t0), 60), 900)) * 1000
+            try:
+                items_js = page.evaluate(
+                    """async ([u0, maxCount, timeBudgetMs]) => {
+                        const out = [];
+                        const seen = new Set();
+                        const t0 = Date.now();
+                        let cursor = '0', hasMore = true, guard = 0;
+                        const u = new URL(u0);
+                        while (hasMore && guard < 500) {
+                            guard++;
+                            if (Date.now() - t0 > timeBudgetMs) break;
+                            u.searchParams.set('cursor', cursor);
+                            let j;
+                            try {
+                                const resp = await fetch(u.toString(), {credentials: 'include'});
+                                j = await resp.json();
+                            } catch (e) { break; }
+                            const list = j.aweme_list || [];
+                            for (const aw of list) {
+                                const id = String(aw.aweme_id || '').trim();
+                                if (id && !seen.has(id)) {
+                                    seen.add(id);
+                                    out.push({id: id, title: (aw.desc || '').trim(),
+                                              url: 'https://www.douyin.com/video/' + id});
+                                }
+                            }
+                            hasMore = !!j.has_more;
+                            const mc = j.max_cursor;
+                            if (!list.length || mc === null || mc === undefined) break;
+                            cursor = String(mc);
+                            if (maxCount && out.length >= maxCount) break;
+                            await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
+                        }
+                        return out;
+                    }""",
+                    [template_url["v"], max_count or 0, budget_ms])
+                for it in items_js or []:
+                    if it["id"] not in videos:
+                        videos[it["id"]] = it
+                if verbose:
+                    print(f"[profile] 页内翻页采集 {len(videos)} 条"
+                          f"（has_more 走完或达 max_count）")
+            except Exception as e:
+                fetch_pages_err = f"{type(e).__name__}: {str(e)[:120]}"
+                if verbose:
+                    print(f"[profile] 页内翻页异常(转滚动兜底): {fetch_pages_err}")
+
+        # ---------- 阶段B：滚动兜底（阶段A 失败/不足时） ----------
         while time.time() - t0 < deadline_secs and scrolls < max_scrolls:
             if max_count and len(videos) >= max_count:
                 break
             if list_state["has_more"] == 0 and videos:
                 break
+            if not fetch_pages_err and videos:
+                break   # 阶段A 成功就没必要再滚
             before = len(videos)
             # 模拟真人滚动：鼠标滚轮 + 随机步长
             try:
@@ -183,7 +291,11 @@ def fetch_profile_videos(profile_arg, cookie_file=None, verbose=True,
                 break
 
         on_dom()
-        browser.close()
+        try:
+            page.close()
+        except Exception:
+            pass
+        _close_ctx(browser, cdp)
 
     if not videos:
         hint = (f"共观察到 {len(req_log)} 条列表请求" if req_log
@@ -238,10 +350,31 @@ def resolve_collection_url(arg: str) -> str:
 
 def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
                             max_count=50, max_scrolls=60, deadline_secs=240,
-                            offset=0):
+                            offset=0, cdp_fallback=True):
     """合集页链接 -> {"nickname": 合集名, "collection": url,
     "videos":[{"id","title","url"}]}。结构对齐 fetch_profile_videos，UI 流程复用。
     offset：跳过前 N 条（范围选择，见 fetch_profile_videos）。
+
+    cdp_fallback：无头采集失败疑似风控降级时，自动转 CDP 真实浏览器
+    重试一次（真实指纹+持久登录态，对症「200 成功但列表为空」形态）。
+    """
+    try:
+        return _collection_impl(collection_arg, cookie_file, verbose, max_count,
+                                max_scrolls, deadline_secs, offset, cdp=False)
+    except RuntimeError as e:
+        if not (cdp_fallback and _is_degrade(str(e))):
+            raise
+        if verbose:
+            print("[collection] 无头未取到数据，疑似风控降级 -> 转 CDP 真实浏览器重试")
+        return _collection_impl(collection_arg, cookie_file, verbose, max_count,
+                                max_scrolls, deadline_secs, offset, cdp=True)
+
+
+def _collection_impl(collection_arg, cookie_file=None, verbose=True,
+                     max_count=50, max_scrolls=60, deadline_secs=240,
+                     offset=0, cdp=False):
+    """合集页链接 -> {"nickname": 合集名, "collection": url,
+    "videos":[{"id","title","url"}]}。
 
     原理：playwright 打开合集页，滚动翻页，拦截列表接口。
     抖音有两套合集体系，响应结构相同（aweme_list + has_more + cursor）：
@@ -258,7 +391,8 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
     cf = resolve_cookie_file(cookie_file)
     cookies = parse_netscape(cf) if cf else []
     if verbose:
-        print(f"[collection] 目标: {collection_url} | cookie: "
+        print(f"[collection] 目标: {collection_url} | 模式: "
+              f"{'CDP真实浏览器' if cdp else '无头'} | cookie: "
               f"{len(cookies)} 个" + ("" if cf else "（未找到 cookies.txt，无登录态，大概率抓不全）"))
 
     try:
@@ -273,17 +407,7 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
     template_url = {"v": ""}     # 首屏列表接口完整 URL（含签名），供页面内翻页重放
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            channel="msedge", headless=True,
-            args=["--no-proxy-server", "--no-sandbox",
-                  "--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(user_agent=UA, ignore_https_errors=True,
-                                      viewport={"width": 1380, "height": 900})
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
-        if cookies:
-            context.add_cookies(cookies)
+        browser, context = _open_ctx(p, cdp, cookies, verbose)
         page = context.new_page()
 
         def on_response(resp):
@@ -429,7 +553,11 @@ def fetch_collection_videos(collection_arg, cookie_file=None, verbose=True,
                 break
 
         on_dom()
-        browser.close()
+        try:
+            page.close()
+        except Exception:
+            pass
+        _close_ctx(browser, cdp)
 
     if not videos:
         hint = (f"共观察到 {len(req_log)} 条合集列表请求" if req_log

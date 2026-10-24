@@ -39,3 +39,7 @@ tts_out/
 twitter_cookie.txt
 cookies.txt.bak-20261021
 cookies.txt.bak-20261021
+
+# CDP 调试浏览器持久 profile 与评论缓存（运行时产物，绝不入库）
+cdp_profile/
+comments/

@@ -159,13 +159,119 @@ def resolve_aweme_id(url: str) -> str:
     return ""
 
 
+def _run_detail(page, url, vid, wait_secs, verbose):
+    """在给定 page 上打开视频页、拦截 aweme_detail、SSR 兜底。
+    返回 (detail, req_log)；detail = {"data": aweme} 或 {"filtered": reason} 或 {}。
+    page 由调用方负责关闭。"""
+    detail = {}
+    req_log = []
+    retried = {"done": False}
+
+    # route 代理拦截：route.fetch() 由我们主动发起，响应体一定可读，
+    # 彻底避开 on_response 事后取 body 的 "navigated away" 竞态
+    def on_detail_route(route):
+        try:
+            resp = route.fetch()
+            body = resp.text()
+            _log(verbose, f"  [route] detail 响应体 {len(body)} bytes")
+            try:
+                j = json.loads(body)
+                aw = j.get("aweme_detail")
+                if aw:
+                    detail["data"] = aw
+                    _log(verbose, "  [route] 抓到 aweme_detail")
+            except Exception as e:
+                _log(verbose, f"  [route] body 解析失败: {e}")
+            route.fulfill(response=resp)
+        except Exception:
+            try:
+                route.continue_()
+            except Exception:
+                pass
+
+    page.route("**/aweme/v1/web/aweme/detail*", on_detail_route)
+
+    def on_request(req):
+        u = req.url
+        if "aweme" in u or "douyin" in u:
+            req_log.append(u)
+            if "aweme/v1/web/aweme/detail" in u:
+                _log(verbose, "  [req] detail 请求已发出: " + u[:140])
+
+    def on_response(resp):
+        u = resp.url
+        if "aweme/v1/web/aweme/detail" in u:
+            _log(verbose, f"  [resp] detail 状态={resp.status} {u[:120]}")
+            if not detail:
+                try:
+                    j = resp.json()
+                    aw = j.get("aweme_detail")
+                    if aw:
+                        detail["data"] = aw
+                        _log(verbose, "  [拦截] 抓到 aweme_detail")
+                    elif j.get("filter_detail"):
+                        fd = j["filter_detail"]
+                        reason = fd.get("filter_reason") or "unknown"
+                        detail["filtered"] = reason
+                        _log(verbose, f"  [resp] 作品被抖音过滤: filter_reason={reason}")
+                    else:
+                        _log(verbose, "  [resp] 无 aweme_detail 字段, body前160: "
+                             + str(j)[:160])
+                except Exception as e:
+                    _log(verbose, f"  [resp] json解析失败: {e}")
+
+    page.on("request", on_request)
+    page.on("response", on_response)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    except Exception as e:
+        _log(verbose, f"  页面打开异常(继续等拦截): {e}")
+    # 等待拦截，期间探查登录态
+    for i in range(wait_secs):
+        if detail:
+            break
+        # SSR 兜底：页面 window._ROUTER_DATA 由服务端注入了本作品完整详情，
+        # 不依赖网络拦截（note 链接会经历 /video → /note 内部导航，易竞态）
+        if not detail and not retried["done"] and i >= 3:
+            retried["done"] = True
+            try:
+                raw = page.evaluate(
+                    "() => { const d = window._ROUTER_DATA;"
+                    " return d ? JSON.stringify(d) : null }")
+                if raw:
+                    aw = _find_aweme(json.loads(raw))
+                    if aw:
+                        detail["data"] = aw
+                        _log(verbose, "  [SSR] 从 _ROUTER_DATA 抓到 aweme 详情")
+                    else:
+                        _log(verbose, "  [SSR] _ROUTER_DATA 中未找到 aweme 详情")
+            except Exception as e:
+                _log(verbose, f"  [SSR] 读取失败: {e}")
+        if verbose and i % 10 == 9:
+            try:
+                curl = page.url
+                txt = page.inner_text("body")[:80].replace("\n", " ")
+                has_login = page.evaluate(
+                    "document.cookie.includes('sessionid') || "
+                    "document.querySelector('[data-e2e=login]')===null")
+                _log(verbose, f"  [等待{i+1}s] url={curl[:60]} "
+                     f"login~={has_login} text='{txt}'")
+            except Exception:
+                pass
+        time.sleep(1)
+    return detail, req_log
+
+
 def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
-                     return_full=False):
+                     return_full=False, cdp_fallback=True):
     """playwright 打开视频页并拦截 aweme_detail，返回 (vid, 标题, 视频直链)。
 
     return_full=True 时返回完整 aweme_detail dict（供抖音音乐等场景提取
     music.play_url / 封面 / 作者 / 时长等字段）。
     失败抛 RuntimeError（含原因）。
+
+    cdp_fallback：无头拦截失败且非精确判决时，转 CDP 真实浏览器
+    （douyin_cdp，真实指纹+持久登录态）重试一次——对症风控「可见性降级」。
     """
     vid = resolve_aweme_id(arg)
     if not vid:
@@ -173,13 +279,10 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
             f"无法从参数解析出作品ID: {arg!r}。"
             "支持 /video/<id>、/note/<id>、/slides/<id>、modal_id=<id>、"
             "纯数字 id、v.douyin.com 短链")
+    url = f"https://www.douyin.com/video/{vid}"
 
     cf = resolve_cookie_file(cookie_file)
-    if not cf:
-        raise RuntimeError(
-            "缺少 cookies.txt：请先用已登录抖音的浏览器导出 Netscape 格式 cookie"
-            "（放到项目目录或设 VIDEO_COOKIES 环境变量）")
-    cookies = parse_netscape(cf)
+    cookies = parse_netscape(cf) if cf else []
     _log(verbose, f"目标视频ID: {vid} | 已加载 {len(cookies)} 个 cookie")
 
     try:
@@ -188,11 +291,9 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
         raise RuntimeError(f"playwright 未安装：{e}（pip install playwright）")
 
     detail = {}
-    detail_url = {}   # 记录最近一次 detail 请求的完整 URL（含签名），供重放兜底
-    retried = {"done": False}
     req_log = []
-    url = f"https://www.douyin.com/video/{vid}"
     with sync_playwright() as p:
+        # —— 尝试一：无头 Edge（原有路径，快、不弹窗） ——
         browser = p.chromium.launch(
             channel="msedge", headless=True,
             args=["--no-proxy-server", "--no-sandbox",
@@ -202,106 +303,42 @@ def fetch_direct_url(arg, cookie_file=None, verbose=True, wait_secs=60,
             user_agent=UA,
             ignore_https_errors=True,
         )
-        # 反检测：抹掉 webdriver 标志
         context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
         context.add_cookies(cookies)
         page = context.new_page()
-
-        # route 代理拦截：route.fetch() 由我们主动发起，响应体一定可读，
-        # 彻底避开 on_response 事后取 body 的 "navigated away" 竞态
-        def on_detail_route(route):
-            try:
-                resp = route.fetch()
-                body = resp.text()
-                _log(verbose, f"  [route] detail 响应体 {len(body)} bytes")
-                try:
-                    j = json.loads(body)
-                    aw = j.get("aweme_detail")
-                    if aw:
-                        detail["data"] = aw
-                        _log(verbose, "  [route] 抓到 aweme_detail")
-                except Exception as e:
-                    _log(verbose, f"  [route] body 解析失败: {e}")
-                route.fulfill(response=resp)
-            except Exception:
-                try:
-                    route.continue_()
-                except Exception:
-                    pass
-
-        page.route("**/aweme/v1/web/aweme/detail*", on_detail_route)
-
-        def on_request(req):
-            u = req.url
-            if "aweme" in u or "douyin" in u:
-                req_log.append(u)
-                if "aweme/v1/web/aweme/detail" in u:
-                    detail_url["u"] = u
-                    _log(verbose, "  [req] detail 请求已发出: " + u[:140])
-
-        def on_response(resp):
-            u = resp.url
-            if "aweme/v1/web/aweme/detail" in u:
-                _log(verbose, f"  [resp] detail 状态={resp.status} {u[:120]}")
-                if not detail:
-                    try:
-                        j = resp.json()
-                        aw = j.get("aweme_detail")
-                        if aw:
-                            detail["data"] = aw
-                            _log(verbose, "  [拦截] 抓到 aweme_detail")
-                        elif j.get("filter_detail"):
-                            fd = j["filter_detail"]
-                            reason = fd.get("filter_reason") or "unknown"
-                            detail["filtered"] = reason
-                            _log(verbose, f"  [resp] 作品被抖音过滤: filter_reason={reason}")
-                        else:
-                            _log(verbose, "  [resp] 无 aweme_detail 字段, body前160: "
-                                 + str(j)[:160])
-                    except Exception as e:
-                        _log(verbose, f"  [resp] json解析失败: {e}")
-
-        page.on("request", on_request)
-        page.on("response", on_response)
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        except Exception as e:
-            _log(verbose, f"  页面打开异常(继续等拦截): {e}")
-        # 等待拦截，期间探查登录态
-        for i in range(wait_secs):
-            if detail:
-                break
-            # SSR 兜底：页面 window._ROUTER_DATA 由服务端注入了本作品完整详情，
-            # 不依赖网络拦截（note 链接会经历 /video → /note 内部导航，易竞态）
-            if not detail and not retried["done"] and i >= 3:
-                retried["done"] = True
-                try:
-                    raw = page.evaluate(
-                        "() => { const d = window._ROUTER_DATA;"
-                        " return d ? JSON.stringify(d) : null }")
-                    if raw:
-                        aw = _find_aweme(json.loads(raw))
-                        if aw:
-                            detail["data"] = aw
-                            _log(verbose, "  [SSR] 从 _ROUTER_DATA 抓到 aweme 详情")
-                        else:
-                            _log(verbose, "  [SSR] _ROUTER_DATA 中未找到 aweme 详情")
-                except Exception as e:
-                    _log(verbose, f"  [SSR] 读取失败: {e}")
-            if verbose and i % 10 == 9:
-                try:
-                    curl = page.url
-                    txt = page.inner_text("body")[:80].replace("\n", " ")
-                    has_login = page.evaluate(
-                        "document.cookie.includes('sessionid') || "
-                        "document.querySelector('[data-e2e=login]')===null")
-                    _log(verbose, f"  [等待{i+1}s] url={curl[:60]} "
-                         f"login~={has_login} text='{txt}'")
-                except Exception:
-                    pass
-            time.sleep(1)
+            detail, req_log = _run_detail(page, url, vid, wait_secs, verbose)
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
         browser.close()
+
+        # —— 尝试二：CDP 真实浏览器兜底（真实指纹，对症可见性降级） ——
+        # 精确判决（作品不存在/仅自己可见）不重试，换环境也没用
+        if (not detail.get("data") and not detail.get("filtered")
+                and cdp_fallback):
+            try:
+                import douyin_cdp
+                cdp_browser = douyin_cdp.connect(p, verbose=verbose)
+                ctx = douyin_cdp.default_context(cdp_browser)
+                page2 = douyin_cdp.new_page(ctx)
+                _log(verbose, "  [CDP] 转真实浏览器重试 detail 拦截")
+                try:
+                    detail2, req2 = _run_detail(page2, url, vid,
+                                                min(wait_secs, 45), verbose)
+                finally:
+                    try:
+                        page2.close()
+                    except Exception:
+                        pass
+                req_log += req2
+                if detail2.get("data"):
+                    detail = detail2
+            except Exception as e:
+                _log(verbose, f"  [CDP] 兜底失败: {e}")
 
     if not detail.get("data"):
         if detail.get("filtered"):
