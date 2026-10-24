@@ -812,17 +812,33 @@ def _ensure_summary_len(data, summarize_text):
         data["摘要"] = fill
         return data
     # ② 转写均匀采样兜底：开头/中段/结尾各取完整句拼接（避免只概括开场白）
-    sents = [s.strip() for s in re.split(r"(?<=[。！？!?；;\n])", src)
-             if len(s.strip()) >= 15]
+    # 🔴 教训（2026-10-24）：whisper 转写可能整篇没有句号（仅换行分段），
+    #    先去空白再按句号切会得到「一整个巨型句子」→ 整篇转写被塞进摘要。
+    #    修复：按标点+换行切句（切句用原文，去空白只用于长度判断），
+    #    单句超长再按长度硬切，且总长封顶。
+    src_raw = (summarize_text or "").strip()
+    if len(re.sub(r"\s+", "", src_raw)) < 50:
+        return data
+    sents = [s.strip() for s in re.split(r"(?<=[。！？!?；;\n])", src_raw)
+             if len(re.sub(r"\s+", "", s)) >= 15]
+    # 无句读/句读稀疏的转写：单句超长时按 40 字硬切，保证「采样」有多个取样点
+    fixed = []
+    for s in sents:
+        while len(s) > 80:
+            fixed.append(s[:40])
+            s = s[40:]
+        fixed.append(s)
+    sents = fixed
     if sents:
         step = max(1, len(sents) // 6)
         picks, total = [], 0
         for s in sents[::step]:
             picks.append(s)
             total += len(s)
-            if total >= 60:
+            if total >= 120:
                 break
-        data["摘要"] = "……".join(picks)
+        joined = "……".join(picks)
+        data["摘要"] = joined[:200] + ("……" if len(joined) > 200 else "")
     return data
 
 
@@ -885,6 +901,14 @@ def summarize(transcript, frame_descs, source_meta):
         data = _summarize_single(transcript[:12000], descs_text, source_meta)
         data["_distill_chunks"] = 1
         data = _rescue_summary(data, transcript)
+        # 瞬时故障重试（Ollama 卸载/重载窗口期）：摘要+要点全空时整链重试一次
+        # 🔴 教训（2026-10-24）：转写后 Ollama 冷加载期调用全灭，救援提取同样失败，
+        #    兜底把整篇转写塞进摘要。重试一次成本 ~20s，能救回绝大多数瞬时故障。
+        if not (data.get("摘要") or "").strip() and not data.get("要点"):
+            time.sleep(5)
+            data = _summarize_single(transcript[:12000], descs_text, source_meta)
+            data["_distill_chunks"] = 1
+            data = _rescue_summary(data, transcript)
         return _ensure_summary_len(data, transcript)
 
     # ---- map：逐段蒸馏要点（纯文本协议，容错解析；不强迫模型吐 JSON） ----
