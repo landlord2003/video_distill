@@ -909,14 +909,15 @@ function clearPresult(){
 // ---------- 清空重置 ----------
 function clearPipeAll(){
   if($('#prun') && $('#prun').disabled){ setP('✗ 正在处理中，不能清空'); return; }
-  if(!confirm('清空链接清单、采集清单与处理进度？\n（已入库记录和采集结果不受影响）')) return;
-  $('#purls').value = ''; pCount();
-  $('#accurl').value = '';
-  _accItems = []; $('#acclist').innerHTML = '';
-  $('#accstatus').textContent = '先采内容清单 → 勾选 → 「填入下方清单」→ 运行流水线';
-  $('#pbar').style.width = '0%';
-  $('#pstatus').innerHTML = '等待提交…';
-  $('#s4sub').textContent = '就绪';
+  uiConfirm('清空链接清单、采集清单与处理进度？\n（已入库记录和采集结果不受影响）', ()=>{
+    $('#purls').value = ''; pCount();
+    $('#accurl').value = '';
+    _accItems = []; $('#acclist').innerHTML = '';
+    $('#accstatus').textContent = '先采内容清单 → 勾选 → 「填入下方清单」→ 运行流水线';
+    $('#pbar').style.width = '0%';
+    $('#pstatus').innerHTML = '等待提交…';
+    $('#s4sub').textContent = '就绪';
+  });
 }
 
 // ---------- 工具健康自检 ----------
@@ -979,8 +980,44 @@ function switchTab(t, btn){
 function fold(id){ document.getElementById(id).classList.toggle('folded'); }
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function escAttr(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function showModal(html){ $('#mpanel').innerHTML = html; $('#mback').classList.add('show'); }
-function hideModal(){ $('#mback').classList.remove('show'); }
+function showModal(html){
+  $('#mpanel').innerHTML = html; $('#mback').classList.add('show');
+  // 驻留键：只有显式 _remember 过的弹窗（编辑/管理类）才恢复；其他弹窗清掉旧键
+  try{ sessionStorage.setItem('_mm_resume', _mmRemembered ? JSON.stringify(_mmLast) : ''); }catch(e){}
+  _mmRemembered = false;
+}
+function hideModal(){
+  $('#mback').classList.remove('show');
+  try{ sessionStorage.removeItem('_mm_resume'); }catch(e){}
+}
+// ---------- 弹窗驻留（内置预览浏览器失焦可能重载页面，重载后自动恢复上次弹窗） ----------
+let _mmLast = {fn:'', args:[]}, _mmRemembered = false;
+function _remember(fn, ...args){ _mmLast = {fn, args}; _mmRemembered = true; }
+window.addEventListener('load', ()=>{
+  try{
+    const raw = sessionStorage.getItem('_mm_resume');
+    sessionStorage.removeItem('_mm_resume');
+    const r = raw ? JSON.parse(raw) : null;
+    if(r && r.fn && typeof window[r.fn]==='function') window[r.fn].apply(null, r.args||[]);
+  }catch(e){}
+});
+// HTML 版确认框（替代原生 confirm：内置预览浏览器失焦会吞掉原生对话框）
+function uiConfirm(msg, onok, oncancel){
+  _mmLast = {fn:'', args:[]};   // 确认框本身不驻留，取消/确定后由调用方决定
+  showModal(`<h3>⚠️ 请确认</h3>
+    <div style="white-space:pre-wrap;line-height:1.6;font-size:13px">${esc(msg)}</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn" onclick="_ucResolve(false)">取消</button>
+      <button class="btn pri" onclick="_ucResolve(true)">确定</button>
+    </div>`);
+  window._ucOk = onok; window._ucCancel = oncancel;
+}
+function _ucResolve(ok){
+  const f = ok ? window._ucOk : window._ucCancel;
+  window._ucOk = null; window._ucCancel = null;
+  hideModal();
+  if(typeof f==='function') f();
+}
 
 // ============================================================
 // 记录中心：网页 / 视频 / 文章 / 配音 统一管理
@@ -1233,12 +1270,13 @@ async function recDel(type, id){
                 voa:['/api/articles/','确定删除这条 VOA 记录？音视频/LRC/笔记文件也会一并删除。'],
                 dymusic:['/api/articles/','确定删除这条抖音音乐记录？本地音频/封面/笔记文件也会一并删除。'],
                 tts:['/api/tts/history/','确定删除这条配音记录？音频文件也会一并删除。']};
-  if(!confirm(meta[type][1])) return;
-  try{
-    const r = await fetch(meta[type][0]+encodeURIComponent(id), {method:'DELETE'});
-    if(r.ok){ $('#rec-detail').innerHTML=''; loadRecords(); }
-    else { const e=await r.json().catch(()=>({})); alert('删除失败：'+(e.error||r.status)); }
-  }catch(e){ alert('删除异常：'+e.message); }
+  uiConfirm(meta[type][1], async ()=>{
+    try{
+      const r = await fetch(meta[type][0]+encodeURIComponent(id), {method:'DELETE'});
+      if(r.ok){ $('#rec-detail').innerHTML=''; loadRecords(); }
+      else { const e=await r.json().catch(()=>({})); alert('删除失败：'+(e.error||r.status)); }
+    }catch(e){ alert('删除异常：'+e.message); }
+  });
 }
 // ---------- 记录中心：批量多选归类 ----------
 let _selRecs = {};   // 'type:id' -> true（仅 video/article/voa/dymusic 可选，web/tts 无分类字段）
@@ -1347,20 +1385,21 @@ async function batchApply(){
 async function batchDelete(){
   const keys = Object.keys(_selRecs);
   if(!keys.length) return;
-  if(!confirm(`⚠️ 确定批量删除选中的 ${keys.length} 条记录？\n相关笔记/音频文件会一并删除，不可恢复！`)) return;
   const ep = {web:'/api/crawls/', video:'/api/video/', article:'/api/articles/',
               voa:'/api/articles/', dymusic:'/api/articles/', tts:'/api/tts/history/'};
-  let ok=0, fail=0;
-  for(const k of keys){
-    const i=k.indexOf(':'), t=k.slice(0,i), id=k.slice(i+1);
-    try{
-      const r = await fetch((ep[t]||'')+encodeURIComponent(id), {method:'DELETE'});
-      if(r.ok) ok++; else fail++;
-    }catch(e){ fail++; }
-  }
-  _selRecs = {};
-  alert(`批量删除完成：成功 ${ok} 条${fail?('，失败 '+fail+' 条'):''}`);
-  loadRecords();
+  uiConfirm(`⚠️ 确定批量删除选中的 ${keys.length} 条记录？\n相关笔记/音频文件会一并删除，不可恢复！`, async ()=>{
+    let ok=0, fail=0;
+    for(const k of keys){
+      const i=k.indexOf(':'), t=k.slice(0,i), id=k.slice(i+1);
+      try{
+        const r = await fetch((ep[t]||'')+encodeURIComponent(id), {method:'DELETE'});
+        if(r.ok) ok++; else fail++;
+      }catch(e){ fail++; }
+    }
+    _selRecs = {};
+    alert(`批量删除完成：成功 ${ok} 条${fail?('，失败 '+fail+' 条'):''}`);
+    loadRecords();
+  });
 }
 // ---------- 记录中心：分类/来源 chips（视频+文章共用一套池） ----------
 let _vcatFilter = '';      // ''=全部 '__uncat__'=未分类 其他=分类名
@@ -1473,6 +1512,7 @@ function editRec(id, type){
   type = type || 'video';
   const x = _recRows.find(r=>r.type===type && r.id===id);
   if(!x) return;
+  _remember('editRec', id, type);
   const {keys: cats} = catCountsAll();
   if(type==='article' || type==='voa' || type==='dymusic'){
     const {keys: srcs} = srcCountsAll();
@@ -1594,6 +1634,7 @@ async function saveRec(id, type){
 let _mgDim = 'category', _mgKeys = [];
 function manageCats(dim){
   _mgDim = dim || 'category';
+  _remember('manageCats', _mgDim);
   const isSrc = _mgDim === 'source', isAut = _mgDim === 'author';
   let counts, keys;
   if(isSrc){ const s = srcCountsAll(); counts = s.counts; keys = s.keys; }
@@ -1660,18 +1701,19 @@ async function delCat(i){
   const dimName = _mgDim==='source' ? 'source' : (_mgDim==='author' ? 'author' : 'category');
   const n = (_managedRows().filter(x=>((x[dimName])||'').trim()===old)).length;
   const fb = _mgDim==='source' ? '未标来源' : (_mgDim==='author' ? '无作者' : '未分类');
-  if(!confirm(`删除${_mgDim==='author'?'作者':(_mgDim==='source'?'来源':'分类')}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`)) return;
-  try{
-    const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+_mgDimParam(), {method:'DELETE'});
-    const d = await r.json();
-    if(r.ok && d.ok){
-      if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=''; }
-      else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=''; }
-      else if(_vcatFilter===old) _vcatFilter='';
-      hideModal();
-      loadRecords();
-    } else { alert('删除失败：'+(d.error||r.status)); }
-  }catch(e){ alert('异常：'+e.message); }
+  uiConfirm(`删除${_mgDim==='author'?'作者':(_mgDim==='source'?'来源':'分类')}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`, async ()=>{
+    try{
+      const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+_mgDimParam(), {method:'DELETE'});
+      const d = await r.json();
+      if(r.ok && d.ok){
+        if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=''; }
+        else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=''; }
+        else if(_vcatFilter===old) _vcatFilter='';
+        hideModal();
+        loadRecords();
+      } else { alert('删除失败：'+(d.error||r.status)); }
+    }catch(e){ alert('异常：'+e.message); }
+  }, ()=>{ manageCats(_mgDim); });   // 取消则恢复管理弹窗
 }
 
 // ============================================================
