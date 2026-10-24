@@ -982,28 +982,55 @@ function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':
 function escAttr(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function showModal(html){
   $('#mpanel').innerHTML = html; $('#mback').classList.add('show');
-  // 驻留键：只有显式 _remember 过的弹窗（编辑/管理类）才恢复；其他弹窗清掉旧键
-  try{ sessionStorage.setItem('_mm_resume', _mmRemembered ? JSON.stringify(_mmLast) : ''); }catch(e){}
-  _mmRemembered = false;
+  // 驻留：仅显式 _remember 过的弹窗（编辑/管理类）写入恢复键；其他弹窗清键
+  try{
+    if(_mmLast){ sessionStorage.setItem('_mm_resume', JSON.stringify(_mmLast));
+                 localStorage.setItem('_mm_resume', JSON.stringify({..._mmLast, ts: Date.now()})); }
+    else { sessionStorage.removeItem('_mm_resume'); localStorage.removeItem('_mm_resume'); }
+  }catch(e){}
 }
 function hideModal(){
   $('#mback').classList.remove('show');
-  try{ sessionStorage.removeItem('_mm_resume'); }catch(e){}
+  _mmLast = null;
+  try{ sessionStorage.removeItem('_mm_resume'); localStorage.removeItem('_mm_resume'); }catch(e){}
 }
-// ---------- 弹窗驻留（内置预览浏览器失焦可能重载页面，重载后自动恢复上次弹窗） ----------
-let _mmLast = {fn:'', args:[]}, _mmRemembered = false;
-function _remember(fn, ...args){ _mmLast = {fn, args}; _mmRemembered = true; }
-window.addEventListener('load', ()=>{
+// ---------- 弹窗驻留（内置预览浏览器失焦会重载/回收页面，恢复后自动重开上次弹窗） ----------
+// 兼容三种回收方式：整页重载(load)、bfcache 恢复(pageshow)、视图隐藏后复现(visibilitychange/focus)
+let _mmLast = null;
+function _remember(fn, ...args){ _mmLast = {fn, args}; }
+function _mmTryRestore(){
   try{
+    let r = null;
     const raw = sessionStorage.getItem('_mm_resume');
-    sessionStorage.removeItem('_mm_resume');
-    const r = raw ? JSON.parse(raw) : null;
-    if(r && r.fn && typeof window[r.fn]==='function') window[r.fn].apply(null, r.args||[]);
+    if(raw){ sessionStorage.removeItem('_mm_resume'); r = JSON.parse(raw); }
+    else{
+      // 预览环境可能不保 sessionStorage，用 localStorage 兜底（5 分钟有效期防跨会话复活）
+      const lr = localStorage.getItem('_mm_resume');
+      if(lr){ localStorage.removeItem('_mm_resume');
+              const o = JSON.parse(lr);
+              if(o.ts && Date.now() - o.ts < 5*60*1000) r = o; }
+    }
+    if(!(r && r.fn && typeof window[r.fn]==='function')) return;
+    const attempt = (tries)=>{
+      if($('#mback').classList.contains('show')) return;          // 已有弹窗在
+      // editRec/manageCats 依赖 _recRows（异步加载），等数据就绪再恢复（最多 10s）
+      if(Array.isArray(window._recRows) && _recRows.length){
+        try{ window[r.fn].apply(null, r.args||[]); }catch(e){}
+      } else {
+        if(tries === 0 && typeof window.loadRecords === 'function') loadRecords();  // 重载后不在记录页签时主动拉数据
+        if(tries < 20) setTimeout(()=>attempt(tries+1), 500);
+      }
+    };
+    attempt(0);
   }catch(e){}
-});
+}
+window.addEventListener('load', _mmTryRestore);
+window.addEventListener('pageshow', _mmTryRestore);
+window.addEventListener('focus', _mmTryRestore);
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) _mmTryRestore(); });
 // HTML 版确认框（替代原生 confirm：内置预览浏览器失焦会吞掉原生对话框）
 function uiConfirm(msg, onok, oncancel){
-  _mmLast = {fn:'', args:[]};   // 确认框本身不驻留，取消/确定后由调用方决定
+  _mmLast = null;   // 确认框本身不驻留，取消/确定后由调用方决定
   showModal(`<h3>⚠️ 请确认</h3>
     <div style="white-space:pre-wrap;line-height:1.6;font-size:13px">${esc(msg)}</div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
