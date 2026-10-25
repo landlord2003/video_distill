@@ -991,36 +991,41 @@ function showModal(html){
       sessionStorage.removeItem('_mm_resume'); localStorage.removeItem('_mm_resume');
     }
   }catch(e){}
-  _mmSync(_mmLast);   // 服务端权威存储（预览存储分区可能随回收清空）
+  _mmSync(_mmLast, _mmLast ? 'open' : 'clear');   // 服务端权威存储（预览存储分区可能随回收清空）
 }
 function hideModal(){
   $('#mback').classList.remove('show');
   _mmLast = null;
+  _mmDismissedAt = Date.now();
   try{ sessionStorage.removeItem('_mm_resume'); localStorage.removeItem('_mm_resume'); }catch(e){}
-  _mmSync(null);
+  _mmSync(null, 'close');
 }
 // ---------- 弹窗驻留（内置预览浏览器失焦会重载/回收页面，恢复后自动重开上次弹窗） ----------
 // 三层恢复：sessionStorage → localStorage(5min TTL) → 服务端 /api/ui/modal（权威，10min TTL）。
 // 预览环境的存储分区可能随回收一起清空，服务端状态不随页面重载丢失。
 let _mmLast = null;
 function _remember(fn, ...args){ _mmLast = {fn, args}; }
-function _mmSync(state){
+function _mmSync(state, ev){
   try{
     fetch('/api/ui/modal', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(state ? {fn:state.fn, args:state.args} : {})}).catch(()=>{});
+      body: JSON.stringify(state ? {fn:state.fn, args:state.args, ev:ev} : {ev:ev})}).catch(()=>{});
   }catch(e){}
 }
+let _mmAttempting = false, _mmDismissedAt = 0;
 function _mmRestoreFrom(r){
   if(!(r && r.fn && typeof window[r.fn]==='function')) return;
+  if(_mmAttempting) return;
+  _mmAttempting = true;
   const attempt = (tries)=>{
-    if($('#mback').classList.contains('show')) return;          // 已有弹窗在
+    if($('#mback').classList.contains('show')){ _mmAttempting = false; return; }   // 已有弹窗在
     // editRec/manageCats 依赖 _recRows（异步加载），等数据就绪再恢复（最多 10s）
     if(Array.isArray(window._recRows) && _recRows.length){
+      _mmAttempting = false;
       try{ window[r.fn].apply(null, r.args||[]); }catch(e){}
-    } else {
+    } else if(tries < 20){
       if(tries === 0 && typeof window.loadRecords === 'function') loadRecords();  // 重载后不在记录页签时主动拉数据
-      if(tries < 20) setTimeout(()=>attempt(tries+1), 500);
-    }
+      setTimeout(()=>attempt(tries+1), 500);
+    } else _mmAttempting = false;
   };
   attempt(0);
 }
@@ -1030,7 +1035,6 @@ function _mmTryRestore(){
     const raw = sessionStorage.getItem('_mm_resume');
     if(raw){ sessionStorage.removeItem('_mm_resume'); r = JSON.parse(raw); }
     else{
-      // 预览环境可能不保 sessionStorage，用 localStorage 兜底（5 分钟有效期防跨会话复活）
       const lr = localStorage.getItem('_mm_resume');
       if(lr){ localStorage.removeItem('_mm_resume');
               const o = JSON.parse(lr);
@@ -1039,6 +1043,22 @@ function _mmTryRestore(){
     if(r) _mmRestoreFrom(r);
   }catch(e){}
 }
+// 心跳自检（每 2s）：弹窗该在而不在（文档被预览环境静默重置/外力隐藏）→ 立即重开。
+// 这是最终兜底——不依赖任何事件触发，新文档脚本一跑起来就生效。
+setInterval(()=>{
+  try{
+    if($('#mback').classList.contains('show')) return;
+    if(Date.now() - _mmDismissedAt < 8000) return;   // 用户刚主动关闭，别复活
+    if(_mmAttempting) return;
+    if(_mmLast){ _mmRestoreFrom(_mmLast); return; }  // 文档活着但弹窗被外力隐藏
+    fetch('/api/ui/modal').then(r=>r.json()).then(s=>{
+      if(s && s.fn && s.ts && Date.now() - s.ts < 10*60*1000){
+        _mmSync({fn:s.fn, args:s.args}, 'restore');
+        _mmRestoreFrom(s);
+      }
+    }).catch(()=>{});
+  }catch(e){}
+}, 2000);
 window.addEventListener('load', ()=>{
   _mmTryRestore();
   // 服务端权威状态：预览重载后必经之路（fetch 可用性已由记录加载验证）

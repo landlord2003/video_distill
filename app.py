@@ -1796,6 +1796,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             fn = str(data.get("fn") or "")
             args = data.get("args") if isinstance(data.get("args"), list) else []
+            ev = str(data.get("ev") or "")
             if re.fullmatch(r"[A-Za-z_$][\w$]{0,60}", fn):
                 _ui_modal_state["fn"] = fn
                 _ui_modal_state["args"] = [a for a in args
@@ -1803,6 +1804,20 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 _ui_modal_state.update(fn="", args=[])
             _ui_modal_state["ts"] = int(datetime.datetime.now().timestamp() * 1000)
+            # 调试日志：弹窗驻留排查（open/close/clear/restore 事件序列），滚动保留 200 行
+            try:
+                _lg = "_ui_modal_debug.log"
+                _lines = []
+                if os.path.isfile(_lg):
+                    with open(_lg, encoding="utf-8", errors="replace") as f:
+                        _lines = f.readlines()[-199:]
+                _lines.append(f"{datetime.datetime.now().isoformat(timespec='seconds')}"
+                              f" | {ev or 'set'} | {fn} | "
+                              f"{json.dumps(_ui_modal_state['args'], ensure_ascii=False)}\n")
+                with open(_lg, "w", encoding="utf-8") as f:
+                    f.writelines(_lines)
+            except Exception:
+                pass
             self._send(200, {"ok": True})
             return
         if self.path == "/api/skillpack/run":
