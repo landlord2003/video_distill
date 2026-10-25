@@ -533,7 +533,7 @@ def _ingest_douyin_article(url, write_vault=True, analyze=True):
         with io.open(vpath, "w", encoding="utf-8") as f:
             f.write(md)
     aid, _ = save_article(url, "douyin_article", title, md, vault_path=vpath,
-                          source="抖音图文")
+                          source="抖音视频/图文")
     vp.set_progress("", "")
     return {"id": aid, "ok": True, "platform": "douyin_article",
             "title": title, "md": md, "vault_path": vpath, "analyze": ares}
@@ -583,7 +583,7 @@ def _ingest_douyin_images(url, write_vault=True, analyze=True, verbose=True):
         with io.open(vpath, "w", encoding="utf-8") as f:
             f.write(md)
     aid, _ = save_article(url, "douyin_imgtext", title, md, vault_path=vpath,
-                          source="抖音图文")
+                          source="抖音视频/图文")
     vp.set_progress("", "")
     return {"id": aid, "ok": True, "platform": "douyin_imgtext",
             "title": title, "md": md, "vault_path": vpath, "analyze": ares,
@@ -764,7 +764,7 @@ def detect_source_name(url):
     if s == "youtube":
         return "YouTube视频"
     if s == "douyin":
-        return "抖音视频"
+        return "抖音视频/图文"
     if s == "bilibili":
         return "B站视频"
     return ""
@@ -913,7 +913,7 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
                 except Exception as e:
                     rec = {"source_url": url, "ok": False,
                            "error": f"{type(e).__name__}: {e}", "markdown": ""}
-                rec["source"] = "抖音图文"
+                rec["source"] = "抖音视频/图文"
                 rec["_icon"] = "🖼"
                 results.append(rec)
                 continue

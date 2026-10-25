@@ -258,7 +258,7 @@ def build_image_md(detail: dict, img_paths: list, analyses: list,
     title = _sanitize(desc) or f"抖音图文_{aweme_id}"
 
     lines = [f"# {title}", "",
-             f"> 来源：[抖音图文]({source_url}) · 作者：{author} · {date}", ""]
+             f"> 来源：[抖音视频/图文]({source_url}) · 作者：{author} · {date}", ""]
     if desc:
         lines += [desc, ""]
     lines += [f"## 🖼 图片内容解析（共 {len(img_paths)} 张）", ""]

@@ -386,12 +386,13 @@
         <div class="dcard" style="padding:12px 14px">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <b>🔁 记录升级</b>
-            <span class="mut" style="font-size:11px">老视频记录按新流水线原地升级两件事：<b>蒸馏升级</b>=对转写全文重跑时间轴分段蒸馏（章节+分段要点，qwen3:14b 逐段约 30~60s）；<b>AI解析回填</b>=抓抖音官方「章节要点」卡（内容由AI生成）追加进笔记，仅对 douyin.com/video 链接生效。写回同步笔记+记录中心，失败的条目可稍后重跑。</span>
+            <span class="mut" style="font-size:11px">老视频记录按新流水线原地升级，两个选项分开跑：<b>🧠 解析升级</b>=对转写全文重跑时间轴分段蒸馏（章节+分段要点，qwen3:14b 逐段约 30~60s）；<b>🤖 抖音AI</b>=抓抖音官方「章节要点」卡（内容由AI生成）追加进笔记，仅对 douyin.com/video 链接生效。写回同步笔记+记录中心，失败的条目可稍后重跑。</span>
             <span style="flex:1"></span>
             <button class="btn" onclick="loadUpgCands()">↻ 扫描可升级记录</button>
             <button class="btn" onclick="upgSelAll()">全选</button>
             <button class="btn" onclick="upgClear()">清空选择</button>
-            <button id="upg-run" class="btn pri" onclick="upgRun()" disabled style="padding:8px 18px">🔁 升级选中 0 条</button>
+            <button id="upg-run-d" class="btn pri" onclick="upgRun('d')" disabled style="padding:8px 14px">🧠 解析升级 0 条</button>
+            <button id="upg-run-a" class="btn" onclick="upgRun('a')" disabled style="padding:8px 14px">🤖 抖音AI 0 条</button>
           </div>
           <div id="upg-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
         </div>
@@ -2161,9 +2162,11 @@ function renderUpgList(){
   _updUpgRun();
 }
 function _updUpgRun(){
-  const btn = $('#upg-run');
-  btn.textContent = `🔁 升级选中 ${_upgSel.size} 条`;
-  btn.disabled = !_upgSel.size || _upgTimer;
+  const dsel = _upgCands.filter(c=>_upgSel.has(c.id) && c.need_distill).length;
+  const asel = _upgCands.filter(c=>_upgSel.has(c.id) && c.need_ai).length;
+  const bd = $('#upg-run-d'), ba = $('#upg-run-a');
+  if(bd){ bd.textContent = `🧠 解析升级 ${dsel} 条`; bd.disabled = !dsel || _upgTimer; }
+  if(ba){ ba.textContent = `🤖 抖音AI ${asel} 条`; ba.disabled = !asel || _upgTimer; }
 }
 function upgClick(i){
   const c = _upgCands[i].id;
@@ -2172,10 +2175,11 @@ function upgClick(i){
 }
 function upgSelAll(){ _upgCands.forEach(c=>_upgSel.add(c.id)); renderUpgList(); }
 function upgClear(){ _upgSel.clear(); renderUpgList(); }
-async function upgRun(){
+async function upgRun(kind){
   if(!_upgSel.size || _upgTimer) return;
-  const jobs = _upgCands.filter(c=>_upgSel.has(c.id))
-    .map(c=>({id:c.id, distill:!!c.need_distill, ai:!!c.need_ai}));
+  const jobs = _upgCands.filter(c=>_upgSel.has(c.id) && (kind==='d' ? c.need_distill : c.need_ai))
+    .map(c=>({id:c.id, distill:kind==='d', ai:kind==='a'}));
+  if(!jobs.length) return;
   try{
     const r = await fetch('/api/upgrade/run', {method:'POST',
       headers:{'Content-Type':'application/json'},
