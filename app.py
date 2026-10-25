@@ -320,6 +320,102 @@ def _inbox_rows():
 
 # ---------- DB ----------
 _lock = threading.Lock()
+
+# ---------- 抖音图文（文章/图片帖） ----------
+try:
+    import douyin_imgtext as dit
+except Exception as _e:
+    dit = None
+    print(f"[warn] douyin_imgtext 加载失败: {_e}", flush=True)
+
+
+def _ingest_douyin_article(url, write_vault=True, analyze=True):
+    """抖音纯文本长文（/article/<id>）：CDP 渲染提取 → 原文入库 + 要点解析。"""
+    vp.set_progress("抓取中", "抖音文章 CDP 渲染提取正文…", url)
+    art = dit.fetch_article(url)
+    text = (art.get("text") or "").strip()
+    if len(text) < 100:
+        raise RuntimeError(f"文章正文提取过短（{len(text)} 字），页面结构可能变化")
+    title = art.get("title") or dit._sanitize(text.splitlines()[0])
+    date = art.get("date") or ""
+    md = f"# {title}\n\n> 来源：[抖音文章]({url}) · {date}\n\n---\n\n{text}\n"
+    ares = None
+    if analyze:
+        vp.set_progress("要点解析中", "qwen3:14b 摘要+要点+标签（约 20~60s）", url)
+        try:
+            dec = ca.analyze_and_decorate(md)
+            if isinstance(dec, dict) and dec.get("md"):
+                md, ares = dec["md"], dec
+        except Exception as e:
+            ares = {"error": str(e)[:200]}
+    vpath = ""
+    if write_vault:
+        os.makedirs(ART_VAULT, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        vpath = os.path.join(ART_VAULT, f"{ts}-{dit._sanitize(title)}.md")
+        base, ext = os.path.splitext(vpath)
+        n = 1
+        while os.path.exists(vpath):
+            vpath = f"{base}-{n}{ext}"
+            n += 1
+        with io.open(vpath, "w", encoding="utf-8") as f:
+            f.write(md)
+    aid, _ = save_article(url, "douyin_article", title, md, vault_path=vpath,
+                          source="抖音图文")
+    vp.set_progress("", "")
+    return {"id": aid, "ok": True, "platform": "douyin_article",
+            "title": title, "md": md, "vault_path": vpath, "analyze": ares}
+
+
+def _ingest_douyin_images(url, write_vault=True, analyze=True, verbose=True):
+    """抖音纯图片图文帖：下载原图 + qwen3-vl 逐图解析 + 要点解析 + 入库。"""
+    vp.set_progress("详情拦截", "抖音图文 aweme_detail…", url)
+    detail = dit.fetch_image_detail(url, verbose=verbose)
+    if not detail:
+        raise RuntimeError("未拦截到图文 detail（可能触发限流，稍后再试；或该链接是视频）")
+    imgs = detail.get("images") or []
+    if not imgs:
+        raise RuntimeError("该作品无 images 字段，不是图文帖")
+    aweme_id = detail.get("aweme_id") or ""
+    img_dir = os.path.join(os.path.dirname(ART_VAULT), "images", "douyin")
+    vp.set_progress("图片下载", f"共 {len(imgs)} 张原图…", url)
+    paths = dit.download_images(detail, img_dir, verbose=verbose)
+    if not paths:
+        raise RuntimeError("所有图片下载失败（douyinpic CDN 不可达或防盗链变化）")
+    img_dir_rel = f"images/douyin"
+    analyses = []
+    for i, p in enumerate(paths, 1):
+        vp.set_progress("图片解析", f"qwen3-vl 转录+解释 第 {i}/{len(paths)} 张…", url)
+        analyses.append(dit.analyze_image(p))
+    md = dit.build_image_md(detail, paths, analyses, url, img_dir_rel)
+    title = dit._sanitize((detail.get("desc") or "").strip()) or f"抖音图文_{aweme_id}"
+    ares = None
+    if analyze:
+        vp.set_progress("要点解析中", "qwen3:14b 摘要+要点+标签（约 20~60s）", url)
+        try:
+            dec = ca.analyze_and_decorate(md)
+            if isinstance(dec, dict) and dec.get("md"):
+                md, ares = dec["md"], dec
+        except Exception as e:
+            ares = {"error": str(e)[:200]}
+    vpath = ""
+    if write_vault:
+        os.makedirs(ART_VAULT, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        vpath = os.path.join(ART_VAULT, f"{ts}-{aweme_id}-{title}.md")
+        base, ext = os.path.splitext(vpath)
+        n = 1
+        while os.path.exists(vpath):
+            vpath = f"{base}-{n}{ext}"
+            n += 1
+        with io.open(vpath, "w", encoding="utf-8") as f:
+            f.write(md)
+    aid, _ = save_article(url, "douyin_imgtext", title, md, vault_path=vpath,
+                          source="抖音图文")
+    vp.set_progress("", "")
+    return {"id": aid, "ok": True, "platform": "douyin_imgtext",
+            "title": title, "md": md, "vault_path": vpath, "analyze": ares,
+            "images": len(paths)}
 _video_lock = threading.Lock()   # 视频流水线全局互斥：多请求串行，防 Ollama/CPU 争抢
 
 
@@ -599,6 +695,18 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
         for raw in urls:
             url = (raw or "").strip()
             if not url or url.startswith("#"):
+                continue
+            # --- 抖音图文帖分支：modal_id/note/slides 且 images 非空 → 图片采集管线 ---
+            if dit and dit.looks_like_imgtext_url(url):
+                try:
+                    rec = _ingest_douyin_images(url, write_vault=write_vault)
+                    rec["source_url"] = url
+                except Exception as e:
+                    rec = {"source_url": url, "ok": False,
+                           "error": f"{type(e).__name__}: {e}", "markdown": ""}
+                rec["source"] = "抖音图文"
+                rec["_icon"] = "🖼"
+                results.append(rec)
                 continue
             try:
                 vp.set_progress("下载中", "拉取视频直链/页面拦截…", url)
@@ -1011,6 +1119,10 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
                       follow=False, meta=None):
     """公众号/小红书/Twitter 采集 -> Markdown -> 推文外链跟进(可选) -> 第三步要点解析(可选) -> 可选写 Obsidian 库。"""
     plat = (platform or "").strip() or ai.detect_platform(url) or ""
+    # 抖音纯文本长文：CDP 渲染提取 → 原文入库 + 要点解析
+    if dit and dit.is_article_url(url):
+        return _ingest_douyin_article(url, write_vault=write_vault,
+                                      analyze=bool(analyze))
     # VOA 源只做「照搬」（音频+双语字幕+播放器），不做要点解析等任何解析任务
     if plat == "voa":
         analyze = False
