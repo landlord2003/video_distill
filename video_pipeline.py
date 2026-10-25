@@ -467,6 +467,31 @@ def _fmt_ts(sec):
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
+# ---------------- 转写纠错（输入质量层） ----------------
+# whisper 高频误听纠正表：只收高置信度错误（上下文无歧义的确定性误听），
+# 不确定的宁可不改——交给蒸馏 prompt 里的「依上下文自行纠正」。
+# 来源：2026-10-25 历史类视频实测误听（分治日本/雅尔塔/圣克鲁斯等），持续积累。
+_MISHEAR = [
+    ("分支日本", "分治日本"), ("分之日本", "分治日本"),
+    ("太平洋战争发生一转", "太平洋战争发生逆转"),
+    ("战争发生一转", "战争发生逆转"),
+    ("亚尔塔", "雅尔塔"),
+    ("东索罗门", "东所罗门"),
+    ("圣河鲁斯", "圣克鲁斯"),
+    ("能源声明线", "能源生命线"),
+    ("旧金山合约", "旧金山和约"),
+]
+
+
+def correct_transcript(text):
+    """按纠错表确定性替换 whisper 高频误听（转写入库与蒸馏共用的同一份文本）。"""
+    t = text or ""
+    for w, r in _MISHEAR:
+        if w in t:
+            t = t.replace(w, r)
+    return t
+
+
 def translate_segments_zh(segments, batch_size=15):
     """把英文字幕段批量翻译成中文（本地 qwen3:14b），返回与 segments 等长的中文列表。
 
@@ -629,6 +654,31 @@ def _split_transcript(transcript, size=DISTILL_CHUNK_CHARS):
             cur = f"{cur}\n{p}" if cur else p
     if cur:
         chunks.append(cur)
+    return chunks
+
+
+def _group_segments(segs, size=2500):
+    """时间轴分段：whisper 段落聚合为 ≤size 字的蒸馏块，带起始时间戳。
+
+    返回 [(起始秒, 文本), ...]；segs 为空返回 []。用于产出「mm:ss 章节」
+    时间锚（对齐抖音AI解析的章节形态）。
+    """
+    if not segs:
+        return []
+    chunks, cur, cur_start, total = [], [], None, 0
+    for (st, _en, tx) in segs:
+        tx = (tx or "").strip()
+        if not tx:
+            continue
+        if cur and total + len(tx) > size:
+            chunks.append((cur_start, "\n".join(cur)))
+            cur, cur_start, total = [], None, 0
+        if cur_start is None:
+            cur_start = st
+        cur.append(tx)
+        total += len(tx)
+    if cur:
+        chunks.append((cur_start, "\n".join(cur)))
     return chunks
 
 
@@ -894,11 +944,12 @@ def _rescue_summary(data, transcript):
 def _deterministic_summary(map_items, source_meta):
     """reduce 失败时的无模型兜底：直接用分段要点拼最终结构，绝不把原文塞进摘要。"""
     pts = []
-    for (_, p, _) in map_items:
+    for (_, _, p, _) in map_items:
         pts.extend(p)
-    concl = next((c for (_, _, c) in map_items if c), "")
-    chapters = [{"时间": f"第{i+1}段", "主题": th or "未命名"}
-                for i, (th, _, _) in enumerate(map_items) if th]
+    concl = next((c for (_, _, _, c) in map_items if c), "")
+    chapters = [{"时间": (_fmt_ts(st) if st is not None else f"第{i+1}段"),
+                 "主题": th or "未命名", "要点": p[:4]}
+                for i, (st, th, p, _) in enumerate(map_items) if th]
     return {
         "标题": source_meta.get("title") or "未命名视频",
         "摘要": ("。".join(pts[:6])[:200] if pts else "（蒸馏失败，请查看全文转写）"),
@@ -910,15 +961,39 @@ def _deterministic_summary(map_items, source_meta):
     }
 
 
-def summarize(transcript, frame_descs, source_meta):
+def _correct_data(data):
+    """纠错表同样应用于模型输出——qwen3:14b 自己也会写「亚尔塔」这类同音错
+    （实测：输入已纠正为「雅尔塔」，模型主题仍输出「亚尔塔」）。"""
+    for k in ("标题", "摘要", "关键结论"):
+        if data.get(k):
+            data[k] = correct_transcript(data[k])
+    if data.get("要点"):
+        data["要点"] = [correct_transcript(p) for p in data["要点"]]
+    for c in data.get("章节") or []:
+        if isinstance(c, dict):
+            c["主题"] = correct_transcript(c.get("主题") or "")
+            c["要点"] = [correct_transcript(p) for p in (c.get("要点") or [])]
+    return data
+
+
+def summarize(transcript, frame_descs, source_meta, segments=None):
     """结构化总结。长转写**自动分段蒸馏**（map-reduce），对使用者无感。
 
     - 转写 ≤ DISTILL_CHUNK_CHARS：单段直蒸（与原行为一致）
     - 更长：先逐段提取要点（map），再合并去重产出最终结构（reduce）
+    - segments（whisper 带时间轴分段）非空且转写 >2000 字时：按时间轴切
+      ≤1500 字/段做 map，产出「mm:ss 章节+分段要点」（对齐抖音AI解析形态；
+      转写更短或无 segments 时维持原行为，不给短视频硬加章节）
     返回 JSON dict，附加 "_distill_chunks"=实际分段数（1=未分段）。
     """
     descs_text = "\n".join(f"- {d}" for d in frame_descs) if frame_descs else "（无关键帧描述）"
-    chunks = _split_transcript(transcript or "")
+    tchunks = _group_segments(segments, 1500) if segments else []
+    if len(tchunks) >= 2 and sum(len(t) for _, t in tchunks) > 1500:
+        chunks = [t for _, t in tchunks]
+        starts = [st for st, _ in tchunks]
+    else:
+        chunks = _split_transcript(transcript or "")
+        starts = [None] * len(chunks)
     n = len(chunks)
     set_progress("总结中" if n == 1 else "蒸馏中",
                  f"转写 {len(transcript or '')} 字" + (f"，分 {n} 段蒸馏" if n > 1 else ""))
@@ -935,14 +1010,16 @@ def summarize(transcript, frame_descs, source_meta):
             data = _summarize_single(transcript[:12000], descs_text, source_meta)
             data["_distill_chunks"] = 1
             data = _rescue_summary(data, transcript)
-        return _ensure_summary_len(data, transcript)
+        return _correct_data(_ensure_summary_len(data, transcript))
 
     # ---- map：逐段蒸馏要点（纯文本协议，容错解析；不强迫模型吐 JSON） ----
-    map_items = []   # [(主题, [要点...], 关键结论), ...]
+    # map_items = [(起始秒|None, 主题, [要点...], 关键结论), ...]
+    map_items = []
     for i, ch in enumerate(chunks):
+        ts_head = f"（该段从视频 {_fmt_ts(starts[i])} 处开始）" if starts[i] is not None else ""
         set_progress("蒸馏中", f"第 {i+1}/{n} 段要点提取（qwen3:14b）")
         prompt = (
-            f"你是知识库整理助手。下面是一段长视频语音转写的第 {i+1}/{n} 段（共 {n} 段）。\n"
+            f"你是知识库整理助手。下面是一段长视频语音转写的第 {i+1}/{n} 段{ts_head}（共 {n} 段）。\n"
             "转写来自语音识别，可能存在同音字/错别字（人名、书名、专有名词尤甚），"
             "请依据上下文自行纠正后再提炼；无法确定的按原样保留。\n"
             "请输出纯文本（不要 JSON、不要代码块、不要任何解释），格式严格如下：\n"
@@ -956,20 +1033,20 @@ def summarize(transcript, frame_descs, source_meta):
         raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1200, keep_alive="10m")
         theme, pts, concl = _parse_map_output(raw)
         if pts:
-            map_items.append((theme, pts, concl))
+            map_items.append((starts[i], theme, pts, concl))
 
     # 全部分段都没提出要点：退化单段直蒸（截断兜底）
     if not map_items:
         data = _summarize_single(transcript[:12000], descs_text, source_meta)
         data["_distill_chunks"] = n
-        return _ensure_summary_len(data, transcript)
+        return _correct_data(_ensure_summary_len(data, transcript))
 
     # ---- reduce：合并为最终结构（纯文本协议；失败则用分段要点直接拼装，绝不用原文） ----
     seg_text = "\n\n".join(
         (f"【第{i+1}段「{th}」】\n" if th else f"【第{i+1}段】\n")
         + "\n".join(f"- {p}" for p in pts)
         + (f"\n关键结论：{c}" if c and c != "无" else "")
-        for i, (th, pts, c) in enumerate(map_items))
+        for i, (_, th, pts, c) in enumerate(map_items))
     prompt = (
         "你是知识库整理助手。下面是对一段长视频**分段蒸馏**后汇总的全部分段要点。"
         "请合并去重、按视频叙事顺序整理，输出纯文本（不要 JSON、不要代码块），格式严格如下：\n"
@@ -989,14 +1066,15 @@ def summarize(transcript, frame_descs, source_meta):
     if data["要点"]:
         data["标题"] = data["标题"] or (source_meta.get("title") or "未命名视频")
         data["摘要"] = data["摘要"] or "；".join(data["要点"][:3])[:150]
-        data["章节"] = [{"时间": f"第{i+1}段", "主题": th or "未命名"}
-                        for i, (th, _, _) in enumerate(map_items) if th]
+        data["章节"] = [{"时间": (_fmt_ts(st) if st is not None else f"第{i+1}段"),
+                         "主题": th or "未命名", "要点": pts[:4]}
+                        for i, (st, th, pts, _) in enumerate(map_items) if th]
         data["标签"] = data.get("标签") or []
     else:
         # reduce 失败：用分段要点确定性拼装，不再依赖模型
         data = _deterministic_summary(map_items, source_meta)
     data["_distill_chunks"] = n
-    return _ensure_summary_len(data, transcript)
+    return _correct_data(_ensure_summary_len(data, transcript))
 
 
 # ---------------- 拼装 Markdown ----------------
@@ -1081,9 +1159,17 @@ def build_markdown(meta, transcript, frame_descs, summary, frames, bilingual_blo
         lines.append("## 章节")
         lines.append("")
         for c in ch:
-            t = c.get("时间", "") if isinstance(c, dict) else ""
-            s = c.get("主题", "") if isinstance(c, dict) else str(c)
-            lines.append(f"- **{t}** {s}")
+            if isinstance(c, dict) and c.get("要点"):
+                # 时间锚章节 + 分段要点（对齐抖音AI解析形态）
+                lines.append(f"### {c.get('时间', '')} {c.get('主题', '')}".rstrip())
+                lines.append("")
+                for j, p in enumerate(c["要点"][:4], 1):
+                    lines.append(f"{j}. {p}")
+                lines.append("")
+            else:
+                t = c.get("时间", "") if isinstance(c, dict) else ""
+                s = c.get("主题", "") if isinstance(c, dict) else str(c)
+                lines.append(f"- **{t}** {s}")
     if frames:
         lines.append("")
         lines.append("## 关键帧")
@@ -1132,25 +1218,36 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
 
     bilingual_blocks = None
     transcript, terr = "", None
+    segs = None
     if bilingual:
         # 双语模式：带时间轴分段转写（语言自动检测）
         segs, lang, terr = transcribe_segments(video_path, model_size)
         if segs and lang == "zh":
             # 中文音频：无需英中对照，退回普通全文
-            transcript = "\n".join(t for (_, _, t) in segs)
+            transcript = correct_transcript("\n".join(t for (_, _, t) in segs))
             meta["lang"] = lang
         elif segs:
             # 非中文（英文等）音频：逐段翻译成中文，产出对照表
             zhs = translate_segments_zh(segs)
             bilingual_blocks = [(_fmt_ts(st), tx, zh) for (st, _, tx), zh in zip(segs, zhs)]
-            transcript = "\n".join(t for (_, _, t) in segs)
+            transcript = correct_transcript("\n".join(t for (_, _, t) in segs))
             meta["lang"] = lang
         else:
             # 分段转写失败，兜底普通全文转写
             transcript, terr = transcribe(video_path, model_size)
+            transcript = correct_transcript(transcript)
+            segs = None
     else:
-        # 1) 转写
-        transcript, terr = transcribe(video_path, model_size)
+        # 统一走带时间轴转写：产出「mm:ss 章节」时间锚（对齐抖音AI解析形态）
+        # + whisper 高频误听纠错（转写入库与蒸馏共用同一份文本）
+        segs, lang, terr = transcribe_segments(video_path, model_size)
+        if segs:
+            transcript = correct_transcript("\n".join(t for (_, _, t) in segs))
+            meta["lang"] = lang or ""
+        else:
+            transcript, terr = transcribe(video_path, model_size)
+            transcript = correct_transcript(transcript)
+            segs = None
     # 1.5) 关键帧抓取已取消（2026-10-14 用户拍板）：不再抽帧、不再跑 qwen3-vl 视觉理解，
     #      总结完全基于语音转写；extract_keyframes/describe_frames 函数保留但主流水线不再调用。
     #      抽帧耗时大（长视频 ffmpeg 解码 + 逐帧 VL 请求），而转写文本已含全部信息量。
@@ -1161,7 +1258,8 @@ def process_video(video_path, url="", source="", write_vault=True, model_size=TR
         zh_join = "\n".join(zh for (_, _, zh) in bilingual_blocks if zh)
         if len(zh_join) > 50:
             summarize_text = zh_join
-    summary = summarize(summarize_text, frame_descs, meta)
+    summary = summarize(summarize_text, frame_descs, meta,
+                        segments=None if bilingual_blocks else segs)
     # 4.5) 标签补强：jieba 基于【全量】转写提取关键词，与模型标签合并去重——
     #      模型标签可能空/质量不稳，关键词提取不受上下文窗口限制，覆盖全片
     try:
