@@ -377,7 +377,7 @@ def _ingest_douyin_images(url, write_vault=True, analyze=True, verbose=True):
     if not imgs:
         raise RuntimeError("该作品无 images 字段，不是图文帖")
     aweme_id = detail.get("aweme_id") or ""
-    img_dir = os.path.join(os.path.dirname(ART_VAULT), "images", "douyin")
+    img_dir = os.path.join(ART_VAULT, "images", "douyin")
     vp.set_progress("图片下载", f"共 {len(imgs)} 张原图…", url)
     paths = dit.download_images(detail, img_dir, verbose=verbose)
     if not paths:
@@ -681,6 +681,43 @@ class _DownloadHeartbeat:
         self._stop.set()
 
 
+def _append_douyin_ai_section(rec, url):
+    """抖音视频补充维度：抓官方 AI 解析（「章节要点」卡，页面标「内容由AI生成」），
+    追加到笔记与记录 markdown。任何失败只降级跳过，不影响主记录；
+    无 AI 解析（多数短视频没有该卡片）也静默跳过。"""
+    try:
+        vp.set_progress("AI解析补充", "抓取抖音AI章节要点…", url)
+        import douyin_auto as da
+        import time as _t
+        sec = ""
+        last_err = None
+        for i in range(2):
+            try:
+                detail = da.fetch_direct_url(url, verbose=False,
+                                             return_full=True, wait_secs=30)
+                sec = da.format_ai_section(da.extract_ai_chapters(detail))
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if i == 0:
+                    _t.sleep(35)
+        if last_err:
+            rec["ai_section_error"] = str(last_err)[:150]
+        if not sec:
+            return rec
+        if "抖音AI解析" not in (rec.get("markdown") or ""):
+            rec["markdown"] = (rec.get("markdown") or "").rstrip() + \
+                "\n\n---\n\n" + sec
+            vpath = rec.get("vault_path")
+            if vpath and os.path.isfile(vpath):
+                with io.open(vpath, "a", encoding="utf-8") as f:
+                    f.write("\n---\n\n" + sec)
+    except Exception as e:
+        rec["ai_section_error"] = str(e)[:150]
+    return rec
+
+
 def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint="",
                    skill_distill=False):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
@@ -728,6 +765,10 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
                                             source=rec_src,
                                             skill_distill=skill_distill)
                     rec["source_url"] = url
+                    # 抖音官方 AI 解析（章节要点）作为另一维度补充进记录；
+                    # 失败/无该卡片均静默跳过，不影响主记录
+                    if rec.get("ok") and "douyin.com" in url:
+                        rec = _append_douyin_ai_section(rec, url)
             except Exception as e:
                 rec = {"source_url": url, "ok": False,
                        "error": f"{type(e).__name__}: {e}", "markdown": ""}

@@ -409,6 +409,53 @@ def download_douyin_playwright(arg, out_dir, cookie_file=None, verbose=True):
     raise RuntimeError("下载失败（直链可能过期或需登录）")
 
 
+def extract_ai_chapters(detail):
+    """抖音官方 AI 解析（「章节要点」卡片，页面带「内容由AI生成」标记）。
+
+    数据源：aweme_detail.recommend_chapter_info
+      {chapter_abstract, recommend_chapter_list[{timestamp(ms), desc, detail,
+       points[{desc, detail, type}]}]}
+    fetch_direct_url(return_full=True) 返回的就是 aweme_detail 本体；
+    兼容外面再包一层 aweme_detail 的情况。无 AI 解析返回 {}。
+    """
+    if not isinstance(detail, dict):
+        return {}
+    aw = detail.get("aweme_detail") if isinstance(detail.get("aweme_detail"), dict) else detail
+    rc = aw.get("recommend_chapter_info") or {}
+    chs = []
+    for ch in (rc.get("recommend_chapter_list") or []):
+        title = (ch.get("desc") or "").strip()
+        pts = []
+        for p in (ch.get("points") or []):
+            d = (p.get("detail") or "").strip()
+            if not d:
+                continue
+            pd = (p.get("desc") or "").strip()
+            pts.append(f"{pd}\n{d}" if pd and pd not in d else d)
+        if title or pts:
+            ts = int(ch.get("timestamp") or 0) // 1000
+            chs.append({"ts": f"{ts // 60:02d}:{ts % 60:02d}",
+                        "title": title, "points": pts})
+    abstract = (rc.get("chapter_abstract") or "").strip()
+    if not abstract and not chs:
+        return {}
+    return {"abstract": abstract, "chapters": chs}
+
+
+def format_ai_section(ai: dict) -> str:
+    """AI 解析 dict -> markdown 小节；空内容返回空串。"""
+    if not ai or not (ai.get("abstract") or ai.get("chapters")):
+        return ""
+    lines = ["## 🤖 抖音AI解析（内容由AI生成）", ""]
+    if ai.get("abstract"):
+        lines += [ai["abstract"], ""]
+    for ch in (ai.get("chapters") or []):
+        lines += [f"### {ch.get('ts', '')} {ch.get('title', '')}".rstrip(), ""]
+        for p in ch.get("points") or []:
+            lines += [p, ""]
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def main():
     if len(sys.argv) < 2:
         print("用法: python douyin_auto.py <douyin_url_or_id> [out_dir]")
