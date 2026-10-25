@@ -271,6 +271,52 @@ def _analysis_worker(ids):
         _analysis_state["running"] = False
         _analysis_state["current"] = ""
 
+# ---------- 🗑 原件清理（工具箱功能卡③：videos_inbox 已入库原件选择性清理） ----------
+# 原则：抖音音乐/VOA 的媒体本体在 Obsidian 库内（在线播放用），不在此列；
+# 视频流水线（抖音/YouTube/B站/Twitter）成功入库后原始 mp4 留在 videos_inbox
+# 不进库，这里提供「进回收站」式清理——可恢复，不硬删。
+def _inbox_file_id(fn: str) -> str:
+    """从 inbox 文件名提取平台视频 id（新老命名兼容）。
+    新：dy_<id>.mp4 / yt_<id>.mp4 / bili_<id> / tw_<id>
+    老：<douyin_id>_标题.mp4（本地下载器早期命名）"""
+    m = re.match(r"(?:dy_|tw_)(\d{10,25})", fn)
+    if m:
+        return m.group(1)
+    m = re.match(r"yt_([A-Za-z0-9_\-]{5,20})[.\-_ ]", fn)
+    if m:
+        return m.group(1)
+    m = re.match(r"bili_([A-Za-z0-9]{6,20})", fn)
+    if m:
+        return m.group(1)
+    m = re.match(r"(\d{15,25})[_\-]", fn)
+    if m:
+        return m.group(1)
+    return ""
+
+def _inbox_rows():
+    """扫描 videos_inbox：文件大小/时间 + 是否已成功入库（status=done）。"""
+    out = []
+    with db() as c:
+        for fn in sorted(os.listdir(vp.INBOX)):
+            fp = os.path.join(vp.INBOX, fn)
+            if not os.path.isfile(fp):
+                continue
+            vid = _inbox_file_id(fn)
+            rec = None
+            if vid:
+                row = c.execute(
+                    "SELECT id, title FROM videos WHERE source_url LIKE ? "
+                    "AND status='done' ORDER BY created_at DESC LIMIT 1",
+                    (f"%{vid}%",)).fetchone()
+                if row:
+                    rec = {"id": row[0], "title": (row[1] or "")[:70]}
+            st = os.stat(fp)
+            out.append({"file": fn, "size": st.st_size,
+                        "mtime": datetime.datetime.fromtimestamp(st.st_mtime).strftime("%m-%d %H:%M"),
+                        "vid": vid, "done": bool(rec), "rec": rec})
+    out.sort(key=lambda x: (0 if x["done"] else 1, -x["size"]))
+    return out
+
 # ---------- DB ----------
 _lock = threading.Lock()
 _video_lock = threading.Lock()   # 视频流水线全局互斥：多请求串行，防 Ollama/CPU 争抢
@@ -1520,6 +1566,15 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/analysis/status":
             self._send(200, _analysis_state)
             return
+        if p == "/api/inbox/list":
+            try:
+                rows = _inbox_rows()
+            except Exception as e:
+                self._send(500, {"error": f"{type(e).__name__}: {e}"})
+                return
+            total = sum(r["size"] for r in rows)
+            self._send(200, {"files": rows, "total_size": total})
+            return
         if p == "/api/skillpack/status":
             self._send(200, _distill_state)
             return
@@ -1967,6 +2022,37 @@ class Handler(BaseHTTPRequestHandler):
                                        current="", results=[])
             threading.Thread(target=_analysis_worker, args=(safe,), daemon=True).start()
             self._send(200, {"ok": True, "total": len(safe)})
+            return
+        if self.path == "/api/inbox/delete":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            inbox_real = os.path.realpath(vp.INBOX)
+            safe = []
+            for fn in (data.get("files") or []):
+                fn = os.path.basename(str(fn))          # 只收文件名，防路径穿越
+                fp = os.path.join(vp.INBOX, fn)
+                if os.path.isfile(fp) and os.path.realpath(fp).startswith(inbox_real + os.sep):
+                    safe.append(fp)
+            if not safe:
+                self._send(400, {"error": "没有有效的待删文件"})
+                return
+            freed = sum(os.path.getsize(f) for f in safe)
+            try:
+                import _recycle
+                rc, aborted = _recycle.recycle(safe)
+            except Exception as e:
+                self._send(500, {"error": f"回收站调用失败: {type(e).__name__}: {e}"})
+                return
+            if rc != 0:
+                self._send(500, {"error": f"回收站返回码 {rc}" + ("（用户中止）" if aborted else "")})
+                return
+            left = [f for f in safe if os.path.exists(f)]
+            self._send(200, {"ok": True, "deleted": len(safe) - len(left),
+                             "failed": len(left), "freed": freed})
             return
         _rename_p, _, _rename_q = self.path.partition("?")
         _mg_dim = ("author" if "dim=author" in _rename_q

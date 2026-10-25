@@ -356,6 +356,7 @@
         <b>🧰 工具箱</b>
         <button class="btn toolbtn on" id="toolbtn-ana" onclick="pickTool('ana')">📌 要点解析回填</button>
         <button class="btn toolbtn" id="toolbtn-dsp" onclick="pickTool('dsp')">⚡ 技能包蒸馏</button>
+        <button class="btn toolbtn" id="toolbtn-inbox" onclick="pickTool('inbox')">🗑 原件清理</button>
         <span class="mut" id="toolhint" style="font-size:11px;flex:1;min-width:200px"></span>
       </div>
 
@@ -377,6 +378,25 @@
           <div id="ana-list"><div class="empty" style="padding:14px">点「扫描缺解析记录」开始，或切换到本页签自动扫描…</div></div>
         </div>
         <div id="ana-results"></div>
+      </div>
+
+      <!-- 工具③：原件清理 -->
+      <div id="tool-inbox" style="display:none;flex-direction:column;gap:12px">
+        <div class="dcard" style="padding:12px 14px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <b>🗑 原件清理</b>
+            <span class="mut" style="font-size:11px">抖音视频 / YouTube 等走视频流水线的来源：抓取→转写→蒸馏成功后，原始 mp4 留在 videos_inbox 中转站（<b>不进 Obsidian 库</b>，也不自动删除）。✅=已成功入库（笔记+转写全文都在，原件可放心删）；⚠=未匹配到入库记录（本地文件/未入库，建议保留）。删除走 <b>Windows 回收站</b>，误删可还原。</span>
+            <span style="flex:1"></span>
+            <button class="btn" onclick="loadInbox()">↻ 扫描</button>
+            <button class="btn" onclick="inboxSelDone()">全选已入库 ✅</button>
+            <button class="btn" onclick="inboxClear()">清空选择</button>
+            <button id="inbox-run" class="btn" style="padding:8px 18px;background:var(--red,#c0392b);border-color:var(--red,#c0392b);color:#fff" onclick="inboxRun()" disabled>🗑 删除选中 0 项</button>
+          </div>
+          <div id="inbox-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
+        </div>
+        <div class="dcard" style="padding:0">
+          <div id="inbox-list"><div class="empty" style="padding:14px">点「扫描」查看 videos_inbox…</div></div>
+        </div>
       </div>
 
       <!-- 工具②：技能包蒸馏（原有） -->
@@ -1907,9 +1927,78 @@ function pickTool(t){
   $('#toolbtn-dsp').classList.toggle('on', t==='dsp');
   $('#toolhint').textContent = t==='ana'
     ? '给记录中心缺「📌 要点解析」的已入库笔记补跑解析，原地写回并同步记录中心'
-    : '把存档笔记的转写全文蒸馏为 RIA 能力卡技能包，并同步 LifeQA 知识库';
+    : t==='dsp'
+    ? '把存档笔记的转写全文蒸馏为 RIA 能力卡技能包，并同步 LifeQA 知识库'
+    : '视频入库成功后原始 mp4 留在 videos_inbox（不进 Obsidian 库）；这里勾选删除进回收站，抖音音乐/VOA 媒体在库内不受影响';
   if(t==='ana'){ loadAnaCands(); pollAna(); }
-  else { loadDistillCands(); pollDistill(); }
+  else if(t==='dsp'){ loadDistillCands(); pollDistill(); }
+  else { loadInbox(); }
+}
+
+// ---------- 🗑 原件清理（工具箱功能卡③） ----------
+let _inboxFiles = [], _inboxSel = new Set();
+const _fmtSize = n => n > 1<<30 ? (n/1073741824).toFixed(2)+' GB' : n > 1<<20 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(0)+' KB';
+async function loadInbox(){
+  const box = $('#inbox-list');
+  box.innerHTML = '<div class="empty" style="padding:14px">扫描 videos_inbox…</div>';
+  try{
+    const d = await (await fetch('/api/inbox/list')).json();
+    if(d.error){ box.innerHTML = `<div class="empty" style="padding:14px">✗ ${esc(d.error)}</div>`; _updInboxRun(); return; }
+    _inboxFiles = d.files || [];
+    _inboxSel = new Set([..._inboxSel].filter(f => _inboxFiles.some(x => x.file === f)));
+    $('#inbox-status').textContent = `共 ${_inboxFiles.length} 个文件 · 合计 ${_fmtSize(d.total_size||0)}`;
+  }catch(e){ _inboxFiles = []; }
+  renderInbox();
+}
+function renderInbox(){
+  const box = $('#inbox-list');
+  if(!_inboxFiles.length){
+    box.innerHTML = '<div class="empty" style="padding:14px">✅ videos_inbox 是空的，没有可清理的原件</div>';
+    _updInboxRun(); return;
+  }
+  box.innerHTML = _inboxFiles.map((x,i)=>`
+    <div class="rec ${_inboxSel.has(x.file)?'sel':''}" onclick="inboxClick('${i}')">
+      <div class="ic">${x.done?'✅':'⚠'}</div>
+      <div style="flex:1;min-width:0">
+        <div class="t">${esc(x.file.length>60?'…'+x.file.slice(-58):x.file)}${_inboxSel.has(x.file)?'<span class="chip on" style="margin-left:6px">已选</span>':''}</div>
+        <div class="mut" style="font-size:11px">${x.done?('已入库：'+esc((x.rec&&x.rec.title)||'')):('未匹配到入库记录'+(x.vid?'（id '+x.vid+'）':''))} · ${x.mtime}</div>
+      </div>
+      <span class="mut" style="flex-shrink:0;font-size:12px">${_fmtSize(x.size)}</span>
+      <input type="checkbox" ${_inboxSel.has(x.file)?'checked':''} onclick="event.stopPropagation();inboxClick('${i}')" style="flex-shrink:0">
+    </div>`).join('');
+  _updInboxRun();
+}
+function _updInboxRun(){
+  const btn = $('#inbox-run');
+  const n = _inboxSel.size;
+  const bytes = _inboxFiles.filter(x=>_inboxSel.has(x.file)).reduce((s,x)=>s+x.size,0);
+  btn.textContent = n ? `🗑 删除选中 ${n} 项（${_fmtSize(bytes)}）进回收站` : '🗑 删除选中 0 项';
+  btn.disabled = !n;
+}
+function inboxClick(i){
+  const f = _inboxFiles[i].file;
+  _inboxSel.has(f) ? _inboxSel.delete(f) : _inboxSel.add(f);
+  renderInbox();
+}
+function inboxSelDone(){ _inboxFiles.filter(x=>x.done).forEach(x=>_inboxSel.add(x.file)); renderInbox(); }
+function inboxClear(){ _inboxSel.clear(); renderInbox(); }
+async function inboxRun(){
+  if(!_inboxSel.size) return;
+  const files = [..._inboxSel];
+  const bytes = _inboxFiles.filter(x=>_inboxSel.has(x.file)).reduce((s,x)=>s+x.size,0);
+  uiConfirm(`确认把选中的 ${files.length} 个视频原件（共 ${_fmtSize(bytes)}）移入 Windows 回收站？\n笔记与转写全文不受影响；回收站可还原。`,
+    async ()=>{
+      try{
+        const r = await fetch('/api/inbox/delete', {method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({files})});
+        const d = await r.json();
+        if(!r.ok){ alert(d.error || ('HTTP '+r.status)); return; }
+        _inboxSel.clear();
+        $('#inbox-status').textContent = `已删除 ${d.deleted} 项，释放 ${_fmtSize(d.freed||0)}` + (d.failed?`（${d.failed} 项失败）`:'');
+        loadInbox();
+      }catch(e){ alert('异常：'+e.message); }
+    });
 }
 
 // ---------- 📌 要点解析回填（工具箱功能卡①） ----------
