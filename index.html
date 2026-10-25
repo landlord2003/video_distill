@@ -683,10 +683,9 @@ async function runVideoPipe(){
     for(let i=0;i<urls.length;i++){
       go.textContent = `处理中 ${results.length+1}/${total}…`;
       curT0 = Date.now();
-      setP(`<b>正在处理第 ${i+1}/${urls.length} 条链接</b><br>
+      setP(`<b>正在处理第 ${i+1}/${urls.length} 条链接</b> <span id="pstage" class="mut" style="font-size:12px"></span><br>
         ⏱ 本条 <span id="pitem-t">0 秒</span> · 总用时 <span id="ptotal-t">0 秒</span><br>
-        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span><br>
-        <span id="pstage" class="mut" style="font-size:12px"></span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
       const itemT0 = Date.now();
       try{
         const r = await fetch('/api/video',{method:'POST',
@@ -754,9 +753,8 @@ async function runArticlePipe(){
     startStagePoll();
     for(let i=0;i<urls.length;i++){
       go.textContent = `采集中 ${i+1}/${urls.length}…`;
-      setP(`<b>正在采集第 ${i+1}/${urls.length} 条（${esc(s.name)}）</b><br>
-        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span><br>
-        <span id="pstage" class="mut" style="font-size:12px"></span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+      setP(`<b>正在采集第 ${i+1}/${urls.length} 条（${esc(s.name)}）</b> <span id="pstage" class="mut" style="font-size:12px"></span><br>
+        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
       try{
         const r = await fetch('/api/article',{method:'POST',
           headers:{'Content-Type':'application/json'},
