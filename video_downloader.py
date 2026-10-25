@@ -16,6 +16,7 @@
 """
 import os
 import re
+import socket
 import sys
 import time
 import shutil
@@ -320,22 +321,75 @@ def download_douyin(url: str, out_dir: str) -> str:
     )
 
 
-def _get_proxy():
-    """YouTube 下载代理来源：VIDEO_PROXY > HTTPS_PROXY/HTTP_PROXY > 项目内 proxy.txt。"""
+def _proxy_alive(proxy: str, timeout: float = 6.0) -> bool:
+    """代理可用性探测：TCP 通 + 真实经代理转发一次 HTTP 请求。
+    只测 TCP 不够——端口监听但转发挂了的代理会骗过连接测试（2026-10-25 坑）。"""
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(proxy)
+        host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
+        if not host:
+            return False
+        with socket.create_connection((host, port), timeout=timeout):
+            pass  # 先 TCP 探测，快速失败
+        import urllib.request
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        req = urllib.request.Request("http://www.gstatic.com/generate_204",
+                                     method="GET")
+        resp = opener.open(req, timeout=timeout)
+        return resp.status in (200, 204)
+    except Exception:
+        return False
+
+
+def _proxy_candidates():
+    """按优先级列出全部代理候选（去重、非空）。"""
+    out = []
     for k in ("VIDEO_PROXY", "HTTPS_PROXY", "HTTP_PROXY"):
         v = (os.environ.get(k) or "").strip()
         if v:
-            return v
+            out.append(v)
     pf = os.path.join(BASE, "proxy.txt")
     if os.path.isfile(pf):
         try:
             with open(pf, "r", encoding="utf-8") as f:
                 txt = f.read().strip()
             if txt:
-                return txt.splitlines()[0].strip()
+                out.append(txt.splitlines()[0].strip())
         except Exception:
             pass
+    return list(dict.fromkeys(out))
+
+
+def _get_proxy():
+    """YouTube 下载代理：按优先级取第一个「TCP 存活」的候选；全死返回 ''（直连兜底）。
+
+    坑位复盘（2026-10-25）：proxy.txt 里的代理进程退出后，yt-dlp 拿着死代理
+    连接被拒，报错只有 CalledProcessError exit 1，看不出根因。加存活探测：
+    死代理自动跳过走下一个候选，错误也更可读。"""
+    cands = _proxy_candidates()
+    for c in cands:
+        if _proxy_alive(c):
+            return c
+    if cands:
+        print(f"[warn] 代理候选全部不可达（{' , '.join(cands)}），降级直连尝试",
+              flush=True)
     return ""
+
+
+def _run_ytdlp(cmd, timeout: int = 1800):
+    """执行 yt-dlp：成功时把输出落 server.log；失败抛 RuntimeError 并带
+    stderr/stdout 尾部（原来只抛 CalledProcessError exit 1，无法排障）。"""
+    r = subprocess.run(cmd, timeout=timeout, env=dict(os.environ),
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        tail = "\n".join((r.stderr or r.stdout or "").strip().splitlines()[-10:])
+        raise RuntimeError(f"yt-dlp 下载失败（exit {r.returncode}）\n{tail}")
+    out = (r.stdout or "").strip()
+    if out:
+        print(out[-3000:], flush=True)
 
 
 def download_youtube(url: str, out_dir: str) -> str:
@@ -383,7 +437,7 @@ def download_youtube(url: str, out_dir: str) -> str:
         "--socket-timeout", "30",
         "-o", tmpl,
     ] + extra + [url]
-    subprocess.run(cmd, check=True, timeout=1800, env=dict(os.environ))
+    _run_ytdlp(cmd)
     picked = _pick(out_dir, None)
     # 清理 split 中间产物（yt_<id>.fNNN.mp4/.webm/.part），防止 inbox 无限膨胀。
     # 仅在已有合并成品（文件名不含 .fNNN）时才清，避免误删纯音轨兜底文件。
@@ -462,7 +516,7 @@ def download_bilibili(url: str, out_dir: str) -> str:
         "--no-warnings", "--socket-timeout", "30",
         "-o", tmpl,
     ] + extra + [url]
-    subprocess.run(cmd, check=True, timeout=1800, env=dict(os.environ))
+    _run_ytdlp(cmd)
     return _pick(out_dir, None)
 
 
@@ -501,7 +555,7 @@ def download_twitter(url: str, out_dir: str) -> str:
         "--no-warnings", "--socket-timeout", "30",
         "-o", tmpl,
     ] + extra + [url]
-    subprocess.run(cmd, check=True, timeout=1800, env=dict(os.environ))
+    _run_ytdlp(cmd)
     return _pick(out_dir, None)
 
 
