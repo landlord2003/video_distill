@@ -134,6 +134,10 @@ _profile_lock = threading.Lock()   # 主页采集互斥：playwright 实例只�
 _distill_state = {"running": False, "total": 0, "done": 0, "current": "", "results": []}
 _distill_lock = threading.Lock()   # 蒸馏互斥：Ollama 串行，防打爆
 
+# UI 弹窗驻留状态（预览浏览器失焦重载页面后恢复弹窗；服务端为权威存储，
+# 预览环境的 sessionStorage/localStorage 分区可能随回收清空）
+_ui_modal_state = {"fn": "", "args": [], "ts": 0}
+
 def _skillpack_vault_dirs():
     """候选笔记的两个来源目录（视频 vault + 文章 vault）"""
     return [d for d in dict.fromkeys([vp.VAULT, ART_VAULT]) if os.path.isdir(d)]
@@ -1435,6 +1439,9 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/skillpack/status":
             self._send(200, _distill_state)
             return
+        if p == "/api/ui/modal":
+            self._send(200, _ui_modal_state)
+            return
         if p == "/api/video/health":
             # 工具可用性自诊断：确认当前进程加载的是新代码、依赖齐全
             health = {"python": sys.executable, "tools": {}}
@@ -1779,6 +1786,24 @@ class Handler(BaseHTTPRequestHandler):
                         updated += 1
                     c.commit()
             self._send(200, {"ok": True, "updated": updated, "missing": missing})
+            return
+        if self.path == "/api/ui/modal":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            fn = str(data.get("fn") or "")
+            args = data.get("args") if isinstance(data.get("args"), list) else []
+            if re.fullmatch(r"[A-Za-z_$][\w$]{0,60}", fn):
+                _ui_modal_state["fn"] = fn
+                _ui_modal_state["args"] = [a for a in args
+                                           if isinstance(a, (str, int, float))][:6]
+            else:
+                _ui_modal_state.update(fn="", args=[])
+            _ui_modal_state["ts"] = int(datetime.datetime.now().timestamp() * 1000)
+            self._send(200, {"ok": True})
             return
         if self.path == "/api/skillpack/run":
             try:
