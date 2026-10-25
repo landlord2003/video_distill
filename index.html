@@ -356,6 +356,7 @@
         <b>🧰 工具箱</b>
         <button class="btn toolbtn on" id="toolbtn-ana" onclick="pickTool('ana')">📌 要点解析回填</button>
         <button class="btn toolbtn" id="toolbtn-dsp" onclick="pickTool('dsp')">⚡ 技能包蒸馏</button>
+        <button class="btn toolbtn" id="toolbtn-upg" onclick="pickTool('upg')">🔁 记录升级</button>
         <button class="btn toolbtn" id="toolbtn-inbox" onclick="pickTool('inbox')">🗑 原件清理</button>
         <span class="mut" id="toolhint" style="font-size:11px;flex:1;min-width:200px"></span>
       </div>
@@ -378,6 +379,26 @@
           <div id="ana-list"><div class="empty" style="padding:14px">点「扫描缺解析记录」开始，或切换到本页签自动扫描…</div></div>
         </div>
         <div id="ana-results"></div>
+      </div>
+
+      <!-- 工具④：记录升级（蒸馏升级+抖音AI解析回填） -->
+      <div id="tool-upg" style="display:none;flex-direction:column;gap:12px">
+        <div class="dcard" style="padding:12px 14px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <b>🔁 记录升级</b>
+            <span class="mut" style="font-size:11px">老视频记录按新流水线原地升级两件事：<b>蒸馏升级</b>=对转写全文重跑时间轴分段蒸馏（章节+分段要点，qwen3:14b 逐段约 30~60s）；<b>AI解析回填</b>=抓抖音官方「章节要点」卡（内容由AI生成）追加进笔记，仅对 douyin.com/video 链接生效。写回同步笔记+记录中心，失败的条目可稍后重跑。</span>
+            <span style="flex:1"></span>
+            <button class="btn" onclick="loadUpgCands()">↻ 扫描可升级记录</button>
+            <button class="btn" onclick="upgSelAll()">全选</button>
+            <button class="btn" onclick="upgClear()">清空选择</button>
+            <button id="upg-run" class="btn pri" onclick="upgRun()" disabled style="padding:8px 18px">🔁 升级选中 0 条</button>
+          </div>
+          <div id="upg-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
+        </div>
+        <div class="dcard" style="padding:0">
+          <div id="upg-list"><div class="empty" style="padding:14px">点「扫描可升级记录」开始…</div></div>
+        </div>
+        <div id="upg-results"></div>
       </div>
 
       <!-- 工具③：原件清理 -->
@@ -1943,16 +1964,21 @@ function pickTool(t){
   TOOL = t;
   $('#tool-ana').style.display = t==='ana' ? 'flex' : 'none';
   $('#tool-dsp').style.display = t==='dsp' ? 'flex' : 'none';
+  $('#tool-upg').style.display = t==='upg' ? 'flex' : 'none';
   $('#tool-inbox').style.display = t==='inbox' ? 'flex' : 'none';
   $('#toolbtn-ana').classList.toggle('on', t==='ana');
   $('#toolbtn-dsp').classList.toggle('on', t==='dsp');
+  $('#toolbtn-upg').classList.toggle('on', t==='upg');
   $('#toolhint').textContent = t==='ana'
     ? '给记录中心缺「📌 要点解析」的已入库笔记补跑解析，原地写回并同步记录中心'
     : t==='dsp'
     ? '把存档笔记的转写全文蒸馏为 RIA 能力卡技能包，并同步 LifeQA 知识库'
+    : t==='upg'
+    ? '老视频记录两件事：重跑时间轴分段蒸馏 + 抓抖音官方AI章节要点回填，原地写回笔记与记录中心'
     : '视频入库成功后原始 mp4 留在 videos_inbox（不进 Obsidian 库）；这里勾选删除进回收站，抖音音乐/VOA 媒体在库内不受影响';
   if(t==='ana'){ loadAnaCands(); pollAna(); }
   else if(t==='dsp'){ loadDistillCands(); pollDistill(); }
+  else if(t==='upg'){ loadUpgCands(); pollUpg(); }
   else { loadInbox(); }
 }
 
@@ -2099,6 +2125,88 @@ async function pollAna(){
     }
     if(d.running && !_anaTimer){ _anaTimer = setInterval(pollAna, 2000); }
     if(!d.running && _anaTimer){ clearInterval(_anaTimer); _anaTimer = null; _updAnaRun(); }
+  }catch(e){}
+}
+
+// ---------- 🔁 记录升级（工具箱功能卡④） ----------
+let _upgCands = [], _upgSel = new Set(), _upgTimer = null;
+async function loadUpgCands(){
+  const box = $('#upg-list');
+  box.innerHTML = '<div class="empty" style="padding:14px">扫描记录中心…</div>';
+  try{
+    const d = await (await fetch('/api/upgrade/candidates')).json();
+    if(d.error){ box.innerHTML = `<div class="empty" style="padding:14px">✗ ${esc(d.error)}</div>`; _updUpgRun(); return; }
+    _upgCands = d.candidates || [];
+    _upgSel = new Set([..._upgSel].filter(id => _upgCands.some(c => c.id === id)));
+  }catch(e){ _upgCands = []; }
+  renderUpgList();
+}
+function renderUpgList(){
+  const box = $('#upg-list');
+  if(!_upgCands.length){
+    box.innerHTML = '<div class="empty" style="padding:14px">✅ 记录中心没有待升级的视频记录，全部是新的</div>';
+    _updUpgRun(); return;
+  }
+  box.innerHTML = _upgCands.map((c,i)=>{
+    const acts = [c.need_distill?'🧠蒸馏':'', c.need_ai?'🤖AI解析':''].filter(Boolean).join(' + ');
+    return `
+    <div class="rec ${_upgSel.has(c.id)?'sel':''}" onclick="upgClick(${i})">
+      <div class="ic">🔁</div>
+      <div style="flex:1;min-width:0">
+        <div class="t">${esc(c.title)}${_upgSel.has(c.id)?'<span class="chip on" style="margin-left:6px">已选</span>':''}</div>
+        <div class="mut" style="font-size:11px">${esc(c.source||'未标来源')} · ${esc(c.created_at||'')} · 转写 ${c.chars.toLocaleString()} 字 · ${acts}</div>
+      </div>
+      <input type="checkbox" ${_upgSel.has(c.id)?'checked':''} onclick="event.stopPropagation();upgClick(${i})" style="flex-shrink:0">
+    </div>`;}).join('');
+  _updUpgRun();
+}
+function _updUpgRun(){
+  const btn = $('#upg-run');
+  btn.textContent = `🔁 升级选中 ${_upgSel.size} 条`;
+  btn.disabled = !_upgSel.size || _upgTimer;
+}
+function upgClick(i){
+  const c = _upgCands[i].id;
+  _upgSel.has(c) ? _upgSel.delete(c) : _upgSel.add(c);
+  renderUpgList();
+}
+function upgSelAll(){ _upgCands.forEach(c=>_upgSel.add(c.id)); renderUpgList(); }
+function upgClear(){ _upgSel.clear(); renderUpgList(); }
+async function upgRun(){
+  if(!_upgSel.size || _upgTimer) return;
+  const jobs = _upgCands.filter(c=>_upgSel.has(c.id))
+    .map(c=>({id:c.id, distill:!!c.need_distill, ai:!!c.need_ai}));
+  try{
+    const r = await fetch('/api/upgrade/run', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({jobs})});
+    const d = await r.json();
+    if(!r.ok){ alert(d.error || ('HTTP '+r.status)); return; }
+    _updUpgRun();
+    pollUpg();
+  }catch(e){ alert('异常：'+e.message); }
+}
+async function pollUpg(){
+  try{
+    const d = await (await fetch('/api/upgrade/status')).json();
+    $('#upg-status').textContent = d.running
+      ? `升级中 ${d.done}/${d.total}，当前：${d.current || '…'}（Ollama/抖音接口逐条处理，可切到其他页签，进度不会丢）`
+      : (d.total ? `批次完成：${d.done}/${d.total} · 笔记与记录中心已即时生效` : '');
+    if(d.results.length){
+      $('#upg-results').innerHTML = `
+        <div class="dcard"><div class="mut" style="padding:8px 14px 4px;font-size:11px">本批结果</div>
+        ${d.results.map(x=>`
+        <div class="rec" style="cursor:default">
+          <div class="ic">${x.ok?'✅':(x.reason?'⏭':'❌')}</div>
+          <div style="flex:1;min-width:0">
+            <div class="t">${esc(x.title || x.id || '')}</div>
+            <div class="mut" style="font-size:11px">${esc(x.ok ? (x.detail||'完成') : (x.reason || x.error || '失败'))}</div>
+          </div>
+          ${x.ok ? `<span class="chip ok">已写回</span>` : ''}
+        </div>`).join('')}</div>`;
+    }
+    if(d.running && !_upgTimer){ _upgTimer = setInterval(pollUpg, 2000); }
+    if(!d.running && _upgTimer){ clearInterval(_upgTimer); _upgTimer = null; _updUpgRun(); }
   }catch(e){}
 }
 

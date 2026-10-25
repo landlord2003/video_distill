@@ -272,6 +272,178 @@ def _analysis_worker(ids):
         _analysis_state["running"] = False
         _analysis_state["current"] = ""
 
+# ---------- 🔁 记录升级（工具箱功能卡④：旧视频蒸馏升级 + 抖音AI解析回填） ----------
+# 老记录入库时是「单段直蒸」旧解析 + 无抖音AI解析；此工具按新流水线原地升级：
+#   蒸馏升级 = 对「语音转写全文」重跑时间轴分段蒸馏（无 segments 时退化为第N段 map-reduce）
+#   AI回填   = 抓抖音官方「章节要点」卡（aweme_detail.recommend_chapter_info）追加
+_upg_state = {"running": False, "total": 0, "done": 0, "current": "", "results": []}
+_upg_lock = threading.Lock()
+_UPGRADE_MIN_CHARS = 1500   # 转写低于此长度不值得重蒸（单段直蒸与旧结果差异极小）
+
+def _extract_transcript(md):
+    """从笔记里抠「## 语音转写全文」正文（到下一个 ## 或 --- 为止）。"""
+    if "## 语音转写全文" not in md:
+        return ""
+    t = md.split("## 语音转写全文", 1)[1]
+    for stop in ("\n## ", "\n---\n"):
+        i = t.find(stop)
+        if i != -1:
+            t = t[:i]
+    return t.strip()
+
+def _render_summary_block(summary):
+    """把 summary dict 渲染成「## 摘要/要点/章节」区块（与 build_markdown 同格式）。"""
+    lines = ["## 摘要", "", summary.get("摘要") or "（无）"]
+    if summary.get("关键结论"):
+        lines += ["", f"> **关键结论：** {summary['关键结论']}"]
+    pts = summary.get("要点") or []
+    if pts:
+        lines += ["", "## 要点", ""] + [f"- {p}" for p in pts]
+    ch = summary.get("章节") or []
+    if ch:
+        lines += ["", "## 章节", ""]
+        for c in ch:
+            if isinstance(c, dict) and c.get("要点"):
+                lines.append(f"### {c.get('时间', '')} {c.get('主题', '')}".rstrip())
+                lines.append("")
+                for j, p in enumerate(c["要点"][:4], 1):
+                    lines.append(f"{j}. {p}")
+                lines.append("")
+            else:
+                t = c.get("时间", "") if isinstance(c, dict) else ""
+                s = c.get("主题", "") if isinstance(c, dict) else str(c)
+                lines.append(f"- **{t}** {s}")
+    if (summary.get("_distill_chunks") or 1) > 1:
+        lines += ["", f"> 🧠 分段蒸馏：全文较长，自动分 **{summary['_distill_chunks']}** 段蒸馏后合并（要点已覆盖全片）"]
+    return "\n".join(lines)
+
+def _replace_summary_region(md, block):
+    """把「## 摘要」起、到下一个保留章节（转写全文/关键帧/双语/AI解析）前的区域
+    整体替换为新蒸馏区块；标题头部与后续章节原样保留。"""
+    idx = md.find("## 摘要")
+    if idx == -1:
+        return md
+    nxt, end = len(md), len(md)
+    for head in ("\n## 语音转写全文", "\n## 关键帧", "\n## 双语字幕", "\n## 🤖"):
+        i = md.find(head, idx)
+        if i != -1 and i < end:
+            nxt = end = i
+    return md[:idx] + block + "\n" + md[end:]
+
+def _upgrade_candidates():
+    """扫描 videos 表：已入库、有 vault 文件，且至少缺「蒸馏升级」或「抖音AI解析」之一。"""
+    out = []
+    with db() as c:
+        rows = c.execute(
+            "SELECT id, title, source, created_at, source_url, vault_path FROM videos "
+            "WHERE status='done' AND vault_path!='' ORDER BY created_at DESC").fetchall()
+    for rid, title, source, created_at, url, vp_ in rows:
+        if not vp_ or not os.path.isfile(vp_):
+            continue
+        try:
+            with io.open(vp_, "r", encoding="utf-8") as f:
+                md = f.read()
+        except Exception:
+            continue
+        tr = _extract_transcript(md)
+        need_d = bool(tr) and len(tr) >= _UPGRADE_MIN_CHARS and "🧠 分段蒸馏" not in md
+        need_a = ("douyin.com/video" in (url or "")) and ("抖音AI解析" not in md)
+        if not (need_d or need_a):
+            continue
+        out.append({"id": rid, "title": (title or "")[:90], "source": source or "",
+                    "created_at": created_at or "",
+                    "need_distill": need_d, "need_ai": need_a,
+                    "chars": len(tr)})
+    return out
+
+def _upgrade_worker(jobs):
+    """后台串行升级：每条独立容错（与要点解析回填同策略）。
+    jobs: [{"id": 记录id, "distill": bool, "ai": bool}]"""
+    try:
+        for job in jobs:
+            rid = job["id"]
+            _upg_state["current"] = rid
+            item = {"id": rid, "title": rid}
+            try:
+                with db() as c:
+                    row = c.execute("SELECT title, vault_path, source_url FROM videos WHERE id=?",
+                                    (rid,)).fetchone()
+                if not row or not row[1] or not os.path.isfile(row[1]):
+                    item.update(ok=False, error="记录不存在或缺 vault 文件")
+                    _upg_state["results"].append(item)
+                    _upg_state["done"] += 1
+                    continue
+                title, vp_, url = row
+                item["title"] = (title or "")[:90]
+                with io.open(vp_, "r", encoding="utf-8") as f:
+                    vault_md = f.read()
+                rec_md_path = os.path.join(CRAWLS_DIR, "video_" + rid + ".md")
+                rec_md = ""
+                if os.path.isfile(rec_md_path):
+                    try:
+                        with io.open(rec_md_path, "r", encoding="utf-8") as f:
+                            rec_md = f.read()
+                    except Exception:
+                        rec_md = ""
+                notes = []
+                # ---- 蒸馏升级 ----
+                if job.get("distill"):
+                    tr = _extract_transcript(vault_md)
+                    if len(tr) < _UPGRADE_MIN_CHARS:
+                        notes.append("蒸馏跳过：转写过短")
+                    elif "🧠 分段蒸馏" in vault_md:
+                        notes.append("蒸馏跳过：已是分段蒸馏")
+                    else:
+                        _upg_state["current"] = f"{rid}（蒸馏中）"
+                        summary = vp.summarize(vp.correct_transcript(tr), [], {"title": title})
+                        if not (summary.get("要点") or (summary.get("摘要") or "").strip()):
+                            notes.append("蒸馏跳过：模型输出为空")
+                        else:
+                            block = _render_summary_block(summary)
+                            vault_md = _replace_summary_region(vault_md, block)
+                            if rec_md:
+                                rec_md = _replace_summary_region(rec_md, block)
+                            notes.append(f"蒸馏✅ {len(summary.get('要点') or [])}要点/"
+                                         f"{len(summary.get('章节') or [])}章节"
+                                         f"（分{summary.get('_distill_chunks', 1)}段）")
+                # ---- 抖音AI解析回填 ----
+                if job.get("ai") and "douyin.com/video" in (url or ""):
+                    if "抖音AI解析" in vault_md:
+                        notes.append("AI跳过：已有抖音AI解析")
+                    else:
+                        _upg_state["current"] = f"{rid}（抓AI解析）"
+                        rec = _append_douyin_ai_section(
+                            {"markdown": vault_md, "vault_path": vp_}, url)
+                        vault_md = rec.get("markdown") or vault_md
+                        if rec.get("ai_section_error"):
+                            notes.append(f"AI❌ {rec['ai_section_error'][:60]}")
+                        elif "抖音AI解析" in vault_md:
+                            # 同步追加到记录中心 md（vault 由 _append 内部已写）
+                            suffix = vault_md[len(vault_md.rstrip().rsplit("\n\n---\n\n", 1)[0]):] \
+                                if "\n\n---\n\n" in vault_md else ""
+                            if rec_md and "抖音AI解析" not in rec_md:
+                                rec_md = rec_md.rstrip() + suffix
+                            notes.append("AI✅ 抖音官方章节要点已追加")
+                        else:
+                            notes.append("AI跳过：该视频无AI解析卡")
+                # ---- 写回 ----
+                with io.open(vp_, "w", encoding="utf-8") as f:
+                    f.write(vault_md)
+                if rec_md:
+                    with io.open(rec_md_path, "w", encoding="utf-8") as f:
+                        f.write(rec_md)
+                with db() as c:
+                    c.execute("UPDATE videos SET md_len=? WHERE id=?",
+                              (len(rec_md or vault_md), rid))
+                item.update(ok=True, detail="；".join(notes) or "无操作")
+            except Exception as e:
+                item.update(ok=False, error=f"{type(e).__name__}: {e}")
+            _upg_state["results"].append(item)
+            _upg_state["done"] += 1
+    finally:
+        _upg_state["running"] = False
+        _upg_state["current"] = ""
+
 # ---------- 🗑 原件清理（工具箱功能卡③：videos_inbox 已入库原件选择性清理） ----------
 # 原则：抖音音乐/VOA 的媒体本体在 Obsidian 库内（在线播放用），不在此列；
 # 视频流水线（抖音/YouTube/B站/Twitter）成功入库后原始 mp4 留在 videos_inbox
@@ -1762,6 +1934,17 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/analysis/status":
             self._send(200, _analysis_state)
             return
+        if p == "/api/upgrade/candidates":
+            try:
+                cands = _upgrade_candidates()
+            except Exception as e:
+                self._send(500, {"error": f"{type(e).__name__}: {e}"})
+                return
+            self._send(200, {"candidates": cands})
+            return
+        if p == "/api/upgrade/status":
+            self._send(200, _upg_state)
+            return
         if p == "/api/inbox/list":
             try:
                 rows = _inbox_rows()
@@ -2221,6 +2404,38 @@ class Handler(BaseHTTPRequestHandler):
                                        current="", results=[])
             threading.Thread(target=_analysis_worker, args=(safe,), daemon=True).start()
             self._send(200, {"ok": True, "total": len(safe)})
+            return
+        if self.path == "/api/upgrade/run":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            # 白名单校验：只接受 DB 里真实存在且 vault 文件可读的记录 id
+            req = {str(j.get("id")): j for j in (data.get("jobs") or [])
+                   if j.get("id") and (j.get("distill") or j.get("ai"))}
+            safe = {}
+            with db() as c:
+                for rid in req:
+                    row = c.execute("SELECT vault_path FROM videos WHERE id=?",
+                                    (rid,)).fetchone()
+                    if row and row[0] and os.path.isfile(row[0]):
+                        safe[rid] = {"id": rid,
+                                     "distill": bool(req[rid].get("distill")),
+                                     "ai": bool(req[rid].get("ai"))}
+            jobs = list(safe.values())
+            if not jobs:
+                self._send(400, {"error": "没有有效的记录 id"})
+                return
+            with _upg_lock:
+                if _upg_state["running"]:
+                    self._send(409, {"error": "记录升级已在进行中，请等当前批次完成"})
+                    return
+                _upg_state.update(running=True, total=len(jobs), done=0,
+                                  current="", results=[])
+            threading.Thread(target=_upgrade_worker, args=(jobs,), daemon=True).start()
+            self._send(200, {"ok": True, "total": len(jobs)})
             return
         if self.path == "/api/inbox/delete":
             try:
