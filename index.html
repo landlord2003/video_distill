@@ -155,6 +155,7 @@
   .srccard .si{font-size:18px;margin-right:6px}
   .srccard .sn{font-weight:700;font-size:13px}
   .srccard .sk{color:var(--mut);font-size:11px;margin-top:2px}
+  .toolbtn.on{border-color:var(--acc);background:rgba(79,157,255,.14);color:var(--acc);font-weight:700}
   .hintbox{background:rgba(232,182,76,.06);border:1px solid rgba(232,182,76,.35);border-radius:8px;
            padding:8px 12px;font-size:12px;color:var(--mut);line-height:1.7;margin-top:10px}
   .hintbox b{color:var(--amber)}
@@ -178,8 +179,8 @@
       <button class="tab active" onclick="switchTab('pipe',this)">🚚 采集流水线</button>
       <button class="tab" onclick="switchTab('tts',this)">🔊 配音 TTS</button>
       <button class="tab" onclick="switchTab('rec',this)">📚 记录中心</button>
-      <button class="tab" onclick="switchTab('dsp',this)">⚡ 技能包蒸馏</button>
-      <span class="ver">v4.3 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · X长文全文抓取 · 三步要点解析 · 技能包蒸馏✓</span>
+      <button class="tab" onclick="switchTab('dsp',this)">🧰 工具箱</button>
+      <span class="ver">v4.4 · 统一流水线 · 抖音/YouTube/Twitter/公众号/小红书/B站/网页 · X长文全文抓取 · 三步要点解析 · 工具箱(要点解析回填/技能包蒸馏)</span>
     </div>
 
     <!-- ================= 采集流水线：所有来源共用同一套 流程 ================= -->
@@ -349,24 +350,54 @@
         </div>
       </div>
     </div>
-    <!-- ================= ⚡ 技能包蒸馏：对已存档笔记选择性蒸馏 ================= -->
+    <!-- ================= 🧰 工具箱：工具卡片页（要点解析回填 / 技能包蒸馏） ================= -->
     <div id="dsp-panel" style="display:none;flex-direction:column;gap:12px;overflow:auto;padding:14px">
-      <div class="dcard" style="padding:12px 14px">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <b>⚡ 技能包蒸馏</b>
-          <span class="mut" style="font-size:11px">把存档笔记的「语音转写全文」判定为方法论后，提取 RIA 能力卡（触发/步骤/案例/验收/避坑）→ 产出 <i>原名_技能包.md</i> 并同步 LifeQA 知识库。每条 20~90s，判定不过的秒过。</span>
-          <span style="flex:1"></span>
-          <button class="btn" onclick="loadDistillCands()">↻ 刷新候选</button>
-          <button class="btn" onclick="dspSelAll()">全选可蒸馏</button>
-          <button class="btn" onclick="dspClear()">清空选择</button>
-          <button id="dsp-run" class="btn pri" onclick="dspRun()" disabled style="padding:8px 18px">⚡ 蒸馏选中 0 条</button>
+      <div class="dcard" style="padding:10px 14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b>🧰 工具箱</b>
+        <button class="btn toolbtn on" id="toolbtn-ana" onclick="pickTool('ana')">📌 要点解析回填</button>
+        <button class="btn toolbtn" id="toolbtn-dsp" onclick="pickTool('dsp')">⚡ 技能包蒸馏</button>
+        <span class="mut" id="toolhint" style="font-size:11px;flex:1;min-width:200px"></span>
+      </div>
+
+      <!-- 工具①：要点解析回填 -->
+      <div id="tool-ana" style="display:flex;flex-direction:column;gap:12px">
+        <div class="dcard" style="padding:12px 14px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <b>📌 要点解析回填</b>
+            <span class="mut" style="font-size:11px">扫描记录中心已入库但缺「📌 要点解析」段的笔记（免解析来源已排除），补跑第三步解析（本机 qwen3:14b 出摘要+要点+标签）→ 原地写回笔记并同步记录中心。每条约 20~60s，失败的条目可稍后重跑。</span>
+            <span style="flex:1"></span>
+            <button class="btn" onclick="loadAnaCands()">↻ 扫描缺解析记录</button>
+            <button class="btn" onclick="anaSelAll()">全选</button>
+            <button class="btn" onclick="anaClear()">清空选择</button>
+            <button id="ana-run" class="btn pri" onclick="anaRun()" disabled style="padding:8px 18px">📌 回填选中 0 条</button>
+          </div>
+          <div id="ana-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
         </div>
-        <div id="dsp-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
+        <div class="dcard" style="padding:0">
+          <div id="ana-list"><div class="empty" style="padding:14px">点「扫描缺解析记录」开始，或切换到本页签自动扫描…</div></div>
+        </div>
+        <div id="ana-results"></div>
       </div>
-      <div class="dcard" style="padding:0">
-        <div id="dsp-list"><div class="empty" style="padding:14px">切换到本页签自动扫描存档笔记…</div></div>
+
+      <!-- 工具②：技能包蒸馏（原有） -->
+      <div id="tool-dsp" style="display:none;flex-direction:column;gap:12px">
+        <div class="dcard" style="padding:12px 14px">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <b>⚡ 技能包蒸馏</b>
+            <span class="mut" style="font-size:11px">把存档笔记的「语音转写全文」判定为方法论后，提取 RIA 能力卡（触发/步骤/案例/验收/避坑）→ 产出 <i>原名_技能包.md</i> 并同步 LifeQA 知识库。每条 20~90s，判定不过的秒过。</span>
+            <span style="flex:1"></span>
+            <button class="btn" onclick="loadDistillCands()">↻ 刷新候选</button>
+            <button class="btn" onclick="dspSelAll()">全选可蒸馏</button>
+            <button class="btn" onclick="dspClear()">清空选择</button>
+            <button id="dsp-run" class="btn pri" onclick="dspRun()" disabled style="padding:8px 18px">⚡ 蒸馏选中 0 条</button>
+          </div>
+          <div id="dsp-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
+        </div>
+        <div class="dcard" style="padding:0">
+          <div id="dsp-list"><div class="empty" style="padding:14px">点「刷新候选」扫描存档笔记…</div></div>
+        </div>
+        <div id="dsp-results"></div>
       </div>
-      <div id="dsp-results"></div>
     </div>
   </main>
 </div>
@@ -973,7 +1004,7 @@ function switchTab(t, btn){
   if(t!=='tts'){ checkVideoHealth(); }
   if(t==='tts'){ ttsCheck(); ttsLoadVoices(); }
   if(t==='rec'){ loadRecords(); }
-  if(t==='dsp'){ loadDistillCands(); pollDistill(); }
+  if(t==='dsp'){ pickTool(TOOL, true); }
 }
 
 // ---------- 折叠 ----------
@@ -1866,7 +1897,102 @@ function addTtsResult(d){
   box.prepend(el);
 }
 
-// ---------- ⚡ 技能包蒸馏（独立功能卡） ----------
+// ---------- 🧰 工具箱：工具切换 ----------
+let TOOL = 'ana';
+function pickTool(t){
+  TOOL = t;
+  $('#tool-ana').style.display = t==='ana' ? 'flex' : 'none';
+  $('#tool-dsp').style.display = t==='dsp' ? 'flex' : 'none';
+  $('#toolbtn-ana').classList.toggle('on', t==='ana');
+  $('#toolbtn-dsp').classList.toggle('on', t==='dsp');
+  $('#toolhint').textContent = t==='ana'
+    ? '给记录中心缺「📌 要点解析」的已入库笔记补跑解析，原地写回并同步记录中心'
+    : '把存档笔记的转写全文蒸馏为 RIA 能力卡技能包，并同步 LifeQA 知识库';
+  if(t==='ana'){ loadAnaCands(); pollAna(); }
+  else { loadDistillCands(); pollDistill(); }
+}
+
+// ---------- 📌 要点解析回填（工具箱功能卡①） ----------
+let _anaCands = [], _anaSel = new Set(), _anaTimer = null;
+async function loadAnaCands(){
+  const box = $('#ana-list');
+  box.innerHTML = '<div class="empty" style="padding:14px">扫描记录中心…</div>';
+  try{
+    const d = await (await fetch('/api/analysis/candidates')).json();
+    if(d.error){ box.innerHTML = `<div class="empty" style="padding:14px">✗ ${esc(d.error)}</div>`; _updAnaRun(); return; }
+    _anaCands = d.candidates || [];
+    _anaSel = new Set([..._anaSel].filter(id => _anaCands.some(c => c.id === id)));
+  }catch(e){ _anaCands = []; }
+  renderAnaList();
+}
+function renderAnaList(){
+  const box = $('#ana-list');
+  if(!_anaCands.length){
+    box.innerHTML = '<div class="empty" style="padding:14px">✅ 记录中心没有缺「要点解析」的笔记，全部齐了</div>';
+    _updAnaRun(); return;
+  }
+  box.innerHTML = _anaCands.map((c,i)=>`
+    <div class="rec ${_anaSel.has(c.id)?'sel':''}" onclick="anaClick(${i})">
+      <div class="ic">📌</div>
+      <div style="flex:1;min-width:0">
+        <div class="t">${esc(c.title)}${_anaSel.has(c.id)?'<span class="chip on" style="margin-left:6px">已选</span>':''}</div>
+        <div class="mut" style="font-size:11px">${esc(c.source||'未标来源')} · ${esc(c.created_at||'')} · 正文 ${c.chars.toLocaleString()} 字</div>
+      </div>
+      <input type="checkbox" ${_anaSel.has(c.id)?'checked':''} onclick="event.stopPropagation();anaClick(${i})" style="flex-shrink:0">
+    </div>`).join('');
+  _updAnaRun();
+}
+function _updAnaRun(){
+  const btn = $('#ana-run');
+  btn.textContent = `📌 回填选中 ${_anaSel.size} 条`;
+  btn.disabled = !_anaSel.size || _anaTimer;
+}
+function anaClick(i){
+  const c = _anaCands[i].id;
+  _anaSel.has(c) ? _anaSel.delete(c) : _anaSel.add(c);
+  renderAnaList();
+}
+function anaSelAll(){ _anaCands.forEach(c=>_anaSel.add(c.id)); renderAnaList(); }
+function anaClear(){ _anaSel.clear(); renderAnaList(); }
+async function anaRun(){
+  if(!_anaSel.size || _anaTimer) return;
+  try{
+    const r = await fetch('/api/analysis/run', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids:[..._anaSel]})});
+    const d = await r.json();
+    if(!r.ok){ alert(d.error || ('HTTP '+r.status)); return; }
+    _updAnaRun();
+    pollAna();
+  }catch(e){ alert('异常：'+e.message); }
+}
+async function pollAna(){
+  try{
+    const d = await (await fetch('/api/analysis/status')).json();
+    $('#ana-status').textContent = d.running
+      ? `回填中 ${d.done}/${d.total}，当前：${d.current || '…'}（Ollama 逐条解析，可切到其他页签，进度不会丢）`
+      : (d.total ? `批次完成：${d.done}/${d.total} · 记录中心详情已即时生效` : '');
+    if(d.results.length){
+      $('#ana-results').innerHTML = `
+        <div class="dcard"><div class="mut" style="padding:8px 14px 4px;font-size:11px">本批结果</div>
+        ${d.results.map(x=>`
+        <div class="rec" style="cursor:default">
+          <div class="ic">${x.ok?'✅':(x.reason?'⏭':'❌')}</div>
+          <div style="flex:1;min-width:0">
+            <div class="t">${esc(x.title || x.id || '')}</div>
+            <div class="mut" style="font-size:11px">${esc(x.ok ?
+              (`摘要：${x.summary || ''} · 要点 ${x.points || 0} 条${(x.tags&&x.tags.length)?` · 标签 ${x.tags.join('、')}`:''}`) :
+              (x.reason || x.error || '失败'))}</div>
+          </div>
+          ${x.ok ? `<span class="chip ok">已写回笔记</span>` : ''}
+        </div>`).join('')}</div>`;
+    }
+    if(d.running && !_anaTimer){ _anaTimer = setInterval(pollAna, 2000); }
+    if(!d.running && _anaTimer){ clearInterval(_anaTimer); _anaTimer = null; _updAnaRun(); }
+  }catch(e){}
+}
+
+// ---------- ⚡ 技能包蒸馏（工具箱功能卡②） ----------
 let _dspCands = [], _dspSel = new Set(), _dspTimer = null;
 async function loadDistillCands(){
   const box = $('#dsp-list');

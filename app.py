@@ -201,6 +201,76 @@ def _distill_worker(files):
         _distill_state["running"] = False
         _distill_state["current"] = ""
 
+# ---------- 📌 要点解析回填（工具箱功能卡①：给缺解析的已入库笔记补跑第三步） ----------
+_analysis_state = {"running": False, "total": 0, "done": 0, "current": "", "results": []}
+_analysis_lock = threading.Lock()
+
+def _analysis_candidates():
+    """扫描 articles 表：已入库、有 vault 文件、缺「📌 要点解析」段的记录。
+    排除免解析来源（抖音音乐=极简笔记照搬、VOA=照搬+播放器）。"""
+    out = []
+    with db() as c:
+        rows = c.execute(
+            "SELECT id, title, source, platform, created_at, vault_path FROM articles "
+            "WHERE status='done' AND vault_path!='' AND platform!='douyin_music' "
+            "AND (source IS NULL OR source NOT LIKE 'VOA%') "
+            "ORDER BY created_at DESC").fetchall()
+    for rid, title, source, platform, created_at, vp_ in rows:
+        if not vp_ or not os.path.isfile(vp_):
+            continue
+        try:
+            with io.open(vp_, "r", encoding="utf-8") as f:
+                md = f.read()
+        except Exception:
+            continue
+        if "📌 要点解析" in md or len(md) < ca.MIN_TEXT_CHARS:
+            continue
+        out.append({"id": rid, "title": (title or "")[:90], "source": source or "",
+                    "created_at": created_at or "", "chars": len(md)})
+    return out
+
+def _analysis_worker(ids):
+    """后台串行回填：读 vault md → analyze_and_decorate → 原地写回 + 同步 md_len。
+    每条独立容错，一条失败不拖垮整批（与蒸馏批次同策略）。"""
+    try:
+        for aid in ids:
+            _analysis_state["current"] = aid
+            item = {"id": aid, "title": aid}
+            try:
+                with db() as c:
+                    row = c.execute("SELECT title, vault_path FROM articles WHERE id=?",
+                                    (aid,)).fetchone()
+                if not row or not row[1] or not os.path.isfile(row[1]):
+                    item.update(ok=False, error="记录不存在或缺 vault 文件")
+                else:
+                    item["title"] = (row[0] or "")[:90]
+                    with io.open(row[1], "r", encoding="utf-8") as f:
+                        md = f.read()
+                    if "📌 要点解析" in md:
+                        item.update(ok=False, reason="已含要点解析，跳过")
+                    else:
+                        dec = ca.analyze_and_decorate(md)
+                        res = dec["analyze"]
+                        if not res.get("ok"):
+                            item.update(ok=False, error=res.get("error", "解析输出为空"))
+                        else:
+                            with io.open(row[1], "w", encoding="utf-8") as f:
+                                f.write(dec["md"])
+                            with db() as c:
+                                c.execute("UPDATE articles SET md_len=? WHERE id=?",
+                                          (len(dec["md"]), aid))
+                            item.update(ok=True, summary=(res.get("summary") or "")[:80],
+                                        points=len(res.get("points") or []),
+                                        tags=res.get("tags") or [],
+                                        md_len=len(dec["md"]))
+            except Exception as e:
+                item.update(ok=False, error=f"{type(e).__name__}: {e}")
+            _analysis_state["results"].append(item)
+            _analysis_state["done"] += 1
+    finally:
+        _analysis_state["running"] = False
+        _analysis_state["current"] = ""
+
 # ---------- DB ----------
 _lock = threading.Lock()
 _video_lock = threading.Lock()   # 视频流水线全局互斥：多请求串行，防 Ollama/CPU 争抢
@@ -1436,6 +1506,20 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, {"candidates": cands})
             return
+        if p == "/api/analysis/candidates":
+            if ca is None:
+                self._send(500, {"error": "content_analyze 模块未加载"})
+                return
+            try:
+                cands = _analysis_candidates()
+            except Exception as e:
+                self._send(500, {"error": f"{type(e).__name__}: {e}"})
+                return
+            self._send(200, {"candidates": cands})
+            return
+        if p == "/api/analysis/status":
+            self._send(200, _analysis_state)
+            return
         if p == "/api/skillpack/status":
             self._send(200, _distill_state)
             return
@@ -1851,6 +1935,37 @@ class Handler(BaseHTTPRequestHandler):
                 _distill_state.update(running=True, total=len(safe), done=0,
                                       current="", results=[])
             threading.Thread(target=_distill_worker, args=(safe,), daemon=True).start()
+            self._send(200, {"ok": True, "total": len(safe)})
+            return
+        if self.path == "/api/analysis/run":
+            if ca is None:
+                self._send(500, {"error": "content_analyze 模块未加载"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            ids = [str(x) for x in (data.get("ids") or [])]
+            # 白名单校验：只接受 DB 里真实存在且 vault 文件可读的记录 id，防注入任意路径
+            safe = []
+            with db() as c:
+                for aid in ids:
+                    row = c.execute("SELECT vault_path FROM articles WHERE id=?",
+                                    (aid,)).fetchone()
+                    if row and row[0] and os.path.isfile(row[0]):
+                        safe.append(aid)
+            if not safe:
+                self._send(400, {"error": "没有有效的记录 id"})
+                return
+            with _analysis_lock:
+                if _analysis_state["running"]:
+                    self._send(409, {"error": "要点解析回填已在进行中，请等当前批次完成"})
+                    return
+                _analysis_state.update(running=True, total=len(safe), done=0,
+                                       current="", results=[])
+            threading.Thread(target=_analysis_worker, args=(safe,), daemon=True).start()
             self._send(200, {"ok": True, "total": len(safe)})
             return
         _rename_p, _, _rename_q = self.path.partition("?")
