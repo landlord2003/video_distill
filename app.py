@@ -572,6 +572,7 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
             if not url or url.startswith("#"):
                 continue
             try:
+                vp.set_progress("下载中", "拉取视频直链/页面拦截…", url)
                 path, err = vdl.download_one(url, vp.INBOX)
                 # 来源：URL 可推断优先，否则用发起页提示（直链/短链场景）
                 rec_src = detect_source_name(url) or source_hint
@@ -579,6 +580,7 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
                     rec = {"source_url": url, "ok": False,
                            "error": err or "下载失败", "markdown": ""}
                 else:
+                    vp.set_progress("准备转写", f"文件 {os.path.basename(path)}", url)
                     rec = do_video_pipeline(url, path, write_vault,
                                             bilingual=bilingual,
                                             first_frame_only=first_frame_only,
@@ -1025,15 +1027,18 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
     if write_vault and plat in ("xhs", "twitter", "wechat", "voa", "zhihu"):
         # 图片本地化目录：<vault>/images/<platform>/（CDN 外链带时效 token/防盗链，会失效）
         img_dir = os.path.join(ART_VAULT, "images", plat)
+    vp.set_progress("抓取中", f"{plat or '网页'} 页面渲染与正文提取…", url)
     out = ai.ingest(url, img_dir=img_dir if img_dir else None, meta=meta)
     # 公众号 md 里的远程图不落地（wechat_fetch 不支持 img_dir），入库前统一本地化
     if write_vault and plat == "wechat" and out.get("md"):
+        vp.set_progress("图片本地化", "公众号远程图转存知识库…", url)
         out["md"], _n_img = _localize_md_images(
             out["md"], img_dir, ART_VAULT)
     # 全平台 OCR 兜底：正文纯文字过短且图已本地化（如 Twitter 纯图推文、
     # 公众号纯图文章、小红书图片型笔记）→ 本地 qwen3-vl 补文字，任何源通用
     ocr_info = ""
     if write_vault and out.get("md") and img_dir:
+        vp.set_progress("OCR 兜底", "检测短正文/纯图笔记，必要时 qwen3-vl 识别", url)
         out["md"], ocr_info = _maybe_ocr_images(out["md"], ART_VAULT)
     follow_info = ""
     if follow and out.get("platform") == "twitter":
@@ -1064,6 +1069,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
     ares = None
     if analyze and out.get("md"):
         try:
+            vp.set_progress("要点解析中", "qwen3:14b 摘要+要点+标签（约 20~60s）", url)
             dec = ca.analyze_and_decorate(out["md"])
             out["md"] = dec["md"]
             ares = dec["analyze"]
@@ -1071,6 +1077,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
             ares = {"ok": False, "error": str(_ae)[:200]}
     vpath = ""
     if write_vault and out.get("md"):
+        vp.set_progress("落库中", "写 Obsidian 知识库…", url)
         os.makedirs(ART_VAULT, exist_ok=True)
         vpath = os.path.join(ART_VAULT, out["filename"])
         # 同名文件加序号，避免覆盖历史
@@ -1574,6 +1581,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             total = sum(r["size"] for r in rows)
             self._send(200, {"files": rows, "total_size": total})
+            return
+        if p == "/api/video/progress":
+            self._send(200, vp.get_progress())
             return
         if p == "/api/skillpack/status":
             self._send(200, _distill_state)

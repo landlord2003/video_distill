@@ -642,6 +642,24 @@ function _pipeOpts(){
 }
 
 // --- 视频类来源（抖音/YouTube/B站）：逐条 下载→转写→蒸馏→入库 ---
+// --- 服务端流水线阶段轮询：显示当前在 下载/转写/蒸馏/抓取/解析 哪一步 ---
+let _stageTimer = null;
+function startStagePoll(){
+  stopStagePoll();
+  _stageTimer = setInterval(async ()=>{
+    try{
+      const d = await (await fetch('/api/video/progress')).json();
+      const el = $('#pstage'); if(!el || !d.stage) return;
+      if(d.stale){ el.innerHTML = ''; return; }
+      el.innerHTML = `📍 <b>${esc(d.stage)}</b>${d.detail?' · '+esc(d.detail):''}`;
+    }catch(e){}
+  }, 2000);
+}
+function stopStagePoll(){
+  if(_stageTimer){ clearInterval(_stageTimer); _stageTimer = null; }
+  const el = $('#pstage'); if(el) el.innerHTML = '';
+}
+
 async function runVideoPipe(){
   const s = SOURCES[SRC];
   const urls = $('#purls').value.split('\n').map(x=>x.trim()).filter(x=>x && !x.startsWith('#'));
@@ -661,12 +679,14 @@ async function runVideoPipe(){
   }, 1000);
   const doneMsgs = [];
   try{
+    startStagePoll();
     for(let i=0;i<urls.length;i++){
       go.textContent = `处理中 ${results.length+1}/${total}…`;
       curT0 = Date.now();
       setP(`<b>正在处理第 ${i+1}/${urls.length} 条链接</b><br>
         ⏱ 本条 <span id="pitem-t">0 秒</span> · 总用时 <span id="ptotal-t">0 秒</span><br>
-        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span><br>
+        <span id="pstage" class="mut" style="font-size:12px"></span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
       const itemT0 = Date.now();
       try{
         const r = await fetch('/api/video',{method:'POST',
@@ -716,7 +736,7 @@ async function runVideoPipe(){
     $('#s4sub').textContent = '完成';
     setBar(100);
   }catch(e){ setP('✗ '+esc(e.message)); $('#s4sub').textContent = '出错'; }
-  finally{ clearInterval(timerId); go.disabled = false; go.textContent = '▶ 运行流水线'; }
+  finally{ clearInterval(timerId); stopStagePoll(); go.disabled = false; go.textContent = '▶ 运行流水线'; }
 }
 
 // --- 文章类来源（公众号/小红书/Twitter）：逐条 抓取→清洗→图片本地化→入库 ---
@@ -731,10 +751,12 @@ async function runArticlePipe(){
   let results = []; const doneMsgs = [];
   const t0 = Date.now();
   try{
+    startStagePoll();
     for(let i=0;i<urls.length;i++){
       go.textContent = `采集中 ${i+1}/${urls.length}…`;
       setP(`<b>正在采集第 ${i+1}/${urls.length} 条（${esc(s.name)}）</b><br>
-        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
+        <span style="font-size:11px">${esc(urls[i].slice(0,70))}</span><br>
+        <span id="pstage" class="mut" style="font-size:12px"></span>${doneMsgs.length?('<br>'+doneMsgs.join('<br>')):''}`);
       try{
         const r = await fetch('/api/article',{method:'POST',
           headers:{'Content-Type':'application/json'},
@@ -772,7 +794,7 @@ async function runArticlePipe(){
     $('#s4sub').textContent = '完成';
     setBar(100);
   }catch(e){ setP('✗ '+esc(e.message)); $('#s4sub').textContent = '出错'; }
-  finally{ go.disabled = false; go.textContent = '▶ 运行流水线'; }
+  finally{ stopStagePoll(); go.disabled = false; go.textContent = '▶ 运行流水线'; }
 }
 
 // --- 音乐类来源（抖音音乐）：逐条 拦直链→下载落地→极简笔记入库（免解析） ---
@@ -1923,6 +1945,7 @@ function pickTool(t){
   TOOL = t;
   $('#tool-ana').style.display = t==='ana' ? 'flex' : 'none';
   $('#tool-dsp').style.display = t==='dsp' ? 'flex' : 'none';
+  $('#tool-inbox').style.display = t==='inbox' ? 'flex' : 'none';
   $('#toolbtn-ana').classList.toggle('on', t==='ana');
   $('#toolbtn-dsp').classList.toggle('on', t==='dsp');
   $('#toolhint').textContent = t==='ana'

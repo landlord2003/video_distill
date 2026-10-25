@@ -51,6 +51,23 @@ for _d in (INBOX, FRAMES, VAULT):
     os.makedirs(_d, exist_ok=True)
 
 
+# ---------------- 流水线进度（进度栏实时显示当前阶段：下载/转写/蒸馏） ----------------
+# 全局单槽即可：_video_lock 保证同一时刻只有一条流水线在跑，后写覆盖前写。
+_progress = {"stage": "", "detail": "", "url": "", "ts": 0}
+
+def set_progress(stage, detail="", url=""):
+    """更新流水线当前阶段（任意线程可调）。"""
+    _progress.update({"stage": stage, "detail": str(detail)[:160],
+                      "url": str(url)[:120], "ts": time.time()})
+
+def get_progress():
+    """读取当前进度；60s 无更新视为过期（前端据此显示空闲）。"""
+    p = dict(_progress)
+    if p["ts"] and time.time() - p["ts"] > 60:
+        p["stale"] = True
+    return p
+
+
 # ---------------- ffmpeg ----------------
 def get_ffmpeg():
     try:
@@ -380,10 +397,17 @@ def transcribe(video_path, model_size=TRANSCRIBE_MODEL):
     def _work():
         try:
             model = _get_whisper(model_size)
+            set_progress("转写中", "模型加载/语言检测中…")
             # 语言自动检测：任何语种音频都全量转写，不再强制中文
             # （强制 zh 会让英文等外语视频被硬解码成中文碎片，整段失真）
             segs, _ = model.transcribe(video_path, beam_size=5)
-            result["text"] = "\n".join(s.text for s in segs).strip()
+            cnt, texts = 0, []
+            for s in segs:
+                texts.append(s.text)
+                cnt += 1
+                if cnt % 10 == 0:
+                    set_progress("转写中", f"已完成 {cnt} 段语音识别")
+            result["text"] = "\n".join(texts).strip()
         except Exception as e:
             import traceback
             traceback.print_exc()  # 完整堆栈进服务日志，便于事后排查
@@ -896,6 +920,8 @@ def summarize(transcript, frame_descs, source_meta):
     descs_text = "\n".join(f"- {d}" for d in frame_descs) if frame_descs else "（无关键帧描述）"
     chunks = _split_transcript(transcript or "")
     n = len(chunks)
+    set_progress("总结中" if n == 1 else "蒸馏中",
+                 f"转写 {len(transcript or '')} 字" + (f"，分 {n} 段蒸馏" if n > 1 else ""))
 
     if n == 1:
         data = _summarize_single(transcript[:12000], descs_text, source_meta)
@@ -914,6 +940,7 @@ def summarize(transcript, frame_descs, source_meta):
     # ---- map：逐段蒸馏要点（纯文本协议，容错解析；不强迫模型吐 JSON） ----
     map_items = []   # [(主题, [要点...], 关键结论), ...]
     for i, ch in enumerate(chunks):
+        set_progress("蒸馏中", f"第 {i+1}/{n} 段要点提取（qwen3:14b）")
         prompt = (
             f"你是知识库整理助手。下面是一段长视频语音转写的第 {i+1}/{n} 段（共 {n} 段）。\n"
             "转写来自语音识别，可能存在同音字/错别字（人名、书名、专有名词尤甚），"
@@ -956,6 +983,7 @@ def summarize(transcript, frame_descs, source_meta):
         "关键结论：<全片最核心的可执行结论或金句>\n\n"
         f"【分段要点汇总（共{n}段）】\n{seg_text}\n"
     )
+    set_progress("蒸馏中", f"{n} 段要点合并去重")
     raw = _ollama_generate(SUMMARY_MODEL, prompt, timeout=1800, keep_alive="10m")
     data = _parse_reduce_output(raw)
     if data["要点"]:
