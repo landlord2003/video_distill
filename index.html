@@ -650,7 +650,7 @@ function startStagePoll(){
     try{
       const d = await (await fetch('/api/video/progress')).json();
       const el = $('#pstage'); if(!el || !d.stage) return;
-      if(d.stale){ el.innerHTML = ''; return; }
+      if(d.stale){ el.innerHTML = `📍 <b>${esc(d.stage)}</b>${d.detail?' · '+esc(d.detail):''} <span class="mut">（该阶段耗时较长，仍在进行）</span>`; return; }
       el.innerHTML = `📍 <b>${esc(d.stage)}</b>${d.detail?' · '+esc(d.detail):''}`;
     }catch(e){}
   }, 2000);

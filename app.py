@@ -17,6 +17,7 @@ import sqlite3
 import re
 import html
 import datetime
+import time
 import asyncio
 import urllib.parse
 import threading
@@ -556,6 +557,34 @@ def _parse_count_spec(spec, default=50):
         raise ValueError(f"数量格式不识别：{s}（支持 50 / 0 / 1-20 / 20-70 / 70-）")
 
 
+class _DownloadHeartbeat:
+    """下载期间每 10s 刷新「下载中」进度（监视 inbox 内 .part 增长）。
+
+    防止长视频下载几十分钟无更新，被前端 60s stale 判定清空阶段显示。
+    """
+    def __init__(self, url):
+        self._url = url
+        self._stop = threading.Event()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        t0 = time.time()
+        while not self._stop.wait(10):
+            try:
+                parts = [f for f in os.listdir(vp.INBOX)
+                         if f.endswith((".part", ".ytdl", ".tmp"))]
+                sz = sum(os.path.getsize(os.path.join(vp.INBOX, f)) for f in parts)
+                if sz:
+                    vp.set_progress("下载中", f"已下载 {sz/1e6:.0f} MB…", self._url)
+                else:
+                    vp.set_progress("下载中", f"下载进行中 {int(time.time()-t0)} 秒…", self._url)
+            except Exception:
+                pass
+
+    def stop(self):
+        self._stop.set()
+
+
 def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint="",
                    skill_distill=False):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
@@ -573,7 +602,11 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
                 continue
             try:
                 vp.set_progress("下载中", "拉取视频直链/页面拦截…", url)
-                path, err = vdl.download_one(url, vp.INBOX)
+                hb = _DownloadHeartbeat(url)
+                try:
+                    path, err = vdl.download_one(url, vp.INBOX)
+                finally:
+                    hb.stop()
                 # 来源：URL 可推断优先，否则用发起页提示（直链/短链场景）
                 rec_src = detect_source_name(url) or source_hint
                 if not path:
@@ -598,6 +631,8 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
             except Exception as se:
                 rec["save_error"] = str(se)[:200]
             results.append(rec)
+    # 批次结束：清空进度状态，避免进度栏永远挂着最后一个阶段
+    vp.set_progress("", "")
     return results
 
 
@@ -1091,6 +1126,7 @@ def do_article_ingest(url, write_vault=True, platform="", analyze=False,
     aid, _ = save_article(url, out.get("platform", ""), out.get("title", ""),
                           out.get("md", ""), vault_path=vpath,
                           source=out.get("source", ""))
+    vp.set_progress("", "")  # 单条结束清空进度，避免进度栏挂着旧阶段
     return {"id": aid, "ok": True, "platform": out.get("platform", ""),
             "title": out.get("title", ""), "md": out.get("md", ""),
             "vault_path": vpath, "analyze": ares, "follow": follow_info,
