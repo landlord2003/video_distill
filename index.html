@@ -371,7 +371,7 @@
   </main>
 </div>
 <!-- 通用模态弹窗 -->
-<div id="mback" class="mback" onclick="if(event.target===this)hideModal()"><div class="mpanel" id="mpanel"></div></div>
+<div id="mback" class="mback" title="点击遮罩不关闭（预览浏览器会把激活窗口的点击交给页面，误触关闭）"><div class="mpanel" id="mpanel"></div></div>
 <script>
 const $ = s => document.querySelector(s);
 
@@ -998,7 +998,12 @@ function hideModal(){
   _mmLast = null;
   _mmDismissedAt = Date.now();
   try{ sessionStorage.removeItem('_mm_resume'); localStorage.removeItem('_mm_resume'); }catch(e){}
-  _mmSync(null, 'close');
+  // 带调用栈上报：定位"谁在失焦后调用了关闭"
+  try{
+    const st = (new Error().stack || '').split('\n').slice(1, 7).join(' <= ').trim();
+    fetch('/api/ui/modal', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ev:'close', stack: st})}).catch(()=>{});
+  }catch(e){}
 }
 // ---------- 弹窗驻留（内置预览浏览器失焦会重载/回收页面，恢复后自动重开上次弹窗） ----------
 // 三层恢复：sessionStorage → localStorage(5min TTL) → 服务端 /api/ui/modal（权威，10min TTL）。

@@ -1813,7 +1813,9 @@ class Handler(BaseHTTPRequestHandler):
                         _lines = f.readlines()[-199:]
                 _lines.append(f"{datetime.datetime.now().isoformat(timespec='seconds')}"
                               f" | {ev or 'set'} | {fn} | "
-                              f"{json.dumps(_ui_modal_state['args'], ensure_ascii=False)}\n")
+                              f"{json.dumps(_ui_modal_state['args'], ensure_ascii=False)}"
+                              + (f" | stack: {data.get('stack')}" if data.get("stack") else "")
+                              + "\n")
                 with open(_lg, "w", encoding="utf-8") as f:
                     f.writelines(_lines)
             except Exception:
