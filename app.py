@@ -402,10 +402,10 @@ def _upgrade_worker(jobs):
                         notes.append("蒸馏跳过：已是新流水线解析")
                     else:
                         _upg_state["current"] = f"{rid}（蒸馏中）"
-                        # 升级场景分块取 2500 字（新流水线默认 11000 是为短视频设计，
-                        # 存量长文几乎都低于它，会退化成单段直蒸）
+                        # 升级场景分块取 1200 字（新流水线默认 11000 是为短视频设计，
+                        # 存量长文几乎都低于它，会退化成单段直蒸；1200 保证章节粒度足够细）
                         summary = vp.summarize(vp.correct_transcript(tr), [],
-                                               {"title": title}, chunk_chars=2500)
+                                               {"title": title}, chunk_chars=1200)
                         if not (summary.get("要点") or (summary.get("摘要") or "").strip()):
                             notes.append("蒸馏跳过：模型输出为空")
                         else:
@@ -914,7 +914,7 @@ def _append_douyin_ai_section(rec, url):
 
 
 def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint="",
-                   skill_distill=False):
+                   skill_distill=False, ai_grab=False):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
 
     设计要点（防止一条卡死拖垮整批）：
@@ -968,8 +968,9 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
                                             skill_distill=skill_distill)
                     rec["source_url"] = url
                     # 抖音官方 AI 解析（章节要点）作为另一维度补充进记录；
-                    # 失败/无该卡片均静默跳过，不影响主记录
-                    if rec.get("ok") and "douyin.com" in url:
+                    # **仅勾选「🤖 AI解析抓取」才执行**（默认关：抓 AI 卡需额外 detail
+                    # 请求，批量勾选易触发抖音风控）；失败/无该卡片均静默跳过
+                    if ai_grab and rec.get("ok") and "douyin.com" in url:
                         rec = _append_douyin_ai_section(rec, url)
             except Exception as e:
                 rec = {"source_url": url, "ok": False,
@@ -2754,6 +2755,7 @@ class Handler(BaseHTTPRequestHandler):
                 bilingual = bool(data.get("bilingual", False))
                 first_frame_only = bool(data.get("first_frame", False))
                 skill_distill = bool(data.get("skill", False))
+                ai_grab = bool(data.get("ai_grab", False))
                 source_hint = (data.get("source_hint") or "").strip()[:30]
                 if not urls:
                     self._send(400, {"error": "urls 不能为空"})
@@ -2762,7 +2764,8 @@ class Handler(BaseHTTPRequestHandler):
                                          bilingual=bilingual,
                                          first_frame_only=first_frame_only,
                                          source_hint=source_hint,
-                                         skill_distill=skill_distill)
+                                         skill_distill=skill_distill,
+                                         ai_grab=ai_grab)
                 self._send(200, {"results": results})
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})

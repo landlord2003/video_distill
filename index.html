@@ -547,6 +547,7 @@ function renderSrc(){
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/07-视频号整理)</label>
     <label class="toggle" title="英文等外语视频：保留原文并逐段对照中文翻译（本地模型翻译）"><input type="checkbox" id="obilingual"> 🔤 双语字幕对照</label>
     <label class="toggle" title="仓颉蒸馏：判定为方法论/教程内容时，额外产出可执行技能包（能力卡），并同步 LifeQA 知识库"><input type="checkbox" id="oskill"> ⚡ 技能包蒸馏</label>
+    <label class="toggle" title="抓抖音官方「章节要点」AI卡（内容由AI生成）追加进笔记。默认关：需额外请求抖音接口，批量勾选容易触发风控；也可事后在工具箱→记录升级→🤖抖音AI 批量回填"><input type="checkbox" id="oaigrab"> 🤖 AI解析抓取（抖音·易触发风控）</label>
     <div class="mut" style="font-size:12px;margin-top:4px">🧠 第三步解析为<b>标配</b>：转录后自动分段蒸馏（标题/摘要/要点/章节/标签，本机 qwen3:14b），摘要保证大于50字</div>`;
   else if(s.kind==='article') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
@@ -660,7 +661,8 @@ function _pipeOpts(){
           analyze: !!($('#oanalyze') && $('#oanalyze').checked),
           follow: !!($('#ofollow') && $('#ofollow').checked),
           withVideo: !!($('#owithvideo') && $('#owithvideo').checked),
-          skill: !!($('#oskill') && $('#oskill').checked)};
+          skill: !!($('#oskill') && $('#oskill').checked),
+          aigrab: !!($('#oaigrab') && $('#oaigrab').checked)};
 }
 
 // --- 视频类来源（抖音/YouTube/B站）：逐条 下载→转写→蒸馏→入库 ---
@@ -714,7 +716,7 @@ async function runVideoPipe(){
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({urls:[urls[i]], write_vault:o.vault,
             bilingual:o.bilingual, first_frame:o.firstFrame,
-            skill:!!o.skill,
+            skill:!!o.skill, ai_grab:!!o.aigrab,
             source_hint:s.srcName})});
         const d = await r.json();
         results = results.concat((d.results||[]).map(x=>({...x, _icon:s.icon})));
