@@ -314,7 +314,9 @@ def _render_summary_block(summary):
                 s = c.get("主题", "") if isinstance(c, dict) else str(c)
                 lines.append(f"- **{t}** {s}")
     if (summary.get("_distill_chunks") or 1) > 1:
-        lines += ["", f"> 🧠 分段蒸馏：全文较长，自动分 **{summary['_distill_chunks']}** 段蒸馏后合并（要点已覆盖全片）"]
+        lines += ["", f"> 🧠 解析升级：分段蒸馏 {summary['_distill_chunks']} 段合并（要点已覆盖全片）"]
+    else:
+        lines += ["", "> 🧠 解析升级：已按新流水线重蒸（全文较短未分段）"]
     return "\n".join(lines)
 
 def _replace_summary_region(md, block):
@@ -346,7 +348,9 @@ def _upgrade_candidates():
         except Exception:
             continue
         tr = _extract_transcript(md)
-        need_d = bool(tr) and len(tr) >= _UPGRADE_MIN_CHARS and "🧠 分段蒸馏" not in md
+        # 「🧠 解析升级」=升级工具写过；「🧠 分段蒸馏」=新流水线入库自带（>1段）——两者都算已升级
+        need_d = (bool(tr) and len(tr) >= _UPGRADE_MIN_CHARS
+                  and "🧠 解析升级" not in md and "🧠 分段蒸馏" not in md)
         need_a = ("douyin.com/video" in (url or "")) and ("抖音AI解析" not in md)
         if not (need_d or need_a):
             continue
@@ -391,8 +395,8 @@ def _upgrade_worker(jobs):
                     tr = _extract_transcript(vault_md)
                     if len(tr) < _UPGRADE_MIN_CHARS:
                         notes.append("蒸馏跳过：转写过短")
-                    elif "🧠 分段蒸馏" in vault_md:
-                        notes.append("蒸馏跳过：已是分段蒸馏")
+                    elif "🧠 解析升级" in vault_md or "🧠 分段蒸馏" in vault_md:
+                        notes.append("蒸馏跳过：已是新流水线解析")
                     else:
                         _upg_state["current"] = f"{rid}（蒸馏中）"
                         summary = vp.summarize(vp.correct_transcript(tr), [], {"title": title})
@@ -544,10 +548,11 @@ def _ingest_douyin_images(url, write_vault=True, analyze=True, verbose=True):
     vp.set_progress("详情拦截", "抖音图文 aweme_detail…", url)
     detail = dit.fetch_image_detail(url, verbose=verbose)
     if not detail:
-        raise RuntimeError("未拦截到图文 detail（可能触发限流，稍后再试；或该链接是视频）")
+        # 未拦截到 detail：可能是限流，也可能该 modal_id 实为视频 → 交由上层回退视频流水线
+        raise dit.NotImgtextError("未拦截到图文 detail（可能限流，或该链接实为视频）")
     imgs = detail.get("images") or []
     if not imgs:
-        raise RuntimeError("该作品无 images 字段，不是图文帖")
+        raise dit.NotImgtextError("该作品无 images 字段，实为视频")
     aweme_id = detail.get("aweme_id") or ""
     img_dir = os.path.join(ART_VAULT, "images", "douyin")
     vp.set_progress("图片下载", f"共 {len(imgs)} 张原图…", url)
@@ -876,7 +881,10 @@ def _append_douyin_ai_section(rec, url):
                     _t.sleep(35)
         if last_err:
             rec["ai_section_error"] = str(last_err)[:150]
+            rec["ai_note"] = "🤖AI解析⚠ 失败已降级（" + str(last_err)[:60] + "）"
         if not sec:
+            if not last_err:
+                rec["ai_note"] = "🤖AI解析— 该视频无AI卡，跳过"
             return rec
         if "抖音AI解析" not in (rec.get("markdown") or ""):
             rec["markdown"] = (rec.get("markdown") or "").rstrip() + \
@@ -885,6 +893,7 @@ def _append_douyin_ai_section(rec, url):
             if vpath and os.path.isfile(vpath):
                 with io.open(vpath, "a", encoding="utf-8") as f:
                     f.write("\n---\n\n" + sec)
+            rec["ai_note"] = "🤖AI解析✅ 官方章节要点已追加"
     except Exception as e:
         rec["ai_section_error"] = str(e)[:150]
     return rec
@@ -905,18 +914,25 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
             url = (raw or "").strip()
             if not url or url.startswith("#"):
                 continue
-            # --- 抖音图文帖分支：modal_id/note/slides 且 images 非空 → 图片采集管线 ---
+            # --- 抖音图文帖分支：modal_id/note/slides → 先按图文试；
+            #     detail 判实为视频（无 images）则回退下方视频流水线 ---
             if dit and dit.looks_like_imgtext_url(url):
+                rec = None
                 try:
                     rec = _ingest_douyin_images(url, write_vault=write_vault)
                     rec["source_url"] = url
+                    rec["source"] = "抖音视频/图文"
+                    rec["_icon"] = "🖼"
+                except dit.NotImgtextError:
+                    rec = None    # modal_id 实为视频 → 继续走视频路径
                 except Exception as e:
                     rec = {"source_url": url, "ok": False,
                            "error": f"{type(e).__name__}: {e}", "markdown": ""}
-                rec["source"] = "抖音视频/图文"
-                rec["_icon"] = "🖼"
-                results.append(rec)
-                continue
+                    rec["source"] = "抖音视频/图文"
+                    rec["_icon"] = "🖼"
+                if rec is not None:
+                    results.append(rec)
+                    continue
             try:
                 vp.set_progress("下载中", "拉取视频直链/页面拦截…", url)
                 hb = _DownloadHeartbeat(url)

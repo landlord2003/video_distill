@@ -95,7 +95,9 @@ def ensure_browser(verbose=True, wait_secs=25):
         f"--user-data-dir={PROFILE_DIR}",
         "--no-first-run", "--no-default-browser-check",
         "--disable-features=msEdgeUsePictureInPictureOnTabHover",
-        "--start-maximized",
+        # 屏幕外定位：窗口不抢占用户桌面（CDP 接管与渲染不受影响）；
+        # 常驻设计，用户关掉窗口后下次抓取会静默重拉，也不会再弹到脸上
+        "--window-position=-32000,-32000", "--window-size=1280,900",
         "about:blank",
     ]
     creationflags = 0x00000008 if os.name == "nt" else 0  # DETACHED_PROCESS

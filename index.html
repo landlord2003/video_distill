@@ -956,7 +956,7 @@ function renderResults(list){
     const ic = x._icon || '📄';
     return `<div class="vcard">
       <div class="vcard-h">
-        <div>${ic} ${esc(x.title||x.source_url||'')} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}${x.distill_chunks>1?' <span class="chip run">⛓ 分'+x.distill_chunks+'段蒸馏</span>':''}</div>
+        <div>${ic} ${esc(x.title||x.source_url||'')} ${ok?'':'<span style="color:var(--red)">✗ 失败</span>'}${x.distill_chunks>1?' <span class="chip run">⛓ 分'+x.distill_chunks+'段蒸馏</span>':''}${x.ai_note?` <span class="chip ${x.ai_note.includes('✅')?'ok':'run'}">${esc(x.ai_note)}</span>`:''}</div>
         <span style="display:flex;gap:6px;align-items:center;flex-shrink:0">
           ${ok?'<span class="chip ok">✓ 已入库</span>':'<span class="chip err">失败</span>'}
           <button class="btn" onclick="togglePCard(${idx})">${hid?'展开 ▼':'收起 ▲'}</button>

@@ -42,6 +42,10 @@ _VL_PROMPT = (
 )
 
 
+class NotImgtextError(RuntimeError):
+    """modal_id/note 链接经 detail 判定实为视频（无 images），应回退视频流水线。"""
+
+
 def is_article_url(url: str) -> bool:
     return bool(url) and "douyin.com/article/" in url
 
