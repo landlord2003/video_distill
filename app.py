@@ -281,7 +281,8 @@ _upg_lock = threading.Lock()
 _UPGRADE_MIN_CHARS = 1500   # 转写低于此长度不值得重蒸（单段直蒸与旧结果差异极小）
 
 def _extract_transcript(md):
-    """从笔记里抠「## 语音转写全文」正文（到下一个 ## 或 --- 为止）。"""
+    """从笔记里抠「## 语音转写全文」正文（到下一个 ## 或 --- 为止）。
+    标题可能带字数标注后缀（## 语音转写全文（3,241 字）），正文首行若有同款标注也剥掉。"""
     if "## 语音转写全文" not in md:
         return ""
     t = md.split("## 语音转写全文", 1)[1]
@@ -289,9 +290,10 @@ def _extract_transcript(md):
         i = t.find(stop)
         if i != -1:
             t = t[:i]
+    t = re.sub(r"^\s*（[\d,]+\s*字）\s*", "", t.strip())
     return t.strip()
 
-def _render_summary_block(summary):
+def _render_summary_block(summary, tr_chars=0):
     """把 summary dict 渲染成「## 摘要/要点/章节」区块（与 build_markdown 同格式）。"""
     lines = ["## 摘要", "", summary.get("摘要") or "（无）"]
     if summary.get("关键结论"):
@@ -313,10 +315,11 @@ def _render_summary_block(summary):
                 t = c.get("时间", "") if isinstance(c, dict) else ""
                 s = c.get("主题", "") if isinstance(c, dict) else str(c)
                 lines.append(f"- **{t}** {s}")
+    tr_info = f"（全文 {tr_chars:,} 字）" if tr_chars else ""
     if (summary.get("_distill_chunks") or 1) > 1:
-        lines += ["", f"> 🧠 解析升级：分段蒸馏 {summary['_distill_chunks']} 段合并（要点已覆盖全片）"]
+        lines += ["", f"> 🧠 解析升级：分段蒸馏 {summary['_distill_chunks']} 段合并{tr_info}（要点已覆盖全片）"]
     else:
-        lines += ["", "> 🧠 解析升级：已按新流水线重蒸（全文较短未分段）"]
+        lines += ["", f"> 🧠 解析升级：已按新流水线重蒸{tr_info}（全文较短未分段）"]
     return "\n".join(lines)
 
 def _replace_summary_region(md, block):
@@ -399,11 +402,22 @@ def _upgrade_worker(jobs):
                         notes.append("蒸馏跳过：已是新流水线解析")
                     else:
                         _upg_state["current"] = f"{rid}（蒸馏中）"
-                        summary = vp.summarize(vp.correct_transcript(tr), [], {"title": title})
+                        # 升级场景分块取 2500 字（新流水线默认 11000 是为短视频设计，
+                        # 存量长文几乎都低于它，会退化成单段直蒸）
+                        summary = vp.summarize(vp.correct_transcript(tr), [],
+                                               {"title": title}, chunk_chars=2500)
                         if not (summary.get("要点") or (summary.get("摘要") or "").strip()):
                             notes.append("蒸馏跳过：模型输出为空")
                         else:
-                            block = _render_summary_block(summary)
+                            block = _render_summary_block(summary, len(tr))
+                            # 老笔记转写标题补字数标注（新记录 build_markdown 已自带）
+                            vault_md = re.sub(r"## 语音转写全文\n",
+                                              f"## 语音转写全文（{len(tr):,} 字）\n",
+                                              vault_md, count=1)
+                            if rec_md:
+                                rec_md = re.sub(r"## 语音转写全文\n",
+                                                f"## 语音转写全文（{len(tr):,} 字）\n",
+                                                rec_md, count=1)
                             vault_md = _replace_summary_region(vault_md, block)
                             if rec_md:
                                 rec_md = _replace_summary_region(rec_md, block)

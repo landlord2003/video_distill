@@ -263,6 +263,8 @@ def extract_transcript_from_note(md_text):
         body = md_text[idx + len(head):]
         nxt = body.find("\n## ")
         body = body[:nxt] if nxt != -1 else body
+        # 标题带字数标注时（## 语音转写全文（3,241 字）），剥掉正文中混入的同款标注
+        body = re.sub(r"^\s*（[\d,]+\s*字）\s*", "", body.lstrip()) if "双语字幕" not in head else body
         if "双语字幕" in head:
             zh = [ln.split("|")[-1].strip() for ln in body.splitlines() if ln.strip().startswith("|") and "---" not in ln]
             body = "\n".join(z for z in zh if z and z != "中文翻译")

@@ -976,7 +976,7 @@ def _correct_data(data):
     return data
 
 
-def summarize(transcript, frame_descs, source_meta, segments=None):
+def summarize(transcript, frame_descs, source_meta, segments=None, chunk_chars=DISTILL_CHUNK_CHARS):
     """结构化总结。长转写**自动分段蒸馏**（map-reduce），对使用者无感。
 
     - 转写 ≤ DISTILL_CHUNK_CHARS：单段直蒸（与原行为一致）
@@ -992,7 +992,7 @@ def summarize(transcript, frame_descs, source_meta, segments=None):
         chunks = [t for _, t in tchunks]
         starts = [st for st, _ in tchunks]
     else:
-        chunks = _split_transcript(transcript or "")
+        chunks = _split_transcript(transcript or "", chunk_chars)
         starts = [None] * len(chunks)
     n = len(chunks)
     set_progress("总结中" if n == 1 else "蒸馏中",
@@ -1190,7 +1190,7 @@ def build_markdown(meta, transcript, frame_descs, summary, frames, bilingual_blo
         for ts, src, zh in bilingual_blocks:
             lines.append(f"| {ts} | {src.replace('|', '/')} | {(zh or '（翻译缺失）').replace('|', '/')} |")
     elif transcript:
-        lines.append("## 语音转写全文")
+        lines.append(f"## 语音转写全文（{len(transcript):,} 字）")
         lines.append("")
         lines.append(transcript)
     lines.append("")
