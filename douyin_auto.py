@@ -226,6 +226,26 @@ def _run_detail(page, url, vid, wait_secs, verbose):
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
     except Exception as e:
         _log(verbose, f"  页面打开异常(继续等拦截): {e}")
+    # 🔴 2026-10-27 破案：抖音 web 把 API 请求搬进了 Service Worker，页面级
+    # route/response 监听全部收不到（页面正常渲染、RENDER_DATA 无数据、
+    # 零 /aweme/ 请求 = 典型特征）。此前误判为"风控未解除"耽搁两天。
+    # 处理：注销 SW 并封锁其脚本（仅 unregister 不够——刷新时抖音秒速重注册
+    # 新 SW 抢先接管，形成竞态），detail XHR 才会回到页面上下文被拦截。
+    try:
+        swurls = page.evaluate(
+            "async () => { const rs = await navigator.serviceWorker.getRegistrations();"
+            " const urls = rs.map(r => ((r.active||r.installing||r.waiting)||{}).scriptURL);"
+            " await Promise.all(rs.map(r => r.unregister()));"
+            " return urls.filter(Boolean) }")
+        if swurls:
+            _log(verbose, f"  [sw] 注销 {len(swurls)} 个 SW 并封锁脚本: {swurls}")
+            for su in swurls:
+                name = su.split('?')[0].rsplit('/', 1)[-1]
+                if name:
+                    page.route(f"**/{name}*", lambda route: route.abort())
+            page.reload(wait_until="domcontentloaded", timeout=60000)
+    except Exception as e:
+        _log(verbose, f"  [sw] 处理失败(继续按原路径等拦截): {e}")
     # 等待拦截，期间探查登录态
     for i in range(wait_secs):
         if detail:
