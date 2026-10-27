@@ -343,7 +343,7 @@
           <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vauthors" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
-          <input type="text" id="vhq" placeholder="🔍 搜索全部记录（标题 / 来源 / 链接）…" style="margin-bottom:12px;width:100%" oninput="renderRecords()">
+          <input type="text" id="vhq" placeholder="🔍 模糊搜索全部记录（标题 / 来源 / 链接 / 分类 / 作者，多关键词空格分隔）…" style="margin-bottom:12px;width:100%" oninput="renderRecords()">
           <div id="rec-batchbar"></div>
           <div id="rec-detail"></div>
           <div id="rec-list"><div class="empty" style="padding:14px">加载中…</div></div>
@@ -395,6 +395,7 @@
             <button id="upg-run-a" class="btn" onclick="upgRun('a')" disabled style="padding:8px 14px">🤖 抖音AI 0 条</button>
           </div>
           <div id="upg-status" class="mut" style="font-size:12px;margin-top:6px;min-height:16px"></div>
+          <input type="text" id="upgq" placeholder="🔍 模糊查询定位（标题 / 来源 / 链接，多关键词空格分隔）…" style="margin-top:8px;width:100%" oninput="renderUpgList()">
         </div>
         <div class="dcard" style="padding:0">
           <div id="upg-list"><div class="empty" style="padding:14px">点「扫描可升级记录」开始…</div></div>
@@ -1238,8 +1239,14 @@ function renderRecTypeChips(){
     + Object.keys(_recTypeMeta).map(k=>mk(k, _recTypeMeta[k].label, counts[k]||0)).join('');
 }
 function _setRecType(k){ _recType = k; _vcatFilter=''; _vSrcFilter=''; _vAutFilter=''; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderAuthorChips(); renderRecords(); }
+// ---------- 模糊查询：多关键词空格分隔、乱序命中（如「德黑兰 战场」可定位「德黑兰会议与欧洲第二战场」） ----------
+function fuzzyMatch(hay, q){
+  const toks = String(q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if(!toks.length) return true;
+  return toks.every(t=>hay.includes(t));
+}
 function recRowsFiltered(){
-  const q = ($('#vhq')?.value||'').toLowerCase();
+  const q = ($('#vhq')?.value||'');
   return _recRows.filter(x=>{
     if(_recType && x.type!==_recType) return false;
     // 分类/来源筛选：全部（联合）/视频/文章/VOA/抖音音乐 页签生效，配音/网页不应用
@@ -1257,8 +1264,10 @@ function recRowsFiltered(){
         if(_vAutFilter==='__noaut__' ? a!=='' : a!==_vAutFilter) return false;
       }
     }
-    if(!q) return true;
-    return [x.title,x.url,x.source_url,x.text,x.voice].some(v=>String(v||'').toLowerCase().includes(q));
+    if(!q.trim()) return true;
+    const hay = [x.title,x.text,x.url,x.source_url,x.source,x.category,x.author,x.voice,x.id]
+      .map(v=>String(v||'').toLowerCase()).join('\n');
+    return fuzzyMatch(hay, q);
   });
 }
 function recStatus(x){
@@ -2150,16 +2159,26 @@ function renderUpgList(){
     box.innerHTML = '<div class="empty" style="padding:14px">✅ 记录中心没有待升级的视频记录，全部是新的</div>';
     _updUpgRun(); return;
   }
-  box.innerHTML = _upgCands.map((c,i)=>{
+  const q = ($('#upgq')?.value||'');
+  const view = _upgCands.filter(c=>{
+    if(!q.trim()) return true;
+    const hay = [c.title,c.source,c.id].map(v=>String(v||'').toLowerCase()).join('\n');
+    return fuzzyMatch(hay, q);
+  });
+  if(!view.length){
+    box.innerHTML = `<div class="empty" style="padding:14px">没有匹配「${esc(q)}」的候选（${_upgCands.length} 条待升级记录中）</div>`;
+    _updUpgRun(); return;
+  }
+  box.innerHTML = view.map(c=>{
     const acts = [c.need_distill?'🧠蒸馏':'', c.need_ai?'🤖AI解析':''].filter(Boolean).join(' + ');
     return `
-    <div class="rec ${_upgSel.has(c.id)?'sel':''}" onclick="upgClick(${i})">
+    <div class="rec ${_upgSel.has(c.id)?'sel':''}" onclick="upgClick('${escAttr(c.id)}')">
       <div class="ic">🔁</div>
       <div style="flex:1;min-width:0">
         <div class="t">${esc(c.title)}${_upgSel.has(c.id)?'<span class="chip on" style="margin-left:6px">已选</span>':''}</div>
         <div class="mut" style="font-size:11px">${esc(c.source||'未标来源')} · ${esc(c.created_at||'')} · 转写 ${c.chars.toLocaleString()} 字 · ${acts}</div>
       </div>
-      <input type="checkbox" ${_upgSel.has(c.id)?'checked':''} onclick="event.stopPropagation();upgClick(${i})" style="flex-shrink:0">
+      <input type="checkbox" ${_upgSel.has(c.id)?'checked':''} onclick="event.stopPropagation();upgClick('${escAttr(c.id)}')" style="flex-shrink:0">
     </div>`;}).join('');
   _updUpgRun();
 }
@@ -2170,9 +2189,8 @@ function _updUpgRun(){
   if(bd){ bd.textContent = `🧠 解析升级 ${dsel} 条`; bd.disabled = !dsel || _upgTimer; }
   if(ba){ ba.textContent = `🤖 抖音AI ${asel} 条`; ba.disabled = !asel || _upgTimer; }
 }
-function upgClick(i){
-  const c = _upgCands[i].id;
-  _upgSel.has(c) ? _upgSel.delete(c) : _upgSel.add(c);
+function upgClick(id){
+  _upgSel.has(id) ? _upgSel.delete(id) : _upgSel.add(id);
   renderUpgList();
 }
 function upgSelAll(){ _upgCands.forEach(c=>_upgSel.add(c.id)); renderUpgList(); }
