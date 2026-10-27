@@ -884,7 +884,7 @@ def _append_douyin_ai_section(rec, url):
         last_err = None
         for i in range(2):
             try:
-                detail = da.fetch_direct_url(url, verbose=False,
+                detail = da.fetch_direct_url(url, verbose=True,
                                              return_full=True, wait_secs=30)
                 sec = da.format_ai_section(da.extract_ai_chapters(detail))
                 last_err = None

@@ -231,28 +231,35 @@ def _run_detail(page, url, vid, wait_secs, verbose):
     # 零 /aweme/ 请求 = 典型特征）。此前误判为"风控未解除"耽搁两天。
     # 处理：注销 SW 并封锁其脚本（仅 unregister 不够——刷新时抖音秒速重注册
     # 新 SW 抢先接管，形成竞态），detail XHR 才会回到页面上下文被拦截。
-    try:
-        swurls = page.evaluate(
-            "async () => { const rs = await navigator.serviceWorker.getRegistrations();"
-            " const urls = rs.map(r => ((r.active||r.installing||r.waiting)||{}).scriptURL);"
-            " await Promise.all(rs.map(r => r.unregister()));"
-            " return urls.filter(Boolean) }")
-        if swurls:
-            _log(verbose, f"  [sw] 注销 {len(swurls)} 个 SW 并封锁脚本: {swurls}")
-            for su in swurls:
-                name = su.split('?')[0].rsplit('/', 1)[-1]
-                if name:
-                    page.route(f"**/{name}*", lambda route: route.abort())
-            page.reload(wait_until="domcontentloaded", timeout=60000)
-    except Exception as e:
-        _log(verbose, f"  [sw] 处理失败(继续按原路径等拦截): {e}")
+    # 竞态仍有残留（实测服务端同一条时好时坏）→ 每轮 15s 未拦截就再做一轮
+    # 注销+封锁+刷新，最多 3 轮。
+    def _sw_purge():
+        try:
+            swurls = page.evaluate(
+                "async () => { const rs = await navigator.serviceWorker.getRegistrations();"
+                " const urls = rs.map(r => ((r.active||r.installing||r.waiting)||{}).scriptURL);"
+                " await Promise.all(rs.map(r => r.unregister()));"
+                " return urls.filter(Boolean) }")
+            if swurls:
+                _log(verbose, f"  [sw] 注销 {len(swurls)} 个 SW 并封锁脚本: {swurls}")
+                for su in swurls:
+                    name = su.split('?')[0].rsplit('/', 1)[-1]
+                    if name:
+                        page.route(f"**/{name}*", lambda route: route.abort())
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+                return True
+        except Exception as e:
+            _log(verbose, f"  [sw] 处理失败(继续按原路径等拦截): {e}")
+        return False
+
+    _sw_purge()
     # 等待拦截，期间探查登录态
-    for i in range(wait_secs):
-        if detail:
-            break
+    waited = 0
+    rounds = 1
+    while not detail and waited < wait_secs:
         # SSR 兜底：页面 window._ROUTER_DATA 由服务端注入了本作品完整详情，
         # 不依赖网络拦截（note 链接会经历 /video → /note 内部导航，易竞态）
-        if not detail and not retried["done"] and i >= 3:
+        if not detail and not retried["done"] and waited >= 3:
             retried["done"] = True
             try:
                 raw = page.evaluate(
@@ -267,18 +274,23 @@ def _run_detail(page, url, vid, wait_secs, verbose):
                         _log(verbose, "  [SSR] _ROUTER_DATA 中未找到 aweme 详情")
             except Exception as e:
                 _log(verbose, f"  [SSR] 读取失败: {e}")
-        if verbose and i % 10 == 9:
+        if not detail and waited >= 15 * rounds and rounds < 3:
+            rounds += 1
+            _log(verbose, f"  [sw] {waited}s 未拦截到，做第 {rounds} 轮 SW 注销+封锁+刷新")
+            _sw_purge()
+        if verbose and waited % 10 == 9:
             try:
                 curl = page.url
                 txt = page.inner_text("body")[:80].replace("\n", " ")
                 has_login = page.evaluate(
                     "document.cookie.includes('sessionid') || "
                     "document.querySelector('[data-e2e=login]')===null")
-                _log(verbose, f"  [等待{i+1}s] url={curl[:60]} "
+                _log(verbose, f"  [等待{waited+1}s] url={curl[:60]} "
                      f"login~={has_login} text='{txt}'")
             except Exception:
                 pass
         time.sleep(1)
+        waited += 1
     return detail, req_log
 
 
