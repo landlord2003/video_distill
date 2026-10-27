@@ -1849,7 +1849,7 @@ class Handler(BaseHTTPRequestHandler):
                     cur = c.execute(
                         "SELECT id,url,platform,title,created_at,md_len,status,vault_path,"
                         "category,source,author "
-                        "FROM articles ORDER BY created_at DESC LIMIT 200")
+                        "FROM articles ORDER BY created_at DESC LIMIT 5000")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "url", "platform", "title", "created_at",
@@ -1906,7 +1906,7 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 cur = c.execute(
                     "SELECT id,created_at,text,voice,fmt,chars,chunks,seconds,file,error "
-                    "FROM tts ORDER BY created_at DESC LIMIT 200")
+                    "FROM tts ORDER BY created_at DESC LIMIT 5000")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "created_at", "text", "voice", "fmt", "chars",
@@ -1927,7 +1927,7 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 cur = c.execute(
                     "SELECT id,source_url,title,created_at,md_len,status,vault_path,category,source,author "
-                    "FROM videos ORDER BY created_at DESC LIMIT 200")
+                    "FROM videos ORDER BY created_at DESC LIMIT 5000")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "source_url", "title", "created_at",
