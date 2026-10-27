@@ -19,6 +19,7 @@ import html
 import datetime
 import time
 import asyncio
+import subprocess
 import urllib.parse
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2467,6 +2468,48 @@ class Handler(BaseHTTPRequestHandler):
                                   current="", results=[])
             threading.Thread(target=_upgrade_worker, args=(jobs,), daemon=True).start()
             self._send(200, {"ok": True, "total": len(jobs)})
+            return
+        if self.path == "/api/open/location":
+            # 📂 在资源管理器中打开记录所在文件夹并选中文件
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                self._send(400, {"error": "请求体解析失败"})
+                return
+            typ = data.get("type")
+            rid = str(data.get("id") or "")
+            fp = None
+            try:
+                with db() as c:
+                    if typ == "video":
+                        row = c.execute("SELECT vault_path FROM videos WHERE id=?",
+                                        (rid,)).fetchone()
+                        fp = row[0] if row else None
+                    elif typ in ("article", "voa", "dymusic"):
+                        try:
+                            qid = int(rid)
+                        except ValueError:
+                            qid = rid
+                        row = c.execute("SELECT vault_path FROM articles WHERE id=?",
+                                        (qid,)).fetchone()
+                        fp = row[0] if row else None
+                    elif typ == "tts":
+                        row = c.execute("SELECT file FROM tts WHERE id=?",
+                                        (rid,)).fetchone()
+                        fp = os.path.join(TTS_OUT, os.path.basename(row[0])) \
+                            if row and row[0] else None
+            except Exception:
+                fp = None
+            if not fp or not os.path.isfile(fp):
+                self._send(404, {"error": "该记录没有对应的本地文件（网页类记录只存数据库，无 .md 文件）"})
+                return
+            try:
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(fp)])
+            except Exception as e:
+                self._send(500, {"error": f"打开资源管理器失败: {e}"})
+                return
+            self._send(200, {"ok": True, "path": fp})
             return
         if self.path == "/api/inbox/delete":
             try:

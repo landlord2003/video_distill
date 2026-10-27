@@ -1323,19 +1323,33 @@ function renderRecords(){
         ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn pri" onclick="event.stopPropagation();window.open('/player/douyin/${escAttr(x.id)}')">▶ 播放</button>`:''}
         ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn" onclick="event.stopPropagation();dyTranscribe('${escAttr(x.id)}',this)" title="本地 whisper 补转写字幕（已有则跳过）">📝 转写</button>`:''}
         ${x.type==='dymusic'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','dymusic')">编辑</button>
-        <button class="btn" onclick="event.stopPropagation();recView('dymusic','${escAttr(x.id)}')">查看</button>`:''}
-        ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>`:''}
+        <button class="btn" onclick="event.stopPropagation();recView('dymusic','${escAttr(x.id)}')">查看</button>
+        <button class="btn" title="在资源管理器中打开文件所在文件夹" onclick="event.stopPropagation();openLocation('dymusic','${escAttr(x.id)}')">📂</button>`:''}
+        ${x.type==='tts'&&x.file?`<button class="btn" onclick="event.stopPropagation();recPlay('${escAttr(x.file)}')">▶ 试听</button>
+        <button class="btn" title="在资源管理器中打开音频所在文件夹" onclick="event.stopPropagation();openLocation('tts','${escAttr(x.id)}')">📂</button>`:''}
         ${x.type==='web'?`<button class="btn" onclick="event.stopPropagation();recView('web','${escAttr(x.id)}')">查看</button>`:''}
         ${x.type==='article'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','article')">编辑</button>
-        <button class="btn" onclick="event.stopPropagation();recView('article','${escAttr(x.id)}')">查看</button>`:''}
+        <button class="btn" onclick="event.stopPropagation();recView('article','${escAttr(x.id)}')">查看</button>
+        <button class="btn" title="在资源管理器中打开文件所在文件夹" onclick="event.stopPropagation();openLocation('article','${escAttr(x.id)}')">📂</button>`:''}
         ${x.type==='voa'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}','voa')">编辑</button>
-        <button class="btn" onclick="event.stopPropagation();recView('voa','${escAttr(x.id)}')">查看</button>`:''}
+        <button class="btn" onclick="event.stopPropagation();recView('voa','${escAttr(x.id)}')">查看</button>
+        <button class="btn" title="在资源管理器中打开文件所在文件夹" onclick="event.stopPropagation();openLocation('voa','${escAttr(x.id)}')">📂</button>`:''}
         ${x.type==='video'?`<button class="btn" onclick="event.stopPropagation();editRec('${escAttr(x.id)}')">编辑</button>
-        <button class="btn" onclick="event.stopPropagation();recView('video','${escAttr(x.id)}')">查看</button>`:''}
+        <button class="btn" onclick="event.stopPropagation();recView('video','${escAttr(x.id)}')">查看</button>
+        <button class="btn" title="在资源管理器中打开文件所在文件夹" onclick="event.stopPropagation();openLocation('video','${escAttr(x.id)}')">📂</button>`:''}
         <button class="btn del" onclick="event.stopPropagation();recDel('${x.type}','${escAttr(x.id)}')">删除</button>
       </div>
       <div class="m" style="flex-direction:column;align-items:flex-end;flex-shrink:0">${recMeta(x)}</div>
     </div>`).join('');
+}
+async function openLocation(t, id){
+  try{
+    const r = await fetch('/api/open/location', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:t, id})});
+    const d = await r.json();
+    if(!r.ok){ alert(d.error || ('HTTP '+r.status)); }
+  }catch(e){ alert('异常：'+e.message); }
 }
 function recClose(){
   const det = $('#rec-detail');
