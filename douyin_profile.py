@@ -33,8 +33,10 @@ COLLECTION_RE = re.compile(r"/(?:collection|mix)/(\d{5,})")
 
 def _is_degrade(msg: str) -> bool:
     """疑似风控「可见性降级」而非精确判决：换真实浏览器（CDP）重试有意义。
-    采集类失败的报错均含「未采集到任何视频」。"""
-    return "未采集到任何视频" in (msg or "")
+    采集类失败的报错均含「未采集到任何视频」；合集翻页被拒（SPA HTML）
+    或页面无签名器时报「疑似降级」。"""
+    return ("未采集到任何视频" in (msg or "")
+            or "疑似降级" in (msg or ""))
 
 
 def _open_ctx(p, cdp, cookies, verbose, viewport=True):
@@ -244,7 +246,52 @@ def _profile_impl(profile_arg, cookie_file=None, verbose=True, max_count=50,
                             if (maxCount && out.length >= maxCount) break;
                             await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
                         }
-                        return out;
+                        if (!out.length && rejected && basePath.includes('mix/aweme')) {
+                            // mix 端点被拒/无数据：换 series 端点（老形态合集）重试
+                            const su = new URL('https://www.douyin.com/aweme/v1/web/series/aweme/');
+                            for (const [k, v] of u.searchParams) su.searchParams.set(k, v);
+                            su.searchParams.set('mix_id', mixId);
+                            cursor = '0';
+                            const spath = su.pathname;
+                            for (let i = 0; i < 60; i++) {
+                                if (Date.now() - t0 > timeBudgetMs) break;
+                                su.searchParams.set('cursor', cursor);
+                                su.searchParams.set('count', '20');
+                                let url2 = su.toString();
+                                if (canSign) {
+                                    const p2 = spath + '?' + su.searchParams.toString();
+                                    let s2 = null;
+                                    try { s2 = window.byted_acrawler.frontierSign(p2); }
+                                    catch (e) { s2 = null; }
+                                    const xb2 = s2 && (s2['X-Bogus'] || s2['x-bogus']);
+                                    url2 = 'https://www.douyin.com' + p2 + (xb2 ? '&X-Bogus=' + xb2 : '');
+                                }
+                                let j2;
+                                try {
+                                    const resp2 = await fetch(url2, {credentials: 'include'});
+                                    const t2 = await resp2.text();
+                                    if (t2.trim().startsWith('<')) break;
+                                    j2 = JSON.parse(t2);
+                                } catch (e) { break; }
+                                const l2 = j2.aweme_list || [];
+                                for (const aw of l2) {
+                                    const id = String(aw.aweme_id || '').trim();
+                                    if (id && !seen.has(id)) {
+                                        seen.add(id);
+                                        out.push({id: id, title: (aw.desc || '').trim(),
+                                                  url: 'https://www.douyin.com/video/' + id});
+                                    }
+                                }
+                                if (!l2.length) break;
+                                const mc2 = (j2.cursor !== null && j2.cursor !== undefined)
+                                    ? j2.cursor : j2.max_cursor;
+                                if (mc2 === null || mc2 === undefined) break;
+                                cursor = String(mc2);
+                                if (maxCount && out.length >= maxCount) break;
+                                await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
+                            }
+                        }
+                        return {items: out, rejected: rejected, usedSign: canSign};
                     }""",
                     [template_url["v"], max_count or 0, budget_ms])
                 for it in items_js or []:
@@ -450,13 +497,36 @@ def _collection_impl(collection_arg, cookie_file=None, verbose=True,
             if verbose:
                 print(f"[collection] 页面打开异常(继续等拦截): {e}")
 
+        # 🔴 SW 清理（对齐 detail 修复）：CDP 真浏览器的 Service Worker 会代理
+        # 列表接口，页面级 on_response 收不到 → 模板拦截不到 → 翻页瘫痪。
+        # 无头新开浏览器无 SW（评估返回空列表），此步无副作用。
+        try:
+            swurls = page.evaluate(
+                "async () => { const rs = await navigator.serviceWorker.getRegistrations();"
+                " const urls = rs.map(r => ((r.active||r.installing||r.waiting)||{}).scriptURL);"
+                " await Promise.all(rs.map(r => r.unregister()));"
+                " return urls.filter(Boolean) }")
+            if swurls:
+                if verbose:
+                    print(f"[collection] 注销 {len(swurls)} 个 SW 并封锁脚本后刷新")
+                for su in swurls:
+                    name = su.split('?')[0].rsplit('/', 1)[-1]
+                    if name:
+                        page.route(f"**/{name}*", lambda route: route.abort())
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            if verbose:
+                print(f"[collection] SW 清理失败(继续): {e}")
+
         t0 = time.time()
 
         # ---------- 阶段A：页面内 fetch 循环翻页（主路径） ----------
         # 背景：合集播放页滚动在主区域只翻"集"，不触发列表翻页（列表是右侧
         # 独立懒加载容器，225 条的合集实测只发 cursor=0 一页）。
-        # 实测突破：服务端对改 cursor 后的旧 X-Bogus 不校验，可在页面上下文里
-        # 用首屏拦截到的签名 URL 重放翻页（cursor=max_cursor 链）。
+        # 🔴 2026-10-28 破案：抖音收紧签名校验——旧「拦截模板 URL 改 cursor 重放」
+        # 已失效（返回 SPA HTML 而非 JSON），首屏 count=6 → 只能抓到前 6 条。
+        # 新主路径：页面自带签名器 window.byted_acrawler.frontierSign(path) 现场
+        # 签名新 URL 翻页；游标字段是 j.cursor（不是 max_cursor）。旧重放降为兜底。
         # 等首屏请求落地（偶尔要交互触发），最长 40s，15s 时点一下播放器。
         for i in range(40):
             if template_url["v"] or videos:
@@ -470,25 +540,58 @@ def _collection_impl(collection_arg, cookie_file=None, verbose=True,
         on_dom()
 
         fetch_pages_err = ""
-        if template_url["v"] and (len(videos) < (max_count or 10**9)):
+        coll_id_m = (re.search(r"/collection/(\d+)", collection_url)
+                     or re.search(r"/mix/(\d+)", collection_url))
+        coll_id = coll_id_m.group(1) if coll_id_m else ""
+        if (template_url["v"] or coll_id) and (len(videos) < (max_count or 10**9)):
             budget_ms = int(min(max(deadline_secs - (time.time() - t0), 60), 900)) * 1000
             try:
                 items_js = page.evaluate(
-                    """async ([u0, maxCount, timeBudgetMs]) => {
+                    """async ([u0, mixId, maxCount, timeBudgetMs]) => {
                         const out = [];
                         const seen = new Set();
                         const t0 = Date.now();
-                        let cursor = '0', hasMore = true, guard = 0;
-                        const u = new URL(u0);
+                        let cursor = '0', guard = 0, rejected = false;
+                        let u = u0 ? new URL(u0) : null;
+                        if (!u) {
+                            // 无模板（SW 吞了首屏请求）：用最小参数集自建，签名翻页不依赖模板
+                            u = new URL('https://www.douyin.com/aweme/v1/web/mix/aweme/');
+                            u.searchParams.set('device_platform', 'webapp');
+                            u.searchParams.set('aid', '6383');
+                            u.searchParams.set('channel', 'channel_pc_web');
+                            u.searchParams.set('version_code', '170400');
+                            u.searchParams.set('version_name', '17.4.0');
+                        }
+                        u.searchParams.set('mix_id', mixId);
+                        const basePath = u.pathname;
+                        // 签名器：页面自带 frontierSign；不可用则退回旧重放（大概率被拒）
+                        const canSign = typeof window.byted_acrawler === 'object'
+                            && window.byted_acrawler
+                            && typeof window.byted_acrawler.frontierSign === 'function';
+                        let hasMore = true;
                         while (hasMore && guard < 500) {
                             guard++;
                             if (Date.now() - t0 > timeBudgetMs) break;
                             u.searchParams.set('cursor', cursor);
+                            u.searchParams.set('count', '20');
+                            let url = u.toString();
+                            if (canSign && mixId) {
+                                // 现场签名：改 cursor/count 后重新签，绕开一次性签名校验
+                                const path = basePath + '?' + u.searchParams.toString();
+                                let s = null;
+                                try { s = window.byted_acrawler.frontierSign(path); }
+                                catch (e) { s = null; }
+                                const xb = s && (s['X-Bogus'] || s['x-bogus']);
+                                url = 'https://www.douyin.com' + path
+                                    + (xb ? '&X-Bogus=' + xb : '');
+                            }
                             let j;
                             try {
-                                const resp = await fetch(u.toString(), {credentials: 'include'});
-                                j = await resp.json();
-                            } catch (e) { break; }
+                                const resp = await fetch(url, {credentials: 'include'});
+                                const t = await resp.text();
+                                if (t.trim().startsWith('<')) { rejected = true; break; }   // 签名被拒：SPA HTML
+                                j = JSON.parse(t);
+                            } catch (e) { rejected = true; break; }
                             const list = j.aweme_list || [];
                             for (const aw of list) {
                                 const id = String(aw.aweme_id || '').trim();
@@ -499,21 +602,82 @@ def _collection_impl(collection_arg, cookie_file=None, verbose=True,
                                 }
                             }
                             hasMore = !!j.has_more;
-                            const mc = j.max_cursor;
+                            // 游标字段：mix/aweme 用 j.cursor；兼容 max_cursor 旧形态
+                            const mc = (j.cursor !== null && j.cursor !== undefined)
+                                ? j.cursor : j.max_cursor;
                             if (!list.length || mc === null || mc === undefined) break;
                             cursor = String(mc);
                             if (maxCount && out.length >= maxCount) break;
                             await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
                         }
-                        return out;
+                        if (!out.length && rejected && basePath.includes('mix/aweme')) {
+                            // mix 端点被拒/无数据：换 series 端点（老形态合集）重试
+                            const su = new URL('https://www.douyin.com/aweme/v1/web/series/aweme/');
+                            for (const [k, v] of u.searchParams) su.searchParams.set(k, v);
+                            su.searchParams.set('mix_id', mixId);
+                            cursor = '0';
+                            const spath = su.pathname;
+                            for (let i = 0; i < 60; i++) {
+                                if (Date.now() - t0 > timeBudgetMs) break;
+                                su.searchParams.set('cursor', cursor);
+                                su.searchParams.set('count', '20');
+                                let url2 = su.toString();
+                                if (canSign) {
+                                    const p2 = spath + '?' + su.searchParams.toString();
+                                    let s2 = null;
+                                    try { s2 = window.byted_acrawler.frontierSign(p2); }
+                                    catch (e) { s2 = null; }
+                                    const xb2 = s2 && (s2['X-Bogus'] || s2['x-bogus']);
+                                    url2 = 'https://www.douyin.com' + p2 + (xb2 ? '&X-Bogus=' + xb2 : '');
+                                }
+                                let j2;
+                                try {
+                                    const resp2 = await fetch(url2, {credentials: 'include'});
+                                    const t2 = await resp2.text();
+                                    if (t2.trim().startsWith('<')) break;
+                                    j2 = JSON.parse(t2);
+                                } catch (e) { break; }
+                                const l2 = j2.aweme_list || [];
+                                for (const aw of l2) {
+                                    const id = String(aw.aweme_id || '').trim();
+                                    if (id && !seen.has(id)) {
+                                        seen.add(id);
+                                        out.push({id: id, title: (aw.desc || '').trim(),
+                                                  url: 'https://www.douyin.com/video/' + id});
+                                    }
+                                }
+                                if (!l2.length) break;
+                                const mc2 = (j2.cursor !== null && j2.cursor !== undefined)
+                                    ? j2.cursor : j2.max_cursor;
+                                if (mc2 === null || mc2 === undefined) break;
+                                cursor = String(mc2);
+                                if (maxCount && out.length >= maxCount) break;
+                                await new Promise(r => setTimeout(r, 1200 + Math.random() * 800));
+                            }
+                        }
+                        return {items: out, rejected: rejected, usedSign: canSign};
                     }""",
-                    [template_url["v"], max_count or 0, budget_ms])
-                for it in items_js or []:
+                    [template_url["v"], coll_id, max_count or 0, budget_ms])
+                items = (items_js or {}).get("items") or []
+                for it in items:
                     if it["id"] not in videos:
                         videos[it["id"]] = it
                 if verbose:
                     print(f"[collection] 页内翻页采集 {len(videos)} 条"
-                          f"（has_more 走完或达 max_count）")
+                          f"（usedSign={items_js.get('usedSign') if items_js else '?'}）")
+                # 旧重放被抖音拒（返回 SPA HTML）或页面无签名器 → 无头模式已无法
+                # 翻页，视为降级抛错触发 CDP 真浏览器兜底（CDP 页面有 frontierSign）
+                if items_js and items_js.get("rejected"):
+                    raise RuntimeError("页内签名翻页被拒（SPA HTML），疑似降级")
+                if items_js and not items_js.get("usedSign") and \
+                        len(videos) < (max_count or 10**9):
+                    raise RuntimeError("页面无 frontierSign 签名器，重放翻页不可用，疑似降级")
+            except RuntimeError as e:
+                if "疑似降级" in str(e):
+                    raise   # 交给 fetch_collection_videos 转 CDP 真浏览器重试
+                fetch_pages_err = f"{type(e).__name__}: {str(e)[:120]}"
+                if verbose:
+                    print(f"[collection] 页内翻页异常(转滚动兜底): {fetch_pages_err}")
             except Exception as e:
                 fetch_pages_err = f"{type(e).__name__}: {str(e)[:120]}"
                 if verbose:
