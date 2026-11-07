@@ -549,6 +549,7 @@ function renderSrc(){
     <label class="toggle" title="英文等外语视频：保留原文并逐段对照中文翻译（本地模型翻译）"><input type="checkbox" id="obilingual"> 🔤 双语字幕对照</label>
     <label class="toggle" title="仓颉蒸馏：判定为方法论/教程内容时，额外产出可执行技能包（能力卡），并同步 LifeQA 知识库"><input type="checkbox" id="oskill"> ⚡ 技能包蒸馏</label>
     <label class="toggle" title="抓抖音官方「章节要点」AI卡（内容由AI生成）追加进笔记。默认关：需额外请求抖音接口，批量勾选容易触发风控；也可事后在工具箱→记录升级→🤖抖音AI 批量回填"><input type="checkbox" id="oaigrab"> 🤖 AI解析抓取（抖音·易触发风控）</label>
+    <label class="toggle" title="只对 douyin.com/article/ 纯文本长文链接生效：入库前调本机 qwen3:14b 生成摘要+要点+标签，注入笔记开头（约需 1~3 分钟/条）。视频链接不受影响，仍自动转写+分段蒸馏"><input type="checkbox" id="oanalyze"> 🧠 要点解析（抖音文章链接生效）</label>
     <div class="mut" style="font-size:12px;margin-top:4px">🧠 第三步解析为<b>标配</b>：转录后自动分段蒸馏（标题/摘要/要点/章节/标签，本机 qwen3:14b），摘要保证大于50字</div>`;
   else if(s.kind==='article') opts = `
     <label class="toggle"><input type="checkbox" id="ovault" checked> 写入 Obsidian 库 (Claw/08-文章笔记)</label>
@@ -718,6 +719,7 @@ async function runVideoPipe(){
           body:JSON.stringify({urls:[urls[i]], write_vault:o.vault,
             bilingual:o.bilingual, first_frame:o.firstFrame,
             skill:!!o.skill, ai_grab:!!o.aigrab,
+            article_analyze:!!o.analyze,
             source_hint:s.srcName})});
         const d = await r.json();
         results = results.concat((d.results||[]).map(x=>({...x, _icon:s.icon})));
@@ -727,7 +729,7 @@ async function runVideoPipe(){
       const last = results[results.length-1] || {};
       const secs = Math.round((Date.now()-itemT0)/1000);
       doneMsgs.unshift(last.ok
-        ? `✅ 第 ${i+1} 条完成（${secs} 秒${last.distill_chunks>1?`，分 ${last.distill_chunks} 段蒸馏`:''}）：${esc((last.title||'').slice(0,30))}`
+        ? `✅ 第 ${i+1} 条完成（${secs} 秒${last.distill_chunks>1?`，分 ${last.distill_chunks} 段蒸馏`:''}${last.analyze&&last.analyze.ok?`，🧠 要点解析 ${ (last.analyze.points||[]).length } 条`:''}）：${esc((last.title||'').slice(0,30))}`
         : `❌ 第 ${i+1} 条失败（${secs} 秒）`);
       setBar(results.length/total*100);
       renderResults(results);

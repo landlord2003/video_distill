@@ -915,7 +915,7 @@ def _append_douyin_ai_section(rec, url):
 
 
 def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, source_hint="",
-                   skill_distill=False, ai_grab=False):
+                   skill_distill=False, ai_grab=False, article_analyze=False):
     """链接清单批量：**逐条**「下载 -> 整理 -> 立即入库」。
 
     设计要点（防止一条卡死拖垮整批）：
@@ -928,6 +928,27 @@ def do_video_batch(urls, write_vault, bilingual=False, first_frame_only=False, s
         for raw in urls:
             url = (raw or "").strip()
             if not url or url.startswith("#"):
+                continue
+            # --- 抖音纯文本长文分支：/article/<id> → 文章管线（要点解析按勾选），
+            #     避免被下方视频下载管线误处理 ---
+            if dit and dit.is_article_url(url) and ai:
+                try:
+                    ares = _ingest_douyin_article(url, write_vault=write_vault,
+                                                  analyze=article_analyze)
+                    rec = {"source_url": url, "ok": True, "id": ares.get("id"),
+                           "title": ares.get("title", ""),
+                           "markdown": ares.get("md", ""),
+                           "vault_path": ares.get("vault_path", ""),
+                           "source": "抖音视频/图文", "_icon": "📄"}
+                    an = ares.get("analyze")
+                    if article_analyze and isinstance(an, dict):
+                        rec["analyze"] = an
+                    results.append(rec)
+                except Exception as e:
+                    results.append({"source_url": url, "ok": False,
+                                    "error": f"{type(e).__name__}: {e}",
+                                    "markdown": "", "source": "抖音视频/图文",
+                                    "_icon": "📄"})
                 continue
             # --- 抖音图文帖分支：modal_id/note/slides → 先按图文试；
             #     detail 判实为视频（无 images）则回退下方视频流水线 ---
@@ -1054,7 +1075,7 @@ def save_article(url, platform, title, md, vault_path="", error="", source=""):
     with _lock:
         aid = ""
         status = "done" if md else "error"
-        prev_cat, prev_src = "", ""
+        prev_cat, prev_src, prev_vault, prev_created = "", "", "", ""
         if url:
             with db() as c:
                 row = c.execute("SELECT id FROM articles WHERE url=? AND status=?",
@@ -1063,10 +1084,11 @@ def save_article(url, platform, title, md, vault_path="", error="", source=""):
                 aid = row[0]
         if aid:
             with db() as c:
-                row = c.execute("SELECT category, source FROM articles WHERE id=?",
-                                (aid,)).fetchone()
+                row = c.execute("SELECT category, source, vault_path, created_at "
+                                "FROM articles WHERE id=?", (aid,)).fetchone()
                 if row:
                     prev_cat, prev_src = row[0] or "", row[1] or ""
+                    prev_vault, prev_created = row[2] or "", row[3] or ""
         if not aid:
             aid = short_id(url or title or "article")
         _PLAT_SRC = {"twitter": "Twitter", "wechat": "公众号", "xhs": "小红书",
@@ -1081,8 +1103,8 @@ def save_article(url, platform, title, md, vault_path="", error="", source=""):
                 "(id,url,platform,title,created_at,status,md_len,vault_path,error,category,source) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (aid, url, platform, (title or "")[:120],
-                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                 status, len(md or ""), vault_path, str(error)[:500],
+                 prev_created or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 status, len(md or ""), vault_path or prev_vault, str(error)[:500],
                  prev_cat, def_src))
             c.commit()
     return aid, path
@@ -2799,6 +2821,7 @@ class Handler(BaseHTTPRequestHandler):
                 first_frame_only = bool(data.get("first_frame", False))
                 skill_distill = bool(data.get("skill", False))
                 ai_grab = bool(data.get("ai_grab", False))
+                article_analyze = bool(data.get("article_analyze", False))
                 source_hint = (data.get("source_hint") or "").strip()[:30]
                 if not urls:
                     self._send(400, {"error": "urls 不能为空"})
@@ -2808,7 +2831,8 @@ class Handler(BaseHTTPRequestHandler):
                                          first_frame_only=first_frame_only,
                                          source_hint=source_hint,
                                          skill_distill=skill_distill,
-                                         ai_grab=ai_grab)
+                                         ai_grab=ai_grab,
+                                         article_analyze=article_analyze)
                 self._send(200, {"results": results})
             except Exception as e:
                 self._send(500, {"error": str(e)[:500]})
