@@ -337,9 +337,11 @@
             <div><div class="k">失败</div><div class="v err" id="vk-err">–</div></div>
             <div><div class="k">总字数</div><div class="v" id="vk-chars">–</div></div>
             <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
-              <button class="btn" onclick="loadRecords(true)" title="重新拉取全部记录">↻ 刷新</button>
+              <button class="btn" id="btn-clearflt" onclick="clearFilters()" title="清除类型/分类/来源/作者/搜索词等全部筛选，恢复显示全部记录">🧹 清除筛选</button>
+              <button class="btn" onclick="loadRecords(true)" title="重新拉取全部记录（不会改变筛选条件）">↻ 刷新</button>
             </div>
           </div>
+          <div id="rec-fltbar"></div>
           <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vauthors" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
@@ -1276,6 +1278,38 @@ function recStatus(x){
   if(x.type==='tts') return x.error?'error':'done';
   return x.status||'done';
 }
+// ---------- 筛选状态显形：避免「以为记录全没了」，随时一键恢复 ----------
+function activeFilters(){
+  const out = [];
+  if(_recType) out.push('类型='+(_recTypeMeta[_recType]?.label||_recType));
+  if(_vcatFilter) out.push('分类='+(_vcatFilter==='__uncat__'?'未分类':_vcatFilter));
+  if(_vSrcFilter) out.push('来源='+(_vSrcFilter==='__nosrc__'?'未标来源':_vSrcFilter));
+  if(_vAutFilter) out.push('作者='+(_vAutFilter==='__noaut__'?'无作者':_vAutFilter));
+  const q = ($('#vhq')?.value||'').trim();
+  if(q) out.push('搜索='+q);
+  return out;
+}
+function clearFilters(){
+  _recType=''; _vcatFilter=''; _vSrcFilter=''; _vAutFilter='';
+  const q = $('#vhq'); if(q) q.value='';
+  renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderAuthorChips();
+  renderRecords(); renderBatchBar();
+}
+function renderFilterBar(rows){
+  const el = $('#rec-fltbar'); if(!el) return;
+  const fs = activeFilters();
+  const btn = $('#btn-clearflt');
+  if(btn) btn.style.opacity = fs.length ? '1' : '.5';
+  if(!fs.length){ el.innerHTML=''; return; }
+  el.innerHTML = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+      padding:8px 10px;margin-bottom:10px;border:1px solid var(--acc);border-radius:6px;
+      background:rgba(255,180,60,.08);font-size:12px;line-height:1.6">
+      <b style="color:var(--acc)">🔎 当前筛选生效</b>
+      <span>${fs.map(esc).join(' ／ ')}</span>
+      <span class="mut">显示 ${rows.length} / 共 ${_recRows.length} 条记录（数据未丢失，只是被筛选）</span>
+      <button class="btn pri" style="margin-left:auto" onclick="clearFilters()">🧹 清除全部筛选</button>
+    </div>`;
+}
 function recTitle(x){
   return x.title || x.text || x.url || x.source_url || x.id;
 }
@@ -1302,9 +1336,13 @@ function renderRecords(){
   const err = rows.filter(x=>recStatus(x)==='error').length;
   const chars = rows.reduce((s,x)=>s+(x.md_len||x.chars||0),0);
   const set=(id,v)=>{const el=$(id); if(el) el.textContent=v;};
-  set('#vk-total', rows.length); set('#vk-done', done); set('#vk-err', err); set('#vk-chars', chars);
+  // 「累计入库」恒为全库总数，不受筛选影响；done/err/字数随当前视图统计
+  set('#vk-total', _recRows.length); set('#vk-done', done); set('#vk-err', err); set('#vk-chars', chars);
+  renderFilterBar(rows);
   if(!rows.length){
-    box.innerHTML = `<div class="empty" style="padding:40px">${_recLoaded?'暂无记录':'加载中…'}</div>`;
+    box.innerHTML = `<div class="empty" style="padding:40px">${_recLoaded
+      ? (activeFilters().length ? `当前筛选下无匹配记录（共 ${_recRows.length} 条记录仍在）——点「🧹 清除筛选」恢复` : '暂无记录')
+      : '加载中…'}</div>`;
     return;
   }
   box.innerHTML = rows.map(x=>`
@@ -1549,17 +1587,23 @@ async function batchApply(){
   const cv = $('#bc-cat').value;
   if(cv!=='__keep__'){
     const ni = $('#bc-newcat');
-    body.category = (ni && ni.style.display!=='none' && ni.value.trim()) ? ni.value.trim() : cv;
+    const nv = (ni && ni.style.display!=='none') ? ni.value.trim() : '';
+    if(cv!=='__new__') body.category = nv || cv;
+    else if(nv) body.category = nv;      // 选了新建却没填 → 视为不修改
   }
   const sv = $('#bc-src').value;
   if(sv!=='__keep__'){
     const ni = $('#bc-newsrc');
-    body.source = (ni && ni.style.display!=='none' && ni.value.trim()) ? ni.value.trim() : sv;
+    const nv = (ni && ni.style.display!=='none') ? ni.value.trim() : '';
+    if(sv!=='__newsrc__') body.source = nv || sv;
+    else if(nv) body.source = nv;
   }
   const av = $('#bc-aut').value;
   if(av!=='__keep__'){
     const ni = $('#bc-newaut');
-    body.author = (ni && ni.style.display!=='none' && ni.value.trim()) ? ni.value.trim() : av;
+    const nv = (ni && ni.style.display!=='none') ? ni.value.trim() : '';
+    if(av!=='__new__') body.author = nv || av;
+    else if(nv) body.author = nv;
   }
   if(body.category===undefined && body.source===undefined && body.author===undefined){
     alert('分类/来源/作者都选了「不修改」，没有要改的。'); return; }
@@ -1778,12 +1822,15 @@ async function saveRec(id, type){
   const title = $('#me-title').value.trim();
   if(!title){ $('#me-title').focus(); return; }
   if(type==='article' || type==='voa' || type==='dymusic'){
+    const orig = _recRows.find(r=>r.type===type && r.id===id) || {};
     const newCatInput = $('#me-newcat');
+    const cv = $('#me-cat')?.value || '';
     const cat = (newCatInput && newCatInput.style.display!=='none' && newCatInput.value.trim())
-      ? newCatInput.value.trim() : ($('#me-cat')?.value || '');
+      ? newCatInput.value.trim() : (cv==='__new__' ? (orig.category||'') : cv);
     const newSrcInput = $('#me-newsrc');
+    const sv = $('#me-src')?.value || '';
     const src = (newSrcInput && newSrcInput.style.display!=='none' && newSrcInput.value.trim())
-      ? newSrcInput.value.trim() : ($('#me-src')?.value || '');
+      ? newSrcInput.value.trim() : (sv==='__newsrc__' ? (orig.source||'') : sv);
     const aut = $('#me-aut')?.value.trim() || '';
     try{
       const r = await fetch('/api/articles/'+encodeURIComponent(id), {method:'PATCH',
@@ -1802,12 +1849,15 @@ async function saveRec(id, type){
     }catch(e){ alert('保存异常：'+e.message); }
     return;
   }
+  const orig = _recRows.find(r=>r.type===type && r.id===id) || {};
   const newCatInput = $('#me-newcat');
+  const cv = $('#me-cat')?.value || '';
   const cat = (newCatInput.style.display!=='none' && newCatInput.value.trim())
-    ? newCatInput.value.trim() : $('#me-cat').value;
+    ? newCatInput.value.trim() : (cv==='__new__' ? (orig.category||'') : cv);
   const newSrcInput = $('#me-newsrc');
+  const sv = $('#me-src')?.value || '';
   const src = (newSrcInput.style.display!=='none' && newSrcInput.value.trim())
-    ? newSrcInput.value.trim() : $('#me-src').value;
+    ? newSrcInput.value.trim() : (sv==='__newsrc__' ? (orig.source||'') : sv);
   const aut = $('#me-aut').value.trim() || '';
   try{
     const r = await fetch('/api/video/'+id, {method:'PATCH',
