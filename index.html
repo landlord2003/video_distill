@@ -1257,7 +1257,9 @@ function recRowsFiltered(){
     if(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa' || _recType==='dymusic'){
       if(_vcatFilter){
         const c = (x.category||'').trim();
-        if(_vcatFilter==='__uncat__' ? c!=='' : c!==_vcatFilter) return false;
+        if(_vcatFilter==='__uncat__'){ if(c!=='') return false; }
+        else if(_vcatFilter.includes(CAT_SEP)){ if(c!==_vcatFilter) return false; }
+        else if(c!==_vcatFilter && !c.startsWith(_vcatFilter+CAT_SEP)) return false;
       }
       if(_vSrcFilter){
         const s = (x.source||'').trim();
@@ -1282,7 +1284,7 @@ function recStatus(x){
 function activeFilters(){
   const out = [];
   if(_recType) out.push('类型='+(_recTypeMeta[_recType]?.label||_recType));
-  if(_vcatFilter) out.push('分类='+(_vcatFilter==='__uncat__'?'未分类':_vcatFilter));
+  if(_vcatFilter) out.push('分类='+(_vcatFilter==='__uncat__'?'未分类':catLabel(_vcatFilter)));
   if(_vSrcFilter) out.push('来源='+(_vSrcFilter==='__nosrc__'?'未标来源':_vSrcFilter));
   if(_vAutFilter) out.push('作者='+(_vAutFilter==='__noaut__'?'无作者':_vAutFilter));
   const q = ($('#vhq')?.value||'').trim();
@@ -1354,9 +1356,9 @@ function renderRecords(){
         <div class="u">${esc(recSub(x))}</div>
       </div>
       <div class="sp">
-        ${x.type==='video'&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
+        ${x.type==='video'&&x.category?`<span class="chip" style="cursor:default">${esc(catLabel(x.category))}</span>`:''}
         ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
-        ${(x.type==='article'||x.type==='voa')&&x.category?`<span class="chip" style="cursor:default">${esc(x.category)}</span>`:''}
+        ${(x.type==='article'||x.type==='voa')&&x.category?`<span class="chip" style="cursor:default">${esc(catLabel(x.category))}</span>`:''}
         ${_selManaged(x)&&x.author?`<span class="chip" style="cursor:default;color:var(--acc)">👤 ${esc(x.author)}</span>`:''}
         ${x.type==='article'?`<span class="chip run" style="cursor:default">${esc(x.source||_platLabel[x.platform]||x.platform||'文章')}</span>`:''}
         ${x.type==='dymusic'&&x.source?`<span class="chip run" style="cursor:default">🎵 ${esc(x.source)}</span>`:''}
@@ -1549,10 +1551,7 @@ function batchClassify(){
     <p style="font-size:12px;color:var(--mut);margin:0 0 8px">选「不修改」保持原值；选「未分类/未标来源」则清空该字段。视频与文章/VOA/抖音音乐共用一套分类池。</p>
     <label>分类</label>
     <select id="bc-cat" onchange="document.getElementById('bc-newcat').style.display=this.value==='__new__'?'block':'none'">
-      <option value="__keep__">不修改</option>
-      <option value="">未分类（清空）</option>
-      ${cats.map(c=>`<option value="${escAttr(c)}">${esc(c)}</option>`).join('')}
-      <option value="__new__">➕ 新建分类…</option>
+      ${catOptions('', true)}
     </select>
     <input type="text" id="bc-newcat" placeholder="输入新分类名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
@@ -1638,6 +1637,39 @@ async function batchDelete(){
     loadRecords();
   });
 }
+// ---------- 分类两级（父::子）：category 值编码层级，单级值保持原样 ----------
+const CAT_SEP = '::';
+function catSplit(v){ const s=String(v||''); const i=s.indexOf(CAT_SEP);
+  return i<0 ? {p:s,c:''} : {p:s.slice(0,i), c:s.slice(i+CAT_SEP.length)}; }
+function catLabel(v){ const o=catSplit(v); return o.c ? (o.p+' › '+o.c) : o.p; }
+function catTree(keys, counts){
+  const parents=[], subs={};
+  (keys||[]).forEach(k=>{ if(k.includes(CAT_SEP)){ const p=catSplit(k).p; (subs[p]=subs[p]||[]).push(k); }
+                          else parents.push(k); });
+  Object.keys(subs).forEach(p=>{ if(!parents.includes(p)) parents.push(p); });
+  parents.sort(); Object.keys(subs).forEach(p=>subs[p].sort());
+  return {parents, subs};
+}
+function catTotal(p, subs, counts){ return (counts[p]||0) + (subs[p]||[]).reduce((n,k)=>n+(counts[k]||0),0); }
+function catOptions(current, keep){
+  const {keys, counts} = catCountsAll();
+  const t = catTree(keys, counts);
+  let h = keep ? `<option value="__keep__">不修改</option><option value="">未分类（清空）</option>`
+               : `<option value="">未分类</option>`;
+  t.parents.forEach(p=>{
+    h += `<option value="${escAttr(p)}" ${current===p?'selected':''}>${esc(p)}</option>`;
+    (t.subs[p]||[]).forEach(k=>{
+      h += `<option value="${escAttr(k)}" ${current===k?'selected':''}>　└ ${esc(catSplit(k).c)}</option>`;
+    });
+  });
+  h += `<option value="__new__">➕ 新建分类（子分类请到 ⚙ 管理分类 添加）</option>`;
+  return h;
+}
+function filterStillMatches(flt, val){
+  if(!flt || flt==='__uncat__') return true;
+  if(flt.includes(CAT_SEP)) return flt===val;
+  return val===flt || val.startsWith(flt+CAT_SEP);
+}
 // ---------- 记录中心：分类/来源 chips（视频+文章共用一套池） ----------
 let _vcatFilter = '';      // ''=全部 '__uncat__'=未分类 其他=分类名
 let _catKeys = [];
@@ -1687,13 +1719,14 @@ function renderCatChips(){
   el.style.display='flex';
   const {counts, uncat, cats} = catCounts();
   _catKeys = cats;
-  const chips = [
-    ['', '全部分类'],
-    ['__uncat__', '未分类 '+uncat],
-    ...cats.map(c=>[c, esc(c)+' '+counts[c]])
-  ];
-  el.innerHTML = chips.map(([k,label])=>
-    `<span class="chip ${_vcatFilter===k?'on':''}" style="cursor:pointer" onclick="_setCat('${escAttr(k)}')">${label}</span>`
+  const t = catTree(cats, counts);
+  const chips = [['', '全部分类', ''], ['__uncat__', '未分类 '+uncat, '']];
+  t.parents.forEach(p=>{
+    chips.push([p, esc(p)+' '+catTotal(p,t.subs,counts), 'parent']);
+    (t.subs[p]||[]).forEach(k=>chips.push([k, '　└ '+esc(catSplit(k).c)+' '+counts[k], 'child']));
+  });
+  el.innerHTML = chips.map(([k,label,kind])=>
+    `<span class="chip ${_vcatFilter===k?'on':''}" style="cursor:pointer${kind==='child'?';font-size:11px;opacity:.85':''}" onclick="_setCat('${escAttr(k)}')">${label}</span>`
   ).join('')
   + `<span class="chip mgchip" onclick="manageCats()">⚙ 管理分类</span>`;
 }
@@ -1760,9 +1793,7 @@ function editRec(id, type){
       <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
       <label>分类</label>
       <select id="me-cat" onchange="document.getElementById('me-newcat').style.display=this.value==='__new__'?'block':'none'">
-        <option value="">未分类</option>
-        ${cats.map(c=>`<option value="${escAttr(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
-        <option value="__new__">➕ 新建分类…</option>
+        ${catOptions(cat, false)}
       </select>
       <input type="text" id="me-newcat" placeholder="输入新分类名（填写则优先使用）" maxlength="30"
              style="display:none;margin-top:6px">
@@ -1794,9 +1825,7 @@ function editRec(id, type){
     <input type="text" id="me-title" value="${escAttr(x.title||'')}" maxlength="120">
     <label>分类</label>
     <select id="me-cat" onchange="document.getElementById('me-newcat').style.display=this.value==='__new__'?'block':'none'">
-      <option value="">未分类</option>
-      ${cats.map(c=>`<option value="${escAttr(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
-      <option value="__new__">➕ 新建分类…</option>
+      ${catOptions(cat, false)}
     </select>
     <input type="text" id="me-newcat" placeholder="输入新分类名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
@@ -1839,7 +1868,7 @@ async function saveRec(id, type){
       const d = await r.json();
       if(r.ok && d.ok){
         hideModal();
-        if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
+        if(_vcatFilter && !filterStillMatches(_vcatFilter, cat)) _vcatFilter='';
         if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
         if(_vAutFilter && _vAutFilter!=='__noaut__' && _vAutFilter!==aut) _vAutFilter='';
         renderCatChips(); renderSrcChips(); renderAuthorChips();
@@ -1866,7 +1895,7 @@ async function saveRec(id, type){
     const d = await r.json();
     if(r.ok && d.ok){
       hideModal();
-      if(_vcatFilter && _vcatFilter!=='__uncat__' && _vcatFilter!==cat) _vcatFilter='';
+      if(_vcatFilter && !filterStillMatches(_vcatFilter, cat)) _vcatFilter='';
       if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
       if(_vAutFilter && _vAutFilter!=='__noaut__' && _vAutFilter!==aut) _vAutFilter='';
       loadRecords();
@@ -1875,6 +1904,50 @@ async function saveRec(id, type){
 }
 // 管理分类/来源：重命名 / 删除（删除后记录回落，记录本身不动）
 let _mgDim = 'category', _mgKeys = [];
+function _mgRowsHtml(keys, counts, label, isCat){
+  if(!keys.length) return `<div class="empty" style="padding:14px">${label}池为空，先在上面添加</div>`;
+  if(!isCat) return keys.map((c,i)=>`
+      <div class="catrow">
+        <input type="text" id="mc-${i}" value="${escAttr(c)}" maxlength="30" style="flex:1">
+        <span class="mut" style="flex-shrink:0">${counts[c]||0} 条</span>
+        <button class="btn" onclick="renCat(${i})">重命名</button>
+        <button class="btn del" onclick="delCat(${i})">删除</button>
+      </div>`).join('');
+  const t = catTree(keys, counts);
+  return t.parents.map((p,pi)=>`
+      <div class="catrow" style="margin-top:6px">
+        <input type="text" id="mc-${keys.indexOf(p)}" value="${escAttr(p)}" maxlength="30" style="flex:1">
+        <span class="mut" style="flex-shrink:0">${catTotal(p,t.subs,counts)} 条${(t.subs[p]||[]).length?'（含子类）':''}</span>
+        <button class="btn" onclick="renCat(${keys.indexOf(p)})">重命名</button>
+        <button class="btn del" onclick="delCat(${keys.indexOf(p)})">删除</button>
+      </div>
+      ${(t.subs[p]||[]).map(k=>`
+      <div class="catrow" style="margin-left:26px">
+        <span class="mut">└</span>
+        <input type="text" id="mc-${keys.indexOf(k)}" value="${escAttr(catSplit(k).c)}" maxlength="30" style="flex:1">
+        <span class="mut" style="flex-shrink:0">${counts[k]||0} 条</span>
+        <button class="btn" onclick="renCat(${keys.indexOf(k)})">重命名</button>
+        <button class="btn del" onclick="delCat(${keys.indexOf(k)})">删除</button>
+      </div>`).join('')}
+      <div class="catrow" style="margin-left:26px">
+        <input type="text" id="mc-sub-${pi}" placeholder="给「${escAttr(p)}」添加子分类…" maxlength="30" style="flex:1"
+               onkeydown="if(event.key==='Enter')addSubCat('${escAttr(p)}',${pi})">
+        <button class="btn" onclick="addSubCat('${escAttr(p)}',${pi})">➕ 子分类</button>
+      </div>`).join('');
+}
+async function addSubCat(parent, pi){
+  const el = document.getElementById('mc-sub-'+pi);
+  const name = ((el && el.value) || '').trim();
+  if(!name){ alert('请输入子分类名'); return; }
+  try{
+    const r = await fetch('/api/video/cats/add', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name, parent})});
+    const d = await r.json();
+    if(r.ok && d.ok){ await loadRecords(); manageCats('category'); }
+    else alert('添加子分类失败：'+(d.error||r.status));
+  }catch(e){ alert('添加子分类异常：'+e.message); }
+}
 function manageCats(dim){
   _mgDim = dim || 'category';
   _remember('manageCats', _mgDim);
@@ -1886,22 +1959,16 @@ function manageCats(dim){
   _mgKeys = keys;
   const label = isAut ? '作者' : (isSrc ? '来源' : '分类');
   const fallback = isAut ? '「无作者」' : (isSrc ? '「未标来源」' : '「未分类」');
+  const isCat = !isSrc && !isAut;
   showModal(`<h3>⚙ 管理${label}</h3>
-    <div class="mut" style="margin-bottom:8px">➕ 新添加的${label}会进入${label}池（0 条记录也保留），可在「编辑」或批量工具条里直接选用。删除${label}不会删除记录，其中的记录将回落到${fallback}。</div>
+    <div class="mut" style="margin-bottom:8px">➕ 新添加的${label}会进入${label}池（0 条记录也保留），可在「编辑」或批量工具条里直接选用。删除${label}不会删除记录，其中的记录将回落到${fallback}。${isCat?'分类支持<b>两级</b>：在每个分类下方可添加子分类；删除父分类会连带删除其下子分类。':''}</div>
     <div class="catrow">
       <input type="text" id="mc-new" placeholder="输入新${label}名…" maxlength="30" style="flex:1"
              onkeydown="if(event.key==='Enter')addCat()">
       <button class="btn pri" onclick="addCat()">➕ 添加${label}</button>
     </div>
     <div style="height:8px"></div>
-    ${keys.length ? keys.map((c,i)=>`
-      <div class="catrow">
-        <input type="text" id="mc-${i}" value="${escAttr(c)}" maxlength="30" style="flex:1">
-        <span class="mut" style="flex-shrink:0">${counts[c]} 条</span>
-        <button class="btn" onclick="renCat(${i})">重命名</button>
-        <button class="btn del" onclick="delCat(${i})">删除</button>
-      </div>`).join('')
-    : `<div class="empty" style="padding:14px">${label}池为空，先在上面添加</div>`}
+    ${_mgRowsHtml(keys, counts, label, isCat)}
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="hideModal()">关闭</button>
     </div>`);
@@ -1922,9 +1989,13 @@ async function addCat(){
 }
 function _mgDimParam(){ return _mgDim==='source' ? '?dim=source' : (_mgDim==='author' ? '?dim=author' : ''); }
 async function renCat(i){
-  const nv = document.getElementById('mc-'+i).value.trim();
-  if(!nv){ alert('名称不能为空'); return; }
+  let nv = document.getElementById('mc-'+i).value.trim();
   const old = _mgKeys[i];
+  // 子分类行只显示子名，提交时拼回父前缀保持层级
+  if(_mgDim==='category' && old.includes(CAT_SEP) && !nv.includes(CAT_SEP) && nv){
+    nv = catSplit(old).p + CAT_SEP + nv;
+  }
+  if(!nv){ alert('名称不能为空'); return; }
   try{
     const r = await fetch('/api/video/cats/rename'+_mgDimParam(), {method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -1933,7 +2004,11 @@ async function renCat(i){
     if(r.ok && d.ok){
       if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=nv; }
       else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=nv; }
-      else if(_vcatFilter===old) _vcatFilter = nv;
+      else {
+        if(_vcatFilter===old) _vcatFilter=nv;
+        else if(!old.includes(CAT_SEP) && _vcatFilter.startsWith(old+CAT_SEP))
+          _vcatFilter = nv + CAT_SEP + _vcatFilter.slice((old+CAT_SEP).length);
+      }
       hideModal();
       loadRecords();
     } else { alert('重命名失败：'+(d.error||r.status)); }
@@ -1942,16 +2017,20 @@ async function renCat(i){
 async function delCat(i){
   const old = _mgKeys[i];
   const dimName = _mgDim==='source' ? 'source' : (_mgDim==='author' ? 'author' : 'category');
-  const n = (_managedRows().filter(x=>((x[dimName])||'').trim()===old)).length;
+  const isParentCat = (_mgDim==='category' && !old.includes(CAT_SEP));
+  const n = _managedRows().filter(x=>{
+    const v=((x[dimName])||'').trim();
+    return isParentCat ? (v===old || v.startsWith(old+CAT_SEP)) : v===old;
+  }).length;
   const fb = _mgDim==='source' ? '未标来源' : (_mgDim==='author' ? '无作者' : '未分类');
-  uiConfirm(`删除${_mgDim==='author'?'作者':(_mgDim==='source'?'来源':'分类')}「${old}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。`, async ()=>{
+  uiConfirm(`删除${_mgDim==='author'?'作者':(_mgDim==='source'?'来源':'分类')}「${catLabel(old)}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。${isParentCat?'其下所有子分类将一并删除。':''}`, async ()=>{
     try{
       const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+_mgDimParam(), {method:'DELETE'});
       const d = await r.json();
       if(r.ok && d.ok){
         if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=''; }
         else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=''; }
-        else if(_vcatFilter===old) _vcatFilter='';
+        else if(_vcatFilter===old || (isParentCat && _vcatFilter.startsWith(old+CAT_SEP))) _vcatFilter='';
         hideModal();
         loadRecords();
       } else { alert('删除失败：'+(d.error||r.status)); }

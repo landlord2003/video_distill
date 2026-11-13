@@ -24,6 +24,10 @@ import urllib.parse
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 分类层级：category 字段用 "父::子" 编码两级（现有单级值不变，零迁移）
+CAT_SEP = "::"
+CAT_MAX = 80          # 两级合计放宽到 80（单级仍限 30）
+
 # ---------- 清掉代理，避免 Chromium 继承死代理 ----------
 for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
            "ALL_PROXY", "all_proxy", "no_proxy"):
@@ -2113,6 +2117,8 @@ class Handler(BaseHTTPRequestHandler):
             if not cat:
                 self._send(400, {"error": "分类名为空"})
                 return
+            _is_parent = (_dim_col == "category" and CAT_SEP not in cat)
+            _pref = cat + CAT_SEP
             with _lock:
                 with db() as c:
                     n = c.execute(f"UPDATE videos SET {_dim_col}='' WHERE {_dim_col}=?",
@@ -2122,6 +2128,20 @@ class Handler(BaseHTTPRequestHandler):
                                    (cat,)).rowcount
                     # 维度池里的同名项一并删除（0 条记录的池项也能删）
                     c.execute("DELETE FROM dim_pool WHERE dim=? AND name=?", (_dim_col, cat))
+                    if _is_parent:
+                        # 删父分类：其下所有子分类记录回落未分类、池项一并删除
+                        for _t in ("videos", "articles"):
+                            for _rid, _v in c.execute(
+                                    f"SELECT id, {_dim_col} FROM {_t} WHERE {_dim_col} LIKE ?",
+                                    (_pref + "%",)).fetchall():
+                                if _v and _v.startswith(_pref):
+                                    c.execute(f"UPDATE {_t} SET {_dim_col}='' WHERE id=?", (_rid,))
+                                    n += 1
+                        for (_pn,) in c.execute(
+                                "SELECT name FROM dim_pool WHERE dim=?", (_dim_col,)).fetchall():
+                            if _pn.startswith(_pref):
+                                c.execute("DELETE FROM dim_pool WHERE dim=? AND name=?",
+                                          (_dim_col, _pn))
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return
@@ -2241,7 +2261,7 @@ class Handler(BaseHTTPRequestHandler):
                         c.execute("UPDATE videos SET title=?, vault_path=? WHERE id=?",
                                   (new_title[:120], vpath, vid))
                     if new_cat is not None:
-                        cat = (str(new_cat) or "").strip()[:30]
+                        cat = (str(new_cat) or "").strip()[:CAT_MAX]
                         c.execute("UPDATE videos SET category=? WHERE id=?", (cat, vid))
                     if new_src is not None:
                         sv = (str(new_src) or "").strip()[:30]
@@ -2292,7 +2312,7 @@ class Handler(BaseHTTPRequestHandler):
                     new_cat = data.get("category")
                     if new_cat is not None:
                         c.execute("UPDATE articles SET category=? WHERE id=?",
-                                  ((str(new_cat) or "").strip()[:30], aid))
+                                  ((str(new_cat) or "").strip()[:CAT_MAX], aid))
                     new_src = data.get("source")
                     if new_src is not None:
                         c.execute("UPDATE articles SET source=? WHERE id=?",
@@ -2326,7 +2346,7 @@ class Handler(BaseHTTPRequestHandler):
             if not set_cat and not set_src and not set_aut:
                 self._send(400, {"error": "category/source/author 至少给一个（不修改的字段不要传）"})
                 return
-            cat = (str(data.get("category") or "")).strip()[:30] if set_cat else None
+            cat = (str(data.get("category") or "")).strip()[:CAT_MAX] if set_cat else None
             src = (str(data.get("source") or "")).strip()[:30] if set_src else None
             aut = (str(data.get("author") or "")).strip()[:30] if set_aut else None
             sets = []
@@ -2575,16 +2595,30 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self._send(400, {"error": "请求体解析失败"})
                 return
-            name = (data.get("name") or "").strip()[:30]
-            if not name:
-                self._send(400, {"error": "名称不能为空"})
+            name = (data.get("name") or "").strip()
+            parent = (data.get("parent") or "").strip()
+            if not name or CAT_SEP in name or CAT_SEP in parent:
+                self._send(400, {"error": "名称不能为空，且不可包含层级分隔符"})
+                return
+            if parent and _mg_dim != "category":
+                self._send(400, {"error": "只有分类支持子分类"})
+                return
+            full = (parent + CAT_SEP if parent else "") + name
+            if len(name) > 30 or len(full) > CAT_MAX:
+                self._send(400, {"error": "分类名过长"})
                 return
             with _lock:
                 with db() as c:
+                    if parent and not c.execute(
+                            "SELECT 1 FROM dim_pool WHERE dim='category' AND name=?",
+                            (parent,)).fetchone():
+                        # 父分类可能只存在于记录中（未在池里）→ 自动补一条池项，保证可管理
+                        c.execute("INSERT OR IGNORE INTO dim_pool(dim,name) VALUES('category',?)",
+                                  (parent,))
                     cur = c.execute("INSERT OR IGNORE INTO dim_pool(dim,name) VALUES(?,?)",
-                                    (_mg_dim, name))
+                                    (_mg_dim, full))
                     c.commit()
-            self._send(200, {"ok": True, "added": cur.rowcount})
+            self._send(200, {"ok": True, "added": cur.rowcount, "name": full})
             return
         if _rename_p == "/api/video/cats/rename":
             try:
@@ -2594,11 +2628,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "请求体解析失败"})
                 return
             old = (data.get("old") or "").strip()
-            new = (data.get("new") or "").strip()[:30]
-            if not old or not new:
-                self._send(400, {"error": "分类名不能为空"})
+            new = (data.get("new") or "").strip()
+            _old_is_sub = CAT_SEP in old
+            _new_is_sub = CAT_SEP in new
+            if (not old or not new or len(new) > CAT_MAX
+                    or _old_is_sub != _new_is_sub
+                    or (_old_is_sub and old.split(CAT_SEP, 1)[0] != new.split(CAT_SEP, 1)[0])):
+                self._send(400, {"error": "名称为空、层级不一致、过长，或子分类试图换父分类"})
                 return
             _col = _mg_dim
+            # 一级分类改名时，联动改所有 "父::子" 前缀；子分类改名只按全值处理
+            _is_parent = (_mg_dim == "category" and CAT_SEP not in old)
             with _lock:
                 with db() as c:
                     n = c.execute(f"UPDATE videos SET {_col}=? WHERE {_col}=?",
@@ -2609,6 +2649,25 @@ class Handler(BaseHTTPRequestHandler):
                     # 维度池里的同名项一并改名（0 条记录的池项也能重命名）
                     c.execute("UPDATE dim_pool SET name=? WHERE dim=? AND name=?",
                               (new, _mg_dim, old))
+                    if _is_parent:
+                        pref = old + CAT_SEP
+                        # Python 判前缀，避免 LIKE 通配符误伤
+                        for _t in ("videos", "articles"):
+                            for _rid, _v in c.execute(
+                                    f"SELECT id, {_col} FROM {_t} WHERE {_col} LIKE ?",
+                                    (pref + "%",)).fetchall():
+                                if _v and _v.startswith(pref):
+                                    _nv = new + CAT_SEP + _v[len(pref):]
+                                    if len(_nv) <= CAT_MAX:
+                                        c.execute(f"UPDATE {_t} SET {_col}=? WHERE id=?",
+                                                  (_nv, _rid))
+                                        n += 1
+                        for (_pn,) in c.execute(
+                                "SELECT name FROM dim_pool WHERE dim=?", (_mg_dim,)).fetchall():
+                            if _pn.startswith(pref):
+                                _nv = new + CAT_SEP + _pn[len(pref):]
+                                c.execute("UPDATE OR IGNORE dim_pool SET name=? WHERE dim=? AND name=?",
+                                          (_nv, _mg_dim, _pn))
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return
