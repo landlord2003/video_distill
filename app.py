@@ -653,6 +653,11 @@ def init_db():
             c.execute("ALTER TABLE videos ADD COLUMN author TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 列已存在
+        # 迁移：videos 增加 series 列（作品系列，''=无系列；值形如 "作者::系列名"）
+        try:
+            c.execute("ALTER TABLE videos ADD COLUMN series TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         # 维度池：预先建好的分类/来源/作者名（0 条记录也保留，供管理弹窗直接添加）
         c.execute("""CREATE TABLE IF NOT EXISTS dim_pool (
             dim TEXT NOT NULL,
@@ -672,7 +677,7 @@ def init_db():
             error TEXT
         )""")
         # 迁移：articles 增加 category/source/author 列（与 videos 同一套分类/来源/作者池，''=未分类/未标来源/无作者）
-        for _col in ("category", "source", "author"):
+        for _col in ("category", "source", "author", "series"):
             try:
                 c.execute(f"ALTER TABLE articles ADD COLUMN {_col} TEXT DEFAULT ''")
             except sqlite3.OperationalError:
@@ -1869,18 +1874,18 @@ class Handler(BaseHTTPRequestHandler):
                     like = f"%{q}%"
                     cur = c.execute(
                         "SELECT id,url,platform,title,created_at,md_len,status,vault_path,"
-                        "category,source,author "
+                        "category,source,author,series "
                         "FROM articles WHERE url LIKE ? OR title LIKE ? "
                         "ORDER BY created_at DESC LIMIT 200", (like, like))
                 else:
                     cur = c.execute(
                         "SELECT id,url,platform,title,created_at,md_len,status,vault_path,"
-                        "category,source,author "
+                        "category,source,author,series "
                         "FROM articles ORDER BY created_at DESC LIMIT 5000")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "url", "platform", "title", "created_at",
-                         "md_len", "status", "vault_path", "category", "source", "author"], r)))
+                         "md_len", "status", "vault_path", "category", "source", "author", "series"], r)))
             self._send(200, rows)
             return
         m = re.match(r"^/api/articles/([^/]+)$", p)
@@ -1889,14 +1894,14 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 row = c.execute(
                     "SELECT id,url,platform,title,created_at,md_len,status,vault_path,error,"
-                    "category,source,author "
+                    "category,source,author,series "
                     "FROM articles WHERE id=?", (aid,)).fetchone()
             if not row:
                 self._send(404, {"error": "not found"})
                 return
             rec = dict(zip(["id", "url", "platform", "title", "created_at",
                             "md_len", "status", "vault_path", "error",
-                            "category", "source", "author"], row))
+                            "category", "source", "author", "series"], row))
             md = ""
             vpath = rec.get("vault_path") or ""
             if vpath and os.path.isfile(vpath):
@@ -1953,19 +1958,19 @@ class Handler(BaseHTTPRequestHandler):
             rows = []
             with db() as c:
                 cur = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,category,source,author "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,category,source,author,series "
                     "FROM videos ORDER BY created_at DESC LIMIT 5000")
                 for r in cur.fetchall():
                     rows.append(dict(zip(
                         ["id", "source_url", "title", "created_at",
-                         "md_len", "status", "vault_path", "category", "source", "author"], r)))
+                         "md_len", "status", "vault_path", "category", "source", "author", "series"], r)))
             self._send(200, rows)
             return
         if p == "/api/dims":
             # 维度池（管理弹窗预先添加的分类/来源/作者名，0 条记录也保留）
             out = {}
             with db() as c:
-                for d in ("category", "source", "author"):
+                for d in ("category", "source", "author", "series"):
                     out[d] = [r[0] for r in c.execute(
                         "SELECT name FROM dim_pool WHERE dim=? ORDER BY name", (d,)).fetchall()]
             self._send(200, out)
@@ -2064,13 +2069,13 @@ class Handler(BaseHTTPRequestHandler):
             vid = m.group(1)
             with db() as c:
                 row = c.execute(
-                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error,category,source,author "
+                    "SELECT id,source_url,title,created_at,md_len,status,vault_path,error,category,source,author,series "
                     "FROM videos WHERE id=?", (vid,)).fetchone()
             if not row:
                 self._send(404, {"error": "not found"})
                 return
             rec = dict(zip(["id", "source_url", "title", "created_at", "md_len",
-                            "status", "vault_path", "error", "category", "source", "author"], row))
+                            "status", "vault_path", "error", "category", "source", "author", "series"], row))
             md = ""
             vpath = rec.get("vault_path") or ""
             if vpath and os.path.isfile(vpath):
@@ -2110,7 +2115,8 @@ class Handler(BaseHTTPRequestHandler):
         # 删除分类/来源/作者：该值下的记录回落（记录本身不动）；?dim=source / ?dim=author 指定列
         _path_only, _, _query = self.path.partition("?")
         _dim_col = ("author" if "dim=author" in _query
-                    else "source" if "dim=source" in _query else "category")
+                    else "source" if "dim=source" in _query
+                    else "series" if "dim=series" in _query else "category")
         m = re.match(r"^/api/video/cats/(.+)$", _path_only)
         if m:
             cat = urllib.parse.unquote(m.group(1)).strip()
@@ -2142,6 +2148,19 @@ class Handler(BaseHTTPRequestHandler):
                             if _pn.startswith(_pref):
                                 c.execute("DELETE FROM dim_pool WHERE dim=? AND name=?",
                                           (_dim_col, _pn))
+                    if _dim_col == "author":
+                        # 删作者：其下作品系列一并清空（记录本身不动）
+                        _apref = cat + CAT_SEP
+                        for _t in ("videos", "articles"):
+                            for _rid, _v in c.execute(
+                                    f"SELECT id, series FROM {_t} WHERE series LIKE ?",
+                                    (_apref + "%",)).fetchall():
+                                if _v and _v.startswith(_apref):
+                                    c.execute(f"UPDATE {_t} SET series='' WHERE id=?", (_rid,))
+                        for (_pn,) in c.execute(
+                                "SELECT name FROM dim_pool WHERE dim='series'").fetchall():
+                            if _pn.startswith(_apref):
+                                c.execute("DELETE FROM dim_pool WHERE dim='series' AND name=?", (_pn,))
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return
@@ -2269,6 +2288,21 @@ class Handler(BaseHTTPRequestHandler):
                     if data.get("author") is not None:
                         aut = (str(data.get("author")) or "").strip()[:30]
                         c.execute("UPDATE videos SET author=? WHERE id=?", (aut, vid))
+                        # 作者改名时同步系列归属前缀，避免系列仍挂在旧作者下
+                        _srow = c.execute("SELECT series FROM videos WHERE id=?", (vid,)).fetchone()
+                        _sold = (_srow[0] if _srow else "") or ""
+                        if CAT_SEP in _sold:
+                            _snew = aut + CAT_SEP + _sold.split(CAT_SEP, 1)[1]
+                            c.execute("UPDATE videos SET series=? WHERE id=?",
+                                      (_snew[:CAT_MAX], vid))
+                    if data.get("series") is not None:
+                        ser = (str(data.get("series")) or "").strip()[:CAT_MAX]
+                        # 同时改作者时，强制把系列归属对齐新作者（防绕过 UI 造成孤儿系列）
+                        _aut_now = ((str(data.get("author")) or "").strip()[:30]
+                                    if data.get("author") is not None else "")
+                        if _aut_now and CAT_SEP in ser:
+                            ser = (_aut_now + CAT_SEP + ser.split(CAT_SEP, 1)[1])[:CAT_MAX]
+                        c.execute("UPDATE videos SET series=? WHERE id=?", (ser, vid))
                     c.commit()
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
@@ -2318,8 +2352,22 @@ class Handler(BaseHTTPRequestHandler):
                         c.execute("UPDATE articles SET source=? WHERE id=?",
                                   ((str(new_src) or "").strip()[:30], aid))
                     if data.get("author") is not None:
-                        c.execute("UPDATE articles SET author=? WHERE id=?",
-                                  ((str(data.get("author")) or "").strip()[:30], aid))
+                        aut = (str(data.get("author")) or "").strip()[:30]
+                        c.execute("UPDATE articles SET author=? WHERE id=?", (aut, aid))
+                        _srow = c.execute("SELECT series FROM articles WHERE id=?", (aid,)).fetchone()
+                        _sold = (_srow[0] if _srow else "") or ""
+                        if CAT_SEP in _sold:
+                            _snew = aut + CAT_SEP + _sold.split(CAT_SEP, 1)[1]
+                            c.execute("UPDATE articles SET series=? WHERE id=?",
+                                      (_snew[:CAT_MAX], aid))
+                    if data.get("series") is not None:
+                        _ser = (str(data.get("series")) or "").strip()[:CAT_MAX]
+                        _aut_now = ((str(data.get("author")) or "").strip()[:30]
+                                    if data.get("author") is not None else "")
+                        if _aut_now and CAT_SEP in _ser:
+                            _ser = (_aut_now + CAT_SEP
+                                    + _ser.split(CAT_SEP, 1)[1])[:CAT_MAX]
+                        c.execute("UPDATE articles SET series=? WHERE id=?", (_ser, aid))
                     c.commit()
             self._send(200, {"ok": True, "vault_renamed": vault_renamed,
                              "vault_path": vpath})
@@ -2343,12 +2391,16 @@ class Handler(BaseHTTPRequestHandler):
             set_cat = "category" in data
             set_src = "source" in data
             set_aut = "author" in data
-            if not set_cat and not set_src and not set_aut:
-                self._send(400, {"error": "category/source/author 至少给一个（不修改的字段不要传）"})
+            set_ser = "series" in data
+            if not (set_cat or set_src or set_aut or set_ser):
+                self._send(400, {"error": "category/source/author/series 至少给一个（不修改的字段不要传）"})
                 return
             cat = (str(data.get("category") or "")).strip()[:CAT_MAX] if set_cat else None
             src = (str(data.get("source") or "")).strip()[:30] if set_src else None
             aut = (str(data.get("author") or "")).strip()[:30] if set_aut else None
+            ser = (str(data.get("series") or "")).strip()[:CAT_MAX] if set_ser else None
+            if set_ser and set_aut and aut and CAT_SEP in (ser or ""):
+                ser = (aut + CAT_SEP + ser.split(CAT_SEP, 1)[1])[:CAT_MAX]
             sets = []
             vals0 = []
             if set_cat:
@@ -2357,6 +2409,8 @@ class Handler(BaseHTTPRequestHandler):
                 sets.append("source=?"); vals0.append(src)
             if set_aut:
                 sets.append("author=?"); vals0.append(aut)
+            if set_ser:
+                sets.append("series=?"); vals0.append(ser)
             updated, missing = 0, []
             with _lock:
                 with db() as c:
@@ -2378,6 +2432,15 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         c.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE id=?",
                                   vals0 + [rid])
+                        # 批量改作者而没显式改系列时，同步系列前缀
+                        if set_aut and not set_ser:
+                            _srow = c.execute(
+                                f"SELECT series FROM {table} WHERE id=?", (rid,)).fetchone()
+                            _sold = (_srow[0] if _srow else "") or ""
+                            if CAT_SEP in _sold:
+                                _snew = aut + CAT_SEP + _sold.split(CAT_SEP, 1)[1]
+                                c.execute(f"UPDATE {table} SET series=? WHERE id=?",
+                                          (_snew[:CAT_MAX], rid))
                         updated += 1
                     c.commit()
             self._send(200, {"ok": True, "updated": updated, "missing": missing})
@@ -2586,7 +2649,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         _rename_p, _, _rename_q = self.path.partition("?")
         _mg_dim = ("author" if "dim=author" in _rename_q
-                   else "source" if "dim=source" in _rename_q else "category")
+                   else "source" if "dim=source" in _rename_q
+                   else "series" if "dim=series" in _rename_q else "category")
         # 添加分类/来源/作者：写入维度池（0 条记录也保留，供批量归类/编辑下拉选用）
         if _rename_p == "/api/video/cats/add":
             try:
@@ -2600,16 +2664,19 @@ class Handler(BaseHTTPRequestHandler):
             if not name or CAT_SEP in name or CAT_SEP in parent:
                 self._send(400, {"error": "名称不能为空，且不可包含层级分隔符"})
                 return
-            if parent and _mg_dim != "category":
-                self._send(400, {"error": "只有分类支持子分类"})
+            if parent and _mg_dim not in ("category", "series"):
+                self._send(400, {"error": "只有分类/作品系列支持层级"})
+                return
+            if _mg_dim == "series" and not parent:
+                self._send(400, {"error": "作品系列必须指定所属作者（parent）"})
                 return
             full = (parent + CAT_SEP if parent else "") + name
             if len(name) > 30 or len(full) > CAT_MAX:
-                self._send(400, {"error": "分类名过长"})
+                self._send(400, {"error": "名称过长"})
                 return
             with _lock:
                 with db() as c:
-                    if parent and not c.execute(
+                    if parent and _mg_dim == "category" and not c.execute(
                             "SELECT 1 FROM dim_pool WHERE dim='category' AND name=?",
                             (parent,)).fetchone():
                         # 父分类可能只存在于记录中（未在池里）→ 自动补一条池项，保证可管理
@@ -2668,6 +2735,24 @@ class Handler(BaseHTTPRequestHandler):
                                 _nv = new + CAT_SEP + _pn[len(pref):]
                                 c.execute("UPDATE OR IGNORE dim_pool SET name=? WHERE dim=? AND name=?",
                                           (_nv, _mg_dim, _pn))
+                    if _mg_dim == "author":
+                        # 作者改名：其下所有作品系列的归属前缀同步改掉
+                        _apref = old + CAT_SEP
+                        for _t in ("videos", "articles"):
+                            for _rid, _v in c.execute(
+                                    f"SELECT id, series FROM {_t} WHERE series LIKE ?",
+                                    (_apref + "%",)).fetchall():
+                                if _v and _v.startswith(_apref):
+                                    _sv = new + CAT_SEP + _v[len(_apref):]
+                                    if len(_sv) <= CAT_MAX:
+                                        c.execute(f"UPDATE {_t} SET series=? WHERE id=?",
+                                                  (_sv, _rid))
+                        for (_pn,) in c.execute(
+                                "SELECT name FROM dim_pool WHERE dim='series'").fetchall():
+                            if _pn.startswith(_apref):
+                                _sv = new + CAT_SEP + _pn[len(_apref):]
+                                c.execute("UPDATE OR IGNORE dim_pool SET name=? WHERE dim='series' AND name=?",
+                                          (_sv, _pn))
                     c.commit()
             self._send(200, {"ok": True, "affected": n})
             return

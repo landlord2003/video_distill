@@ -345,7 +345,8 @@
           <div id="vcats" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vsrcs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
           <div id="vauthors" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
-          <input type="text" id="vhq" placeholder="🔍 模糊搜索全部记录（标题 / 来源 / 链接 / 分类 / 作者，多关键词空格分隔）…" style="margin-bottom:12px;width:100%" oninput="renderRecords()">
+          <div id="vseries" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+          <input type="text" id="vhq" placeholder="🔍 模糊搜索全部记录（标题 / 来源 / 链接 / 分类 / 作者 / 作品系列，多关键词空格分隔）…" style="margin-bottom:12px;width:100%" oninput="renderRecords()">
           <div id="rec-batchbar"></div>
           <div id="rec-detail"></div>
           <div id="rec-list"><div class="empty" style="padding:14px">加载中…</div></div>
@@ -1216,7 +1217,8 @@ async function loadRecords(force){
       fetch('/api/tts/history').then(r=>r.json()).catch(()=>[]),
       fetch('/api/dims').then(r=>r.json()).catch(()=>({})),
     ]);
-    _dimPool = {category:(dm&&dm.category)||[], source:(dm&&dm.source)||[], author:(dm&&dm.author)||[]};
+    _dimPool = {category:(dm&&dm.category)||[], source:(dm&&dm.source)||[],
+                author:(dm&&dm.author)||[], series:(dm&&dm.series)||[]};
     _recRows = [
       ...(cw||[]).map(x=>({...x, type:'web'})),
       ...(vd||[]).map(x=>({...x, type:'video'})),
@@ -1229,7 +1231,7 @@ async function loadRecords(force){
     _recLoaded = true;
   }catch(e){ _recRows = []; }
   renderRecTypeChips();
-  renderCatChips(); renderSrcChips(); renderAuthorChips();
+  renderCatChips(); renderSrcChips(); renderAuthorChips(); renderSerChips();
   renderRecords();
   renderBatchBar();
 }
@@ -1242,7 +1244,7 @@ function renderRecTypeChips(){
   box.innerHTML = mk('', '📚 全部', _recRows.length)
     + Object.keys(_recTypeMeta).map(k=>mk(k, _recTypeMeta[k].label, counts[k]||0)).join('');
 }
-function _setRecType(k){ _recType = k; _vcatFilter=''; _vSrcFilter=''; _vAutFilter=''; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderAuthorChips(); renderRecords(); }
+function _setRecType(k){ _recType = k; _vcatFilter=''; _vSrcFilter=''; _vAutFilter=''; _vSerFilter=''; renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderAuthorChips(); renderSerChips(); renderRecords(); }
 // ---------- 模糊查询：多关键词空格分隔、乱序命中（如「德黑兰 战场」可定位「德黑兰会议与欧洲第二战场」） ----------
 function fuzzyMatch(hay, q){
   const toks = String(q||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -1269,9 +1271,13 @@ function recRowsFiltered(){
         const a = (x.author||'').trim();
         if(_vAutFilter==='__noaut__' ? a!=='' : a!==_vAutFilter) return false;
       }
+      if(_vSerFilter){
+        const sv = (x.series||'').trim();
+        if(_vSerFilter==='__noser__' ? sv!=='' : sv!==_vSerFilter) return false;
+      }
     }
     if(!q.trim()) return true;
-    const hay = [x.title,x.text,x.url,x.source_url,x.source,x.category,x.author,x.voice,x.id]
+    const hay = [x.title,x.text,x.url,x.source_url,x.source,x.category,x.author,x.series,x.voice,x.id]
       .map(v=>String(v||'').toLowerCase()).join('\n');
     return fuzzyMatch(hay, q);
   });
@@ -1287,14 +1293,15 @@ function activeFilters(){
   if(_vcatFilter) out.push('分类='+(_vcatFilter==='__uncat__'?'未分类':catLabel(_vcatFilter)));
   if(_vSrcFilter) out.push('来源='+(_vSrcFilter==='__nosrc__'?'未标来源':_vSrcFilter));
   if(_vAutFilter) out.push('作者='+(_vAutFilter==='__noaut__'?'无作者':_vAutFilter));
+  if(_vSerFilter) out.push('系列='+(_vSerFilter==='__noser__'?'无系列':serLabel(_vSerFilter)));
   const q = ($('#vhq')?.value||'').trim();
   if(q) out.push('搜索='+q);
   return out;
 }
 function clearFilters(){
-  _recType=''; _vcatFilter=''; _vSrcFilter=''; _vAutFilter='';
+  _recType=''; _vcatFilter=''; _vSrcFilter=''; _vAutFilter=''; _vSerFilter='';
   const q = $('#vhq'); if(q) q.value='';
-  renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderAuthorChips();
+  renderRecTypeChips(); renderCatChips(); renderSrcChips(); renderAuthorChips(); renderSerChips();
   renderRecords(); renderBatchBar();
 }
 function renderFilterBar(rows){
@@ -1360,6 +1367,7 @@ function renderRecords(){
         ${x.type==='video'&&x.source?`<span class="chip run" style="cursor:default">${esc(x.source)}</span>`:''}
         ${(x.type==='article'||x.type==='voa')&&x.category?`<span class="chip" style="cursor:default">${esc(catLabel(x.category))}</span>`:''}
         ${_selManaged(x)&&x.author?`<span class="chip" style="cursor:default;color:var(--acc)">👤 ${esc(x.author)}</span>`:''}
+        ${_selManaged(x)&&x.series?`<span class="chip" style="cursor:default;color:var(--acc2)">📚 ${esc(serSplit(x.series).n)}</span>`:''}
         ${x.type==='article'?`<span class="chip run" style="cursor:default">${esc(x.source||_platLabel[x.platform]||x.platform||'文章')}</span>`:''}
         ${x.type==='dymusic'&&x.source?`<span class="chip run" style="cursor:default">🎵 ${esc(x.source)}</span>`:''}
         ${x.type==='dymusic'&&recStatus(x)==='done'?`<button class="btn pri" onclick="event.stopPropagation();window.open('/player/douyin/${escAttr(x.id)}')">▶ 播放</button>`:''}
@@ -1565,7 +1573,7 @@ function batchClassify(){
     <input type="text" id="bc-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
     <label>作者（批量填入：所有选中条目统一写为同一作者）</label>
-    <select id="bc-aut" onchange="document.getElementById('bc-newaut').style.display=this.value==='__new__'?'block':'none'">
+    <select id="bc-aut" onchange="document.getElementById('bc-newaut').style.display=this.value==='__new__'?'block':'none';refreshSerOpts('bc')">
       <option value="__keep__">不修改</option>
       <option value="">清空作者</option>
       ${autCountsAll().keys.map(a=>`<option value="${escAttr(a)}">${esc(a)}</option>`).join('')}
@@ -1574,6 +1582,12 @@ function batchClassify(){
     <input type="text" id="bc-newaut" placeholder="输入作者名（应用到全部选中条目）" maxlength="30"
            style="display:none;margin-top:6px" list="bc-autlist">
     <datalist id="bc-autlist">${autCountsAll().keys.map(a=>`<option value="${escAttr(a)}">`).join('')}</datalist>
+    <label>作品系列（批量：所有选中条目统一写为同一系列）</label>
+    <select id="bc-ser" onchange="document.getElementById('bc-newser').style.display=this.value==='__newser__'?'block':'none'">
+      ${serOptions('', '', true)}
+    </select>
+    <input type="text" id="bc-newser" placeholder="输入新系列名（需同时指定作者）" maxlength="30"
+           style="display:none;margin-top:6px">
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn" onclick="hideModal()">取消</button>
       <button class="btn pri" onclick="batchApply()">应用到 ${items.length} 条</button>
@@ -1604,8 +1618,10 @@ async function batchApply(){
     if(av!=='__new__') body.author = nv || av;
     else if(nv) body.author = nv;
   }
-  if(body.category===undefined && body.source===undefined && body.author===undefined){
-    alert('分类/来源/作者都选了「不修改」，没有要改的。'); return; }
+  const ser = _serVal('bc', body.author===undefined ? '' : body.author, undefined, true);
+  if(ser!==undefined) body.series = ser;
+  if(body.category===undefined && body.source===undefined && body.author===undefined && body.series===undefined){
+    alert('分类/来源/作者/作品系列都选了「不修改」，没有要改的。'); return; }
   try{
     const r = await fetch('/api/records/batch',{method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -1665,6 +1681,61 @@ function catOptions(current, keep){
   h += `<option value="__new__">➕ 新建分类（子分类请到 ⚙ 管理分类 添加）</option>`;
   return h;
 }
+// ---------- 作品系列：值形如「作者::系列名」，挂在作者下面，区分同一作者的不同系列 ----------
+function serSplit(v){ const t=String(v||''); const i=t.indexOf(CAT_SEP);
+  return i<0 ? {a:'', n:t} : {a:t.slice(0,i), n:t.slice(i+CAT_SEP.length)}; }
+function serLabel(v){ const o=serSplit(v); return o.a ? (o.a+' › '+o.n) : o.n; }
+function serCountsAll(){ return _mergePool(_countDim(_managedRows(), 'series'), 'series'); }
+function serOptions(author, current, keep){
+  const {keys} = serCountsAll();
+  const a = String(author||'').trim();
+  let h = keep ? `<option value="__keep__">不修改</option><option value="">清空系列</option>`
+               : `<option value="">无系列</option>`;
+  const shown = keys.filter(k=>!a || serSplit(k).a===a || k===current);
+  shown.forEach(k=>{ h += `<option value="${escAttr(k)}" ${current===k?'selected':''}>${esc(serLabel(k))}</option>`; });
+  // 当前值不在池里（历史遗留）也要保住，避免打开编辑弹窗保存时被静默清空
+  if(current && !shown.includes(current)) h += `<option value="${escAttr(current)}" selected>${esc(serLabel(current))}</option>`;
+  h += `<option value="__newser__">➕ 新建作品系列…</option>`;
+  return h;
+}
+// 作者变化时刷新系列下拉（保留当前选中值）
+function refreshSerOpts(scope){
+  const sel = document.getElementById(scope==='bc'?'bc-ser':'me-ser');
+  if(!sel) return;
+  let aut = '';
+  if(scope==='bc'){
+    const av = document.getElementById('bc-aut')?.value || '';
+    const ni = document.getElementById('bc-newaut');
+    aut = av==='__new__' ? ((ni && ni.style.display!=='none') ? ni.value.trim() : '')
+        : (av==='__keep__' ? '' : av);
+  } else {
+    aut = (document.getElementById('me-aut')?.value || '').trim();
+  }
+  const cur = sel.value;
+  sel.innerHTML = serOptions(aut, cur==='__newser__' ? '' : cur, scope==='bc');
+  if(cur==='__newser__') sel.value = '__newser__';
+}
+// 读取系列下拉的值；keep=true 时「不修改」返回 undefined（不写入 body）
+function _serVal(scope, aut, origSer, keep){
+  const sel = document.getElementById(scope==='bc'?'bc-ser':'me-ser');
+  if(!sel) return keep ? undefined : origSer;
+  const v = sel.value;
+  if(keep && v==='__keep__') return undefined;
+  let out;
+  if(v!=='__newser__') out = v;
+  else {
+    const ni = document.getElementById(scope==='bc'?'bc-newser':'me-newser');
+    const nv = ((ni && ni.value) || '').trim();
+    if(!nv) return origSer;
+    if(!aut){ alert('新建作品系列需要先填写/选择作者'); return origSer; }
+    out = aut + CAT_SEP + nv;
+  }
+  // 作者被改动时，把系列归属前缀同步到新作者
+  if(out && out.includes(CAT_SEP) && aut && serSplit(out).a!==aut){
+    out = aut + CAT_SEP + serSplit(out).n;
+  }
+  return out;
+}
 function filterStillMatches(flt, val){
   if(!flt || flt==='__uncat__') return true;
   if(flt.includes(CAT_SEP)) return flt===val;
@@ -1688,7 +1759,7 @@ function _chipRows(){
 }
 // 全量并集口径：编辑弹窗分类/来源下拉、管理弹窗（重命名/删除作用于视频+文章）
 // 合并维度池（管理弹窗预先添加、0 条记录也保留的名字）
-let _dimPool = {category:[], source:[], author:[]};
+let _dimPool = {category:[], source:[], author:[], series:[]};
 function _mergePool(r, dim){
   const counts = {...r.counts};
   (_dimPool[dim]||[]).forEach(n=>{ if(!(n in counts)) counts[n]=0; });
@@ -1755,6 +1826,22 @@ function _setCat(k){ _vcatFilter = k; renderCatChips(); renderRecords(); }
 // ---------- 作者维度（视频+文章/VOA/抖音音乐共用一套池，自由文本） ----------
 let _vAutFilter = '', _autKeys = [];
 function autCountsAll(){ return _mergePool(_countDim(_managedRows(), 'author'), 'author'); }
+let _vSerFilter = '';
+function renderSerChips(){
+  const el = $('#vseries'); if(!el) return;
+  if(!(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa' || _recType==='dymusic')){ el.style.display='none'; return; }
+  el.style.display='flex';
+  const r = _countDim(_chipRows(), 'series');
+  const {keys} = serCountsAll();
+  const chips = [['', '全部系列']];
+  if(r.none) chips.push(['__noser__', '无系列 '+r.none]);
+  keys.forEach(k=>chips.push([k, '📚 '+esc(serLabel(k))+' '+(r.counts[k]||0)]));
+  el.innerHTML = chips.map(([k,label])=>
+    `<span class="chip ${_vSerFilter===k?'on':''}" style="cursor:pointer" onclick="_setSer('${escAttr(k)}')">${label}</span>`
+  ).join('')
+  + `<span class="chip mgchip" onclick="manageCats('author')">⚙ 管理作者 / 作品系列</span>`;
+}
+function _setSer(k){ _vSerFilter = k; renderSerChips(); renderRecords(); }
 function renderAuthorChips(){
   const el = $('#vauthors'); if(!el) return;
   if(!(_recType==='' || _recType==='video' || _recType==='article' || _recType==='voa' || _recType==='dymusic')){ el.style.display='none'; return; }
@@ -1767,7 +1854,7 @@ function renderAuthorChips(){
   el.innerHTML = chips.map(([k,label])=>
     `<span class="chip ${_vAutFilter===k?'on':''}" style="cursor:pointer" onclick="_setAut('${escAttr(k)}')">${label}</span>`
   ).join('')
-  + `<span class="chip mgchip" onclick="manageCats('author')">⚙ 管理作者</span>`;
+  + `<span class="chip mgchip" onclick="manageCats('author')">⚙ 管理作者 / 作品系列</span>`;
 }
 function _setAut(k){ _vAutFilter = k; renderAuthorChips(); renderRecords(); }
 // 编辑记录：改名（同步重命名库内笔记文件）+ 归类（分类/来源：视频+文章共用一套池）
@@ -1775,7 +1862,7 @@ function _mgLinks(){
   return `<div style="display:flex;gap:8px;margin-top:6px">
     <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('category')">⚙ 管理分类</button>
     <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('source')">⚙ 管理来源</button>
-    <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('author')">👤 管理作者</button>
+    <button class="btn" style="font-size:11px;padding:2px 10px" onclick="hideModal();manageCats('author')">👤 管理作者 / 作品系列</button>
   </div>`;
 }
 function editRec(id, type){
@@ -1806,8 +1893,14 @@ function editRec(id, type){
       <input type="text" id="me-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
              style="display:none;margin-top:6px">
       <label>作者</label>
-      <input type="text" id="me-aut" list="me-autlist" value="${escAttr(aut)}" maxlength="30" placeholder="填写作者（可选，已有作者自动联想）">
+      <input type="text" id="me-aut" list="me-autlist" value="${escAttr(aut)}" maxlength="30" placeholder="填写作者（可选，已有作者自动联想）" oninput="refreshSerOpts('me')">
       <datalist id="me-autlist">${auts.map(a=>`<option value="${escAttr(a)}">`).join('')}</datalist>
+      <label>作品系列（区分同一作者的不同系列，在「⚙ 管理作者」里维护）</label>
+      <select id="me-ser" onchange="document.getElementById('me-newser').style.display=this.value==='__newser__'?'block':'none'">
+        ${serOptions(aut, (x.series||'').trim(), false)}
+      </select>
+      <input type="text" id="me-newser" placeholder="输入新系列名（自动归属上面的作者）" maxlength="30"
+             style="display:none;margin-top:6px">
       ${_mgLinks()}
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
         <button class="btn" onclick="hideModal()">取消</button>
@@ -1838,8 +1931,14 @@ function editRec(id, type){
     <input type="text" id="me-newsrc" placeholder="输入新来源名（填写则优先使用）" maxlength="30"
            style="display:none;margin-top:6px">
     <label>作者</label>
-    <input type="text" id="me-aut" list="me-autlist" value="${escAttr(aut)}" maxlength="30" placeholder="填写作者（可选，已有作者自动联想）">
+    <input type="text" id="me-aut" list="me-autlist" value="${escAttr(aut)}" maxlength="30" placeholder="填写作者（可选，已有作者自动联想）" oninput="refreshSerOpts('me')">
     <datalist id="me-autlist">${auts.map(a=>`<option value="${escAttr(a)}">`).join('')}</datalist>
+    <label>作品系列（区分同一作者的不同系列，在「⚙ 管理作者」里维护）</label>
+    <select id="me-ser" onchange="document.getElementById('me-newser').style.display=this.value==='__newser__'?'block':'none'">
+      ${serOptions(aut, (x.series||'').trim(), false)}
+    </select>
+    <input type="text" id="me-newser" placeholder="输入新系列名（自动归属上面的作者）" maxlength="30"
+           style="display:none;margin-top:6px">
     ${_mgLinks()}
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn" onclick="hideModal()">取消</button>
@@ -1861,17 +1960,19 @@ async function saveRec(id, type){
     const src = (newSrcInput && newSrcInput.style.display!=='none' && newSrcInput.value.trim())
       ? newSrcInput.value.trim() : (sv==='__newsrc__' ? (orig.source||'') : sv);
     const aut = $('#me-aut')?.value.trim() || '';
+    const ser = _serVal('me', aut, (orig.series||'').trim(), false);
     try{
       const r = await fetch('/api/articles/'+encodeURIComponent(id), {method:'PATCH',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({title, category:cat, source:src, author:aut})});
+        body:JSON.stringify({title, category:cat, source:src, author:aut, series:ser})});
       const d = await r.json();
       if(r.ok && d.ok){
         hideModal();
         if(_vcatFilter && !filterStillMatches(_vcatFilter, cat)) _vcatFilter='';
         if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
         if(_vAutFilter && _vAutFilter!=='__noaut__' && _vAutFilter!==aut) _vAutFilter='';
-        renderCatChips(); renderSrcChips(); renderAuthorChips();
+        if(_vSerFilter && _vSerFilter!=='__noser__' && _vSerFilter!==ser) _vSerFilter='';
+        renderCatChips(); renderSrcChips(); renderAuthorChips(); renderSerChips();
         loadRecords();
       }
       else { alert('保存失败：'+(d.error||r.status)); }
@@ -1888,23 +1989,26 @@ async function saveRec(id, type){
   const src = (newSrcInput.style.display!=='none' && newSrcInput.value.trim())
     ? newSrcInput.value.trim() : (sv==='__newsrc__' ? (orig.source||'') : sv);
   const aut = $('#me-aut').value.trim() || '';
+  const ser = _serVal('me', aut, (orig.series||'').trim(), false);
   try{
     const r = await fetch('/api/video/'+id, {method:'PATCH',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({title, category:cat, source:src, author:aut})});
+      body:JSON.stringify({title, category:cat, source:src, author:aut, series:ser})});
     const d = await r.json();
     if(r.ok && d.ok){
       hideModal();
       if(_vcatFilter && !filterStillMatches(_vcatFilter, cat)) _vcatFilter='';
       if(_vSrcFilter && _vSrcFilter!=='__nosrc__' && _vSrcFilter!==src) _vSrcFilter='';
       if(_vAutFilter && _vAutFilter!=='__noaut__' && _vAutFilter!==aut) _vAutFilter='';
+      if(_vSerFilter && _vSerFilter!=='__noser__' && _vSerFilter!==ser) _vSerFilter='';
       loadRecords();
     } else { alert('保存失败：'+(d.error||r.status)); }
   }catch(e){ alert('保存异常：'+e.message); }
 }
 // 管理分类/来源：重命名 / 删除（删除后记录回落，记录本身不动）
 let _mgDim = 'category', _mgKeys = [];
-function _mgRowsHtml(keys, counts, label, isCat){
+function _mgRowsHtml(keys, counts, label, isCat, isAut){
+  if(isAut) return _autRowsHtml(keys, counts);
   if(!keys.length) return `<div class="empty" style="padding:14px">${label}池为空，先在上面添加</div>`;
   if(!isCat) return keys.map((c,i)=>`
       <div class="catrow">
@@ -1948,6 +2052,87 @@ async function addSubCat(parent, pi){
     else alert('添加子分类失败：'+(d.error||r.status));
   }catch(e){ alert('添加子分类异常：'+e.message); }
 }
+let _mgSerKeys = [];
+function _autRowsHtml(keys, counts){
+  const sr = serCountsAll();
+  _mgSerKeys = sr.keys.slice();
+  const byAut = {};
+  sr.keys.forEach(k=>{ const a = serSplit(k).a || '（未指定作者）'; (byAut[a]=byAut[a]||[]).push(k); });
+  const groups = keys.slice();
+  Object.keys(byAut).forEach(a=>{ if(a!=='（未指定作者）' && !groups.includes(a)) groups.push(a); });
+  return groups.map((a,gi)=>{
+    const idx = keys.indexOf(a);
+    const head = idx>=0 ? `
+      <div class="catrow" style="margin-top:6px">
+        <input type="text" id="mc-${idx}" value="${escAttr(a)}" maxlength="30" style="flex:1">
+        <span class="mut" style="flex-shrink:0">${counts[a]||0} 条</span>
+        <button class="btn" onclick="renCat(${idx})">重命名</button>
+        <button class="btn del" onclick="delCat(${idx})">删除</button>
+      </div>` : `
+      <div class="catrow" style="margin-top:6px"><b>👤 ${esc(a)}</b><span class="mut">（系列所属，尚未在作者池）</span></div>`;
+    const subs = (byAut[a]||[]).map(k=>{
+      const si = _mgSerKeys.indexOf(k);
+      return `
+      <div class="catrow" style="margin-left:26px">
+        <span class="mut">└ 📚</span>
+        <input type="text" id="ms-${si}" value="${escAttr(serSplit(k).n)}" maxlength="30" style="flex:1">
+        <span class="mut" style="flex-shrink:0">${sr.counts[k]||0} 条</span>
+        <button class="btn" onclick="renSer(${si})">重命名</button>
+        <button class="btn del" onclick="delSer(${si})">删除</button>
+      </div>`;
+    }).join('');
+    const add = `
+      <div class="catrow" style="margin-left:26px">
+        <input type="text" id="ms-add-${gi}" placeholder="给「${escAttr(a)}」添加作品系列…" maxlength="30" style="flex:1"
+               onkeydown="if(event.key==='Enter')addSeries('${escAttr(a)}',${gi})">
+        <button class="btn" onclick="addSeries('${escAttr(a)}',${gi})">➕ 作品系列</button>
+      </div>`;
+    return head + subs + add;
+  }).join('');
+}
+async function addSeries(author, gi){
+  const el = document.getElementById('ms-add-'+gi);
+  const name = ((el && el.value) || '').trim();
+  if(!name){ alert('请输入作品系列名'); return; }
+  try{
+    const r = await fetch('/api/video/cats/add?dim=series', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name, parent:author})});
+    const d = await r.json();
+    if(r.ok && d.ok){ await loadRecords(); manageCats('author'); }
+    else alert('添加作品系列失败：'+(d.error||r.status));
+  }catch(e){ alert('添加作品系列异常：'+e.message); }
+}
+async function renSer(i){
+  const old = _mgSerKeys[i];
+  const nv = (document.getElementById('ms-'+i)?.value || '').trim();
+  if(!nv){ alert('名称不能为空'); return; }
+  const full = serSplit(old).a + CAT_SEP + nv;
+  try{
+    const r = await fetch('/api/video/cats/rename?dim=series', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({old, new:full})});
+    const d = await r.json();
+    if(r.ok && d.ok){
+      if(_vSerFilter===old) _vSerFilter=full;
+      hideModal(); loadRecords();
+    } else alert('重命名失败：'+(d.error||r.status));
+  }catch(e){ alert('异常：'+e.message); }
+}
+async function delSer(i){
+  const old = _mgSerKeys[i];
+  const n = _managedRows().filter(x=>((x.series||'').trim())===old).length;
+  uiConfirm(`删除作品系列「${serLabel(old)}」？\n其中 ${n} 条记录将回落到「无系列」，记录本身不受影响。`, async ()=>{
+    try{
+      const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+'?dim=series', {method:'DELETE'});
+      const d = await r.json();
+      if(r.ok && d.ok){
+        if(_vSerFilter===old) _vSerFilter='';
+        hideModal(); loadRecords();
+      } else alert('删除失败：'+(d.error||r.status));
+    }catch(e){ alert('异常：'+e.message); }
+  }, ()=>{ manageCats('author'); });
+}
 function manageCats(dim){
   _mgDim = dim || 'category';
   _remember('manageCats', _mgDim);
@@ -1961,14 +2146,14 @@ function manageCats(dim){
   const fallback = isAut ? '「无作者」' : (isSrc ? '「未标来源」' : '「未分类」');
   const isCat = !isSrc && !isAut;
   showModal(`<h3>⚙ 管理${label}</h3>
-    <div class="mut" style="margin-bottom:8px">➕ 新添加的${label}会进入${label}池（0 条记录也保留），可在「编辑」或批量工具条里直接选用。删除${label}不会删除记录，其中的记录将回落到${fallback}。${isCat?'分类支持<b>两级</b>：在每个分类下方可添加子分类；删除父分类会连带删除其下子分类。':''}</div>
+    <div class="mut" style="margin-bottom:8px">➕ 新添加的${label}会进入${label}池（0 条记录也保留），可在「编辑」或批量工具条里直接选用。删除${label}不会删除记录，其中的记录将回落到${fallback}。${isCat?'分类支持<b>两级</b>：在每个分类下方可添加子分类；删除父分类会连带删除其下子分类。':''}${isAut?'<b>作品系列</b>挂在每个作者下方：同一作者可建多个系列，用来区分不同系列内容；删除作者会一并清空其系列。':''}</div>
     <div class="catrow">
       <input type="text" id="mc-new" placeholder="输入新${label}名…" maxlength="30" style="flex:1"
              onkeydown="if(event.key==='Enter')addCat()">
       <button class="btn pri" onclick="addCat()">➕ 添加${label}</button>
     </div>
     <div style="height:8px"></div>
-    ${_mgRowsHtml(keys, counts, label, isCat)}
+    ${_mgRowsHtml(keys, counts, label, isCat, isAut)}
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
       <button class="btn" onclick="hideModal()">关闭</button>
     </div>`);
@@ -1987,7 +2172,7 @@ async function addCat(){
     } else { alert('添加失败：'+(d.error||r.status)); }
   }catch(e){ alert('异常：'+e.message); }
 }
-function _mgDimParam(){ return _mgDim==='source' ? '?dim=source' : (_mgDim==='author' ? '?dim=author' : ''); }
+function _mgDimParam(){ return _mgDim==='source' ? '?dim=source' : (_mgDim==='author' ? '?dim=author' : (_mgDim==='series' ? '?dim=series' : '')); }
 async function renCat(i){
   let nv = document.getElementById('mc-'+i).value.trim();
   const old = _mgKeys[i];
@@ -2003,7 +2188,11 @@ async function renCat(i){
     const d = await r.json();
     if(r.ok && d.ok){
       if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=nv; }
-      else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=nv; }
+      else if(_mgDim==='author'){
+        if(_vAutFilter===old) _vAutFilter=nv;
+        if(_vSerFilter && _vSerFilter.startsWith(old+CAT_SEP))
+          _vSerFilter = nv + CAT_SEP + _vSerFilter.slice((old+CAT_SEP).length);
+      }
       else {
         if(_vcatFilter===old) _vcatFilter=nv;
         else if(!old.includes(CAT_SEP) && _vcatFilter.startsWith(old+CAT_SEP))
@@ -2023,13 +2212,16 @@ async function delCat(i){
     return isParentCat ? (v===old || v.startsWith(old+CAT_SEP)) : v===old;
   }).length;
   const fb = _mgDim==='source' ? '未标来源' : (_mgDim==='author' ? '无作者' : '未分类');
-  uiConfirm(`删除${_mgDim==='author'?'作者':(_mgDim==='source'?'来源':'分类')}「${catLabel(old)}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。${isParentCat?'其下所有子分类将一并删除。':''}`, async ()=>{
+  uiConfirm(`删除${_mgDim==='author'?'作者':(_mgDim==='source'?'来源':'分类')}「${catLabel(old)}」？\n其中 ${n} 条记录将回落到「${fb}」，记录本身不受影响。${isParentCat?'其下所有子分类将一并删除。':''}${_mgDim==='author'?'该作者下的作品系列也会一并清除。':''}`, async ()=>{
     try{
       const r = await fetch('/api/video/cats/'+encodeURIComponent(old)+_mgDimParam(), {method:'DELETE'});
       const d = await r.json();
       if(r.ok && d.ok){
         if(_mgDim==='source'){ if(_vSrcFilter===old) _vSrcFilter=''; }
-        else if(_mgDim==='author'){ if(_vAutFilter===old) _vAutFilter=''; }
+        else if(_mgDim==='author'){
+          if(_vAutFilter===old) _vAutFilter='';
+          if(_vSerFilter && _vSerFilter.startsWith(old+CAT_SEP)) _vSerFilter='';
+        }
         else if(_vcatFilter===old || (isParentCat && _vcatFilter.startsWith(old+CAT_SEP))) _vcatFilter='';
         hideModal();
         loadRecords();
